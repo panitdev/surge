@@ -101,8 +101,9 @@ impl AuthProvider for EmbeddedProvider {
         &self,
         username: &Username,
         password: &Password,
-    ) -> Result<Session, AuthError> {
-        let (session, _token) = self.engine.authenticate_password(username, password, None).await?;
-        Ok(session)
+    ) -> Result<(Session, SessionToken), AuthError> {
+        self.engine
+            .authenticate_password(username, password, None)
+            .await
     }
 }

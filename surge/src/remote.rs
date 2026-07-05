@@ -93,9 +93,7 @@ impl RemoteProvider {
     ) -> Result<T, AuthError> {
         let status = resp.status();
         if status.is_success() {
-            resp.json()
-                .await
-                .map_err(|e| AuthError::Internal(e.into()))
+            resp.json().await.map_err(|e| AuthError::Internal(e.into()))
         } else {
             let body: serde_json::Value = resp.json().await.unwrap_or_default();
             Err(Self::map_error(status, &body))
@@ -216,7 +214,7 @@ impl AuthProvider for RemoteProvider {
         &self,
         username: &Username,
         password: &Password,
-    ) -> Result<Session, AuthError> {
+    ) -> Result<(Session, SessionToken), AuthError> {
         let resp = self
             .authed(reqwest::Method::POST, "/v1/authenticate/password")
             .json(&serde_json::json!({
@@ -227,6 +225,15 @@ impl AuthProvider for RemoteProvider {
             .await
             .map_err(Self::map_reqwest_err)?;
 
-        Self::parse_or_error(resp).await
+        #[derive(serde::Deserialize)]
+        struct AuthenticationResponse {
+            session: Session,
+            token: String,
+        }
+
+        let body: AuthenticationResponse = Self::parse_or_error(resp).await?;
+        let token = SessionToken::from_raw(&body.token)
+            .ok_or_else(|| AuthError::Internal(anyhow::anyhow!("server returned invalid token")))?;
+        Ok((body.session, token))
     }
 }

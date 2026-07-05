@@ -25,5 +25,5 @@ pub trait AuthProvider: Send + Sync {
         &self,
         username: &Username,
         password: &Password,
-    ) -> Result<Session, AuthError>;
+    ) -> Result<(Session, SessionToken), AuthError>;
 }

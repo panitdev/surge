@@ -2014,6 +2014,43 @@ dependencies = [
 ]
 
 [[package]]
+name = "surge-demo-common"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "axum-extra",
+ "secrecy",
+ "serde",
+ "surge",
+ "time",
+]
+
+[[package]]
+name = "surge-demo-embedded"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "secrecy",
+ "surge",
+ "surge-demo-common",
+ "tokio",
+]
+
+[[package]]
+name = "surge-demo-served"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "secrecy",
+ "surge",
+ "surge-demo-common",
+ "tokio",
+ "url",
+]
+
+[[package]]
 name = "surge-engine"
 version = "0.1.0"
 dependencies = [
