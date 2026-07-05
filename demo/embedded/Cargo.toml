@@ -1,0 +1,13 @@
+[package]
+name = "surge-demo-embedded"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+secrecy.workspace = true
+surge = { path = "../../surge", features = ["embedded"] }
+surge-demo-common = { path = "../common" }
+tokio.workspace = true
