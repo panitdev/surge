@@ -25,6 +25,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/identities", get(get_identity_by_username))
         .route("/v1/identities/{id}/profile", patch(update_profile))
         .route("/v1/register", post(register))
+        .route(
+            "/v1/register-and-authenticate",
+            post(register_and_authenticate),
+        )
         .route("/v1/authenticate/password", post(authenticate_password))
         .layer(middleware::from_fn_with_state(state.clone(), service_auth))
         .with_state(state)
@@ -44,7 +48,7 @@ async fn verify_session(
 
     let token =
         SessionToken::from_raw(&body.token).ok_or(AuthError::InvalidToken)?;
-    let session = state.engine.verify_session(&token).await?;
+    let session = state.provider.verify_session(&token).await?;
 
     state
         .engine
@@ -71,7 +75,7 @@ async fn revoke_session(
 
     let token =
         SessionToken::from_raw(&body.token).ok_or(AuthError::InvalidToken)?;
-    state.engine.revoke_session(&token).await?;
+    state.provider.revoke_session(&token).await?;
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
@@ -83,7 +87,7 @@ async fn revoke_all_sessions(
     require_grant(&auth, "revoke").map_err(|_| AuthError::Forbidden)?;
 
     let identity_id = IdentityId::from_uuid(id);
-    let revoked = state.engine.revoke_all_sessions(identity_id).await?;
+    let revoked = state.provider.revoke_all_sessions(identity_id).await?;
     Ok(Json(json!({"revoked": revoked})))
 }
 
@@ -94,7 +98,7 @@ async fn get_identity(
 ) -> Result<impl IntoResponse, ApiError> {
     require_grant(&auth, "identity_read").map_err(|_| AuthError::Forbidden)?;
 
-    let identity = state.engine.get_identity(IdentityId::from_uuid(id)).await?;
+    let identity = state.provider.identity(IdentityId::from_uuid(id)).await?;
     Ok(Json(serde_json::to_value(&identity).unwrap()))
 }
 
@@ -112,7 +116,7 @@ async fn get_identity_by_username(
 
     let username = Username::new(&query.username)
         .map_err(|e| AuthError::Validation(ValidationError::from(e)))?;
-    let identity = state.engine.get_identity_by_username(&username).await?;
+    let identity = state.provider.identity_by_username(&username).await?;
 
     state
         .engine
@@ -139,8 +143,8 @@ async fn update_profile(
     require_grant(&auth, "identity_write").map_err(|_| AuthError::Forbidden)?;
 
     let identity = state
-        .engine
-        .update_profile(IdentityId::from_uuid(id), &patch)
+        .provider
+        .update_profile(IdentityId::from_uuid(id), patch)
         .await?;
     Ok(Json(serde_json::to_value(&identity).unwrap()))
 }
@@ -159,22 +163,43 @@ async fn register(
 ) -> Result<impl IntoResponse, ApiError> {
     require_grant(&auth, "direct_auth").map_err(|_| AuthError::Forbidden)?;
 
+    let req = parse_register_body(body)?;
+    let identity = state.provider.register(req).await?;
+    Ok((
+        axum::http::StatusCode::CREATED,
+        Json(serde_json::to_value(&identity).unwrap()),
+    ))
+}
+
+async fn register_and_authenticate(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<ServiceAuth>,
+    Json(body): Json<RegisterBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    require_grant(&auth, "direct_auth").map_err(|_| AuthError::Forbidden)?;
+
+    let req = parse_register_body(body)?;
+    let issued = state.provider.register_and_authenticate(req).await?;
+    Ok((
+        axum::http::StatusCode::CREATED,
+        Json(json!({
+            "session": serde_json::to_value(&issued.session).unwrap(),
+            "token": issued.token.expose_secret(),
+        })),
+    ))
+}
+
+fn parse_register_body(body: RegisterBody) -> Result<RegisterRequest, AuthError> {
     let username = Username::new(&body.username)
         .map_err(|e| AuthError::Validation(ValidationError::from(e)))?;
     let password = Password::new(secrecy::SecretString::from(body.password))
         .map_err(|e| AuthError::Validation(ValidationError::from(e)))?;
 
-    let req = RegisterRequest {
+    Ok(RegisterRequest {
         username,
         password,
         display_name: body.display_name,
-    };
-
-    let identity = state.engine.register(req, None).await?;
-    Ok((
-        axum::http::StatusCode::CREATED,
-        Json(serde_json::to_value(&identity).unwrap()),
-    ))
+    })
 }
 
 #[derive(Deserialize)]
@@ -195,13 +220,13 @@ async fn authenticate_password(
     let password = Password::new(secrecy::SecretString::from(body.password))
         .map_err(|e| AuthError::Validation(ValidationError::from(e)))?;
 
-    let (session, token) = state
-        .engine
-        .authenticate_password(&username, &password, None)
+    let issued = state
+        .provider
+        .authenticate_password(&username, &password)
         .await?;
 
     Ok(Json(json!({
-        "session": serde_json::to_value(&session).unwrap(),
-        "token": token.expose_secret(),
+        "session": serde_json::to_value(&issued.session).unwrap(),
+        "token": issued.token.expose_secret(),
     })))
 }

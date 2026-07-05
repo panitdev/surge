@@ -5,7 +5,10 @@ mod traits;
 #[cfg(feature = "embedded")]
 mod embedded;
 
-pub use extract::AuthSession;
+#[cfg(feature = "router")]
+pub mod router;
+
+pub use extract::{require_header_csrf, me_logout_router, AuthSession};
 pub use traits::AuthProvider;
 
 #[cfg(feature = "embedded")]
@@ -14,8 +17,8 @@ pub use embedded::{EmbeddedConfig, EmbeddedProvider};
 pub use remote::{RemoteConfig, RemoteProvider};
 
 pub use surge_engine::types::{
-    AuthError, AuthMethod, Identity, IdentityId, IdentityState, Password, ProfilePatch,
-    RegisterRequest, Session, SessionId, SessionToken, Username, ValidationError,
+    AuthError, AuthMethod, Identity, IdentityId, IdentityState, IssuedSession, Password,
+    ProfilePatch, RegisterRequest, Session, SessionId, SessionToken, Username, ValidationError,
 };
 
 #[cfg(feature = "embedded")]

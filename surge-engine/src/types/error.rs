@@ -57,3 +57,21 @@ impl From<ValidationError> for AuthError {
         AuthError::Validation(e)
     }
 }
+
+/// Required so `AuthError` can be used as the error type of a
+/// `diesel_async` `transaction()` closure (its rollback machinery needs
+/// `E: From<diesel::result::Error>`). Call sites that need a specific
+/// mapping (e.g. `UniqueViolation` -> `UsernameTaken`) should map the error
+/// explicitly before returning rather than relying on this generic fallback.
+impl From<diesel::result::Error> for AuthError {
+    fn from(e: diesel::result::Error) -> Self {
+        match e {
+            diesel::result::Error::NotFound => AuthError::NotFound,
+            diesel::result::Error::DatabaseError(
+                diesel::result::DatabaseErrorKind::UniqueViolation,
+                _,
+            ) => AuthError::UsernameTaken,
+            other => AuthError::Internal(other.into()),
+        }
+    }
+}

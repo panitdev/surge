@@ -1,6 +1,6 @@
 use chrono::Utc;
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use url::Url;
 
 use crate::models::{IdentityRow, NewIdentity};
@@ -15,40 +15,7 @@ impl Engine {
         display_name: &str,
     ) -> Result<Identity, AuthError> {
         let mut conn = self.conn().await?;
-        let now = Utc::now();
-        let id = IdentityId::new();
-
-        let new = NewIdentity {
-            id: *id.as_uuid(),
-            username: username.as_str(),
-            display_name,
-            avatar_url: None,
-            state: "active",
-            created_at: now,
-            updated_at: now,
-        };
-
-        diesel::insert_into(identity::table)
-            .values(&new)
-            .execute(&mut conn)
-            .await
-            .map_err(|e| match e {
-                diesel::result::Error::DatabaseError(
-                    diesel::result::DatabaseErrorKind::UniqueViolation,
-                    _,
-                ) => AuthError::UsernameTaken,
-                other => AuthError::Internal(other.into()),
-            })?;
-
-        Ok(Identity {
-            id,
-            username: username.clone(),
-            display_name: display_name.to_string(),
-            avatar_url: None,
-            state: IdentityState::Active,
-            created_at: now,
-            updated_at: now,
-        })
+        insert_identity(&mut conn, username, display_name).await
     }
 
     pub async fn get_identity(&self, id: IdentityId) -> Result<Identity, AuthError> {
@@ -141,6 +108,50 @@ impl Engine {
         }
         Ok(())
     }
+}
+
+/// Connection-taking core of [`Engine::create_identity`], reused inside the
+/// atomic `create_identity_and_session` transaction (session.rs) so the
+/// identity insert shares one connection/transaction with the rest.
+pub(crate) async fn insert_identity(
+    conn: &mut AsyncPgConnection,
+    username: &Username,
+    display_name: &str,
+) -> Result<Identity, AuthError> {
+    let now = Utc::now();
+    let id = IdentityId::new();
+
+    let new = NewIdentity {
+        id: *id.as_uuid(),
+        username: username.as_str(),
+        display_name,
+        avatar_url: None,
+        state: "active",
+        created_at: now,
+        updated_at: now,
+    };
+
+    diesel::insert_into(identity::table)
+        .values(&new)
+        .execute(conn)
+        .await
+        .map_err(|e| match e {
+            diesel::result::Error::DatabaseError(
+                diesel::result::DatabaseErrorKind::UniqueViolation,
+                _,
+            ) => AuthError::UsernameTaken,
+            other => AuthError::Internal(other.into()),
+        })?;
+
+    Ok(Identity {
+        id,
+        username: username.clone(),
+        display_name: display_name.to_string(),
+        avatar_url: None,
+        state: IdentityState::Active,
+        created_at: now,
+        updated_at: now,
+    })
 }
 
 pub(crate) fn row_to_identity(row: IdentityRow) -> Result<Identity, AuthError> {

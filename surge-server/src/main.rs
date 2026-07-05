@@ -7,7 +7,7 @@ use std::sync::Arc;
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
-use surge_engine::Engine;
+use surge::{AuthProvider, EmbeddedProvider};
 
 #[derive(Parser)]
 #[command(name = "surge-server", about = "Surge authentication server")]
@@ -27,11 +27,13 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
     let config = config::ServerConfig::from_env()?;
-    let engine = Arc::new(Engine::new(config.engine_config()?).await?);
-    engine.run_migrations().await?;
+
+    let embedded = EmbeddedProvider::new(config.embedded_config()).await?;
+    let engine = embedded.engine();
+    let provider: Arc<dyn AuthProvider> = Arc::new(embedded);
 
     match cli {
-        Cli::Serve(args) => cli::serve(args, engine, config).await,
+        Cli::Serve(args) => cli::serve(args, engine, provider, config).await,
         Cli::Identity(cmd) => cli::identity(cmd, engine).await,
         Cli::Svc(cmd) => cli::svc(cmd, engine).await,
     }

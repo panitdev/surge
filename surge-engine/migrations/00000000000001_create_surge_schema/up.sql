@@ -70,3 +70,12 @@ CREATE TABLE surge.audit_log (
 
 CREATE INDEX idx_audit_log_at ON surge.audit_log(at);
 CREATE INDEX idx_audit_log_action ON surge.audit_log(action);
+
+-- Neutral windowed-counter store. Knows nothing about IPs, actions, or
+-- thresholds; callers compose the key and own the policy.
+CREATE TABLE surge.rate_limit_window (
+    key TEXT NOT NULL,
+    window_start TIMESTAMPTZ NOT NULL,
+    count INT NOT NULL DEFAULT 0,
+    PRIMARY KEY (key, window_start)
+);

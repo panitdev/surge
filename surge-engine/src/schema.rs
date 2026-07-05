@@ -75,6 +75,14 @@ diesel::table! {
     }
 }
 
+diesel::table! {
+    surge.rate_limit_window (key, window_start) {
+        key -> Text,
+        window_start -> Timestamptz,
+        count -> Int4,
+    }
+}
+
 diesel::joinable!(credential_password -> identity (identity_id));
 diesel::joinable!(session -> identity (identity_id));
 

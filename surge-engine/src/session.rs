@@ -1,50 +1,52 @@
+use std::time::Duration;
+
 use chrono::Utc;
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use diesel_async::scoped_futures::ScopedFutureExt;
+use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
 
-use crate::identity::row_to_identity;
+use crate::identity::{insert_identity, row_to_identity};
+use crate::credential::insert_password;
 use crate::models::{IdentityRow, NewSession, SessionRow};
 use crate::schema::{identity, session};
 use crate::types::*;
 use crate::Engine;
 
 impl Engine {
-    pub async fn create_session(
+    /// Mint a session for an already-authenticated identity. Generates the
+    /// token, stores only its hash, and returns the plaintext once via
+    /// `IssuedSession` — the sole carrier of the token out of the engine.
+    pub async fn mint_session(
         &self,
         identity_id: IdentityId,
-        token: &SessionToken,
         method: AuthMethod,
-    ) -> Result<Session, AuthError> {
+    ) -> Result<IssuedSession, AuthError> {
+        let identity = self.get_identity(identity_id).await?;
         let mut conn = self.conn().await?;
-        let now = Utc::now();
-        let expires = now + self.session_ttl;
-        let sid = SessionId::new();
+        mint_session_conn(&mut conn, identity, method, self.session_ttl).await
+    }
 
-        let new = NewSession {
-            id: *sid.as_uuid(),
-            token_hash: token.hash(),
-            identity_id: *identity_id.as_uuid(),
-            authenticated_via: serde_json::to_value(&method)
-                .map_err(|e| AuthError::Internal(e.into()))?,
-            issued_at: now,
-            expires_at: expires,
-        };
+    /// Atomically create an identity, set its password, and mint a session
+    /// for it — one identity + one session, or neither, on a single
+    /// connection/transaction. This is `register_and_authenticate`'s
+    /// primitive; it never re-authenticates.
+    pub async fn create_identity_and_session(
+        &self,
+        req: RegisterRequest,
+    ) -> Result<IssuedSession, AuthError> {
+        let hash = self.hash_password(&req.password)?;
+        let ttl = self.session_ttl;
+        let mut conn = self.conn().await?;
 
-        diesel::insert_into(session::table)
-            .values(&new)
-            .execute(&mut conn)
-            .await
-            .map_err(|e| AuthError::Internal(e.into()))?;
-
-        let ident = self.get_identity(identity_id).await?;
-
-        Ok(Session {
-            id: sid,
-            identity: ident,
-            issued_at: now,
-            expires_at: expires,
-            authenticated_via: method,
+        conn.transaction::<_, AuthError, _>(|conn| {
+            async move {
+                let identity = insert_identity(conn, &req.username, &req.display_name).await?;
+                insert_password(conn, identity.id, &hash).await?;
+                mint_session_conn(conn, identity, AuthMethod::Password, ttl).await
+            }
+            .scope_boxed()
         })
+        .await
     }
 
     pub async fn verify_session(&self, token: &SessionToken) -> Result<Session, AuthError> {
@@ -130,4 +132,45 @@ impl Engine {
 
         Ok(deleted as u64)
     }
+}
+
+/// Connection-taking core shared by `mint_session` and
+/// `create_identity_and_session`. Takes the already-fetched `Identity` so
+/// the atomic path doesn't re-query it inside the transaction.
+pub(crate) async fn mint_session_conn(
+    conn: &mut AsyncPgConnection,
+    identity: Identity,
+    method: AuthMethod,
+    ttl: Duration,
+) -> Result<IssuedSession, AuthError> {
+    let token = SessionToken::generate();
+    let now = Utc::now();
+    let expires = now + ttl;
+    let sid = SessionId::new();
+
+    let new = NewSession {
+        id: *sid.as_uuid(),
+        token_hash: token.hash(),
+        identity_id: *identity.id.as_uuid(),
+        authenticated_via: serde_json::to_value(&method).map_err(|e| AuthError::Internal(e.into()))?,
+        issued_at: now,
+        expires_at: expires,
+    };
+
+    diesel::insert_into(session::table)
+        .values(&new)
+        .execute(conn)
+        .await
+        .map_err(|e| AuthError::Internal(e.into()))?;
+
+    Ok(IssuedSession::new(
+        Session {
+            id: sid,
+            identity,
+            issued_at: now,
+            expires_at: expires,
+            authenticated_via: method,
+        },
+        token,
+    ))
 }

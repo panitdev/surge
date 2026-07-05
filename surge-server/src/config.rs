@@ -1,8 +1,8 @@
-use std::collections::HashMap;
 use std::time::Duration;
 
 use secrecy::SecretString;
-use surge_engine::{EngineConfig, PepperConfig, RateLimitConfig};
+use surge::router::RegistrationMode;
+use surge::EmbeddedConfig;
 
 pub struct ServerConfig {
     pub database_url: SecretString,
@@ -12,13 +12,10 @@ pub struct ServerConfig {
     pub auth_ui_origin: String,
     pub session_ttl_hours: u64,
     pub registration: RegistrationMode,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RegistrationMode {
-    Open,
-    Invite,
-    Closed,
+    /// Non-empty enables the opt-in browser->Surge session-management CORS
+    /// zone (credentialed, over this union). Empty keeps the narrow,
+    /// same-origin-only default.
+    pub session_cors_origins: Vec<String>,
 }
 
 impl ServerConfig {
@@ -48,6 +45,10 @@ impl ServerConfig {
             "closed" => RegistrationMode::Closed,
             _ => RegistrationMode::Open,
         };
+        let session_cors_origins = std::env::var("SURGE_SESSION_CORS_ORIGINS")
+            .ok()
+            .map(|v| v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+            .unwrap_or_default();
 
         Ok(Self {
             database_url,
@@ -57,22 +58,16 @@ impl ServerConfig {
             auth_ui_origin,
             session_ttl_hours,
             registration,
+            session_cors_origins,
         })
     }
 
-    pub fn engine_config(&self) -> anyhow::Result<EngineConfig> {
-        let mut peppers = HashMap::new();
-        peppers.insert(1u8, self.pepper.clone());
-
-        Ok(EngineConfig {
+    pub fn embedded_config(&self) -> EmbeddedConfig {
+        EmbeddedConfig {
             database_url: self.database_url.clone(),
-            pepper: PepperConfig {
-                current_version: 1,
-                peppers,
-            },
-            session_ttl: Duration::from_secs(self.session_ttl_hours * 3600),
-            rate_limit: RateLimitConfig::default(),
-        })
+            pepper: self.pepper.clone(),
+            session_ttl: self.session_ttl(),
+        }
     }
 
     pub fn session_ttl(&self) -> Duration {

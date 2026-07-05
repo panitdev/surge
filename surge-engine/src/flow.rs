@@ -115,4 +115,16 @@ impl Engine {
 
         Ok(())
     }
+
+    pub async fn gc_expired_login_flows(&self) -> Result<u64, AuthError> {
+        let mut conn = self.conn().await?;
+        let now = Utc::now();
+
+        let deleted = diesel::delete(login_flow::table.filter(login_flow::expires_at.lt(now)))
+            .execute(&mut conn)
+            .await
+            .map_err(|e| AuthError::Internal(e.into()))?;
+
+        Ok(deleted as u64)
+    }
 }

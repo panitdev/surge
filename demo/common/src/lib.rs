@@ -79,8 +79,8 @@ async fn login(
     };
 
     match result {
-        Ok((_session, token)) => {
-            (jar.add(session_cookie(&token)), Redirect::to("/")).into_response()
+        Ok(issued) => {
+            (jar.add(session_cookie(&issued.token)), Redirect::to("/")).into_response()
         }
         Err(error) => render_page(status_for(&error), None, Some(error_message(&error))),
     }
@@ -101,18 +101,7 @@ async fn signup(
             );
         }
     };
-    let password_secret = SecretString::from(form.password);
-    let password = match Password::new(password_secret.clone()) {
-        Ok(password) => password,
-        Err(error) => {
-            return render_page(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                None,
-                Some(error.to_string()),
-            );
-        }
-    };
-    let login_password = match Password::new(password_secret) {
+    let password = match Password::new(SecretString::from(form.password)) {
         Ok(password) => password,
         Err(error) => {
             return render_page(
@@ -133,22 +122,14 @@ async fn signup(
     }
 
     let request = RegisterRequest {
-        username: username.clone(),
+        username,
         password,
         display_name: display_name.to_owned(),
     };
 
-    if let Err(error) = state.auth.register(request).await {
-        return render_page(status_for(&error), None, Some(error_message(&error)));
-    }
-
-    match state
-        .auth
-        .authenticate_password(&username, &login_password)
-        .await
-    {
-        Ok((_session, token)) => {
-            (jar.add(session_cookie(&token)), Redirect::to("/")).into_response()
+    match state.auth.register_and_authenticate(request).await {
+        Ok(issued) => {
+            (jar.add(session_cookie(&issued.token)), Redirect::to("/")).into_response()
         }
         Err(error) => render_page(status_for(&error), None, Some(error_message(&error))),
     }

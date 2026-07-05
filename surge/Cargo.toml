@@ -7,6 +7,7 @@ license.workspace = true
 [features]
 default = []
 embedded = []
+router = ["dep:tower-http"]
 
 [dependencies]
 anyhow.workspace = true
@@ -24,6 +25,8 @@ sha2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tower.workspace = true
+tower-http = { workspace = true, optional = true }
+time.workspace = true
 tracing.workspace = true
 url.workspace = true
 uuid.workspace = true

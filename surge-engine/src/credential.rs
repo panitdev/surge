@@ -2,7 +2,7 @@ use argon2::password_hash::SaltString;
 use argon2::{Algorithm, Argon2, Params, PasswordHash, PasswordHasher, PasswordVerifier, Version};
 use chrono::Utc;
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use secrecy::ExposeSecret;
 
 use crate::models::{CredentialPasswordRow, NewCredentialPassword};
@@ -24,28 +24,10 @@ impl Engine {
     ) -> Result<(), AuthError> {
         let hash = self.hash_password(password)?;
         let mut conn = self.conn().await?;
-        let now = Utc::now();
-
-        diesel::insert_into(credential_password::table)
-            .values(&NewCredentialPassword {
-                identity_id: *identity_id.as_uuid(),
-                hash: &hash,
-                updated_at: now,
-            })
-            .on_conflict(credential_password::identity_id)
-            .do_update()
-            .set((
-                credential_password::hash.eq(&hash),
-                credential_password::updated_at.eq(now),
-            ))
-            .execute(&mut conn)
-            .await
-            .map_err(|e| AuthError::Internal(e.into()))?;
-
-        Ok(())
+        insert_password(&mut conn, identity_id, &hash).await
     }
 
-    pub async fn verify_password(
+    pub async fn verify_credential(
         &self,
         username: &Username,
         password: &Password,
@@ -82,7 +64,7 @@ impl Engine {
         }
     }
 
-    fn hash_password(&self, password: &Password) -> Result<String, AuthError> {
+    pub(crate) fn hash_password(&self, password: &Password) -> Result<String, AuthError> {
         let pepper = self
             .pepper
             .peppers
@@ -149,6 +131,34 @@ impl Engine {
             .verify_password(password.expose().as_bytes(), &parsed)
             .map_err(|_| AuthError::InvalidCredentials)
     }
+}
+
+/// Connection-taking core of [`Engine::set_password`], reused inside the
+/// atomic `create_identity_and_session` transaction (session.rs).
+pub(crate) async fn insert_password(
+    conn: &mut AsyncPgConnection,
+    identity_id: IdentityId,
+    hash: &str,
+) -> Result<(), AuthError> {
+    let now = Utc::now();
+
+    diesel::insert_into(credential_password::table)
+        .values(&NewCredentialPassword {
+            identity_id: *identity_id.as_uuid(),
+            hash,
+            updated_at: now,
+        })
+        .on_conflict(credential_password::identity_id)
+        .do_update()
+        .set((
+            credential_password::hash.eq(hash),
+            credential_password::updated_at.eq(now),
+        ))
+        .execute(conn)
+        .await
+        .map_err(|e| AuthError::Internal(e.into()))?;
+
+    Ok(())
 }
 
 #[cfg(test)]

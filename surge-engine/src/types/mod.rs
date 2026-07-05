@@ -63,6 +63,21 @@ pub struct Session {
     pub authenticated_via: AuthMethod,
 }
 
+/// The sole carrier of a plaintext session token out of the engine/facade.
+/// `Session` itself is always token-free.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct IssuedSession {
+    pub session: Session,
+    pub token: SessionToken,
+}
+
+impl IssuedSession {
+    pub fn new(session: Session, token: SessionToken) -> Self {
+        Self { session, token }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 #[serde(rename_all = "snake_case")]

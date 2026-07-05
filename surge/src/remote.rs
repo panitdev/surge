@@ -99,6 +99,19 @@ impl RemoteProvider {
             Err(Self::map_error(status, &body))
         }
     }
+
+    async fn parse_issued_session(resp: reqwest::Response) -> Result<IssuedSession, AuthError> {
+        #[derive(serde::Deserialize)]
+        struct IssuedSessionResponse {
+            session: Session,
+            token: String,
+        }
+
+        let body: IssuedSessionResponse = Self::parse_or_error(resp).await?;
+        let token = SessionToken::from_raw(&body.token)
+            .ok_or_else(|| AuthError::Internal(anyhow::anyhow!("server returned invalid token")))?;
+        Ok(IssuedSession::new(body.session, token))
+    }
 }
 
 #[async_trait]
@@ -210,11 +223,29 @@ impl AuthProvider for RemoteProvider {
         Self::parse_or_error(resp).await
     }
 
+    async fn register_and_authenticate(
+        &self,
+        req: RegisterRequest,
+    ) -> Result<IssuedSession, AuthError> {
+        let resp = self
+            .authed(reqwest::Method::POST, "/v1/register-and-authenticate")
+            .json(&serde_json::json!({
+                "username": req.username.as_str(),
+                "password": req.password.expose(),
+                "display_name": req.display_name,
+            }))
+            .send()
+            .await
+            .map_err(Self::map_reqwest_err)?;
+
+        Self::parse_issued_session(resp).await
+    }
+
     async fn authenticate_password(
         &self,
         username: &Username,
         password: &Password,
-    ) -> Result<(Session, SessionToken), AuthError> {
+    ) -> Result<IssuedSession, AuthError> {
         let resp = self
             .authed(reqwest::Method::POST, "/v1/authenticate/password")
             .json(&serde_json::json!({
@@ -225,15 +256,6 @@ impl AuthProvider for RemoteProvider {
             .await
             .map_err(Self::map_reqwest_err)?;
 
-        #[derive(serde::Deserialize)]
-        struct AuthenticationResponse {
-            session: Session,
-            token: String,
-        }
-
-        let body: AuthenticationResponse = Self::parse_or_error(resp).await?;
-        let token = SessionToken::from_raw(&body.token)
-            .ok_or_else(|| AuthError::Internal(anyhow::anyhow!("server returned invalid token")))?;
-        Ok((body.session, token))
+        Self::parse_issued_session(resp).await
     }
 }

@@ -16,7 +16,6 @@ async fn main() -> anyhow::Result<()> {
         database_url: SecretString::from(database_url),
         pepper: SecretString::from(pepper),
         session_ttl: Duration::from_secs(72 * 60 * 60),
-        gc_interval: Some(Duration::from_secs(15 * 60)),
     })
     .await?;
 
