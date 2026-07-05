@@ -10,6 +10,7 @@ use axum_extra::extract::cookie::{Cookie, SameSite};
 use secrecy::SecretString;
 use serde::Deserialize;
 use surge::{AuthError, AuthProvider, Password, RegisterRequest, Session, SessionToken, Username};
+use tracing::warn;
 
 const COOKIE_NAME: &str = "surge_session";
 
@@ -59,11 +60,18 @@ async fn home(State(state): State<AppState>, jar: CookieJar) -> Response {
         Ok(None) | Err(AuthError::InvalidToken | AuthError::SessionExpired) => {
             render_page(StatusCode::OK, None, None)
         }
-        Err(error) => render_page(
-            StatusCode::SERVICE_UNAVAILABLE,
-            None,
-            Some(error_message(&error)),
-        ),
+        Err(error) => {
+            // Skip logging for missing/invalid session — that's normal for unauthenticated visitors
+            match &error {
+                AuthError::InvalidToken | AuthError::SessionExpired => {}
+                _ => warn!(error = %error, variant = ?error, "home session error"),
+            }
+            render_page(
+                StatusCode::SERVICE_UNAVAILABLE,
+                None,
+                Some(error_message(&error)),
+            )
+        }
     }
 }
 
@@ -82,7 +90,15 @@ async fn login(
         Ok(issued) => {
             (jar.add(session_cookie(&issued.token)), Redirect::to("/")).into_response()
         }
-        Err(error) => render_page(status_for(&error), None, Some(error_message(&error))),
+        Err(error) => {
+            warn!(
+                username = form.username,
+                error = %error,
+                variant = ?error,
+                "login failed"
+            );
+            render_page(status_for(&error), None, Some(error_message(&error)))
+        }
     }
 }
 
@@ -131,7 +147,15 @@ async fn signup(
         Ok(issued) => {
             (jar.add(session_cookie(&issued.token)), Redirect::to("/")).into_response()
         }
-        Err(error) => render_page(status_for(&error), None, Some(error_message(&error))),
+        Err(error) => {
+            warn!(
+                username = form.username,
+                error = %error,
+                variant = ?error,
+                "signup failed"
+            );
+            render_page(status_for(&error), None, Some(error_message(&error)))
+        }
     }
 }
 

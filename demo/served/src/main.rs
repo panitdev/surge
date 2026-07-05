@@ -3,10 +3,16 @@ use std::time::Duration;
 use secrecy::SecretString;
 use surge::RemoteConfig;
 use tokio::net::TcpListener;
+use tracing::info;
+use tracing_subscriber::EnvFilter;
 use url::Url;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env().add_directive("info".parse()?))
+        .init();
+
     let bind = std::env::var("DEMO_BIND").unwrap_or_else(|_| "127.0.0.1:3200".into());
     let base_url = std::env::var("SURGE_URL").unwrap_or_else(|_| "http://127.0.0.1:3000".into());
     let service_token = std::env::var("SURGE_SERVICE_TOKEN")
@@ -21,8 +27,9 @@ async fn main() -> anyhow::Result<()> {
     })
     .await?;
 
+    info!(%base_url, %bind, "served demo starting");
     let listener = TcpListener::bind(&bind).await?;
-    println!("served demo listening at http://{bind}");
+    info!("served demo listening at http://{bind}");
     axum::serve(listener, surge_demo_common::app(auth)).await?;
     Ok(())
 }

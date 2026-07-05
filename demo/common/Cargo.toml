@@ -11,3 +11,4 @@ secrecy.workspace = true
 serde.workspace = true
 surge = { path = "../../surge" }
 time.workspace = true
+tracing.workspace = true

@@ -5,6 +5,7 @@ use moka::future::Cache;
 use reqwest::Client;
 use secrecy::{ExposeSecret, SecretString};
 use sha2::{Digest, Sha256};
+use tracing::{error, warn};
 use url::Url;
 
 use crate::traits::AuthProvider;
@@ -54,7 +55,7 @@ impl RemoteProvider {
 
     fn map_error(status: reqwest::StatusCode, body: &serde_json::Value) -> AuthError {
         let error_code = body.get("error").and_then(|v| v.as_str()).unwrap_or("");
-        match error_code {
+        let err: AuthError = match error_code {
             "invalid_token" => AuthError::InvalidToken,
             "session_expired" => AuthError::SessionExpired,
             "identity_disabled" => AuthError::IdentityDisabled,
@@ -71,7 +72,16 @@ impl RemoteProvider {
             },
             _ if status.is_server_error() => AuthError::Unavailable,
             _ => AuthError::Internal(anyhow::anyhow!("unexpected error: {status} {body}")),
+        };
+        if matches!(err, AuthError::Unavailable | AuthError::Internal(_)) {
+            warn!(
+                status = %status.as_u16(),
+                error_code,
+                body = %body,
+                "surge server returned error"
+            );
         }
+        err
     }
 
     fn token_cache_key(token: &SessionToken) -> Vec<u8> {
@@ -82,8 +92,10 @@ impl RemoteProvider {
 
     fn map_reqwest_err(e: reqwest::Error) -> AuthError {
         if e.is_timeout() {
+            warn!(error = %e, "surge server request timed out");
             AuthError::Timeout
         } else {
+            error!(error = %e, "surge server unreachable");
             AuthError::Unavailable
         }
     }

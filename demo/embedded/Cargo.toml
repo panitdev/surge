@@ -11,3 +11,5 @@ secrecy.workspace = true
 surge = { path = "../../surge", features = ["embedded"] }
 surge-demo-common = { path = "../common" }
 tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
