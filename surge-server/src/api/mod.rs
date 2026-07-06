@@ -5,7 +5,7 @@ pub mod service;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::Router;
+use axum::{Router, http::StatusCode, routing::get};
 use surge::router::{browser, BrowserRouterConfig, PostgresRateLimiter, RateLimitConfig};
 use surge::AuthProvider;
 use surge_engine::Engine;
@@ -55,6 +55,7 @@ pub async fn router(
     browser_router.spawn_maintenance(Duration::from_secs(15 * 60));
 
     Ok(Router::new()
+        .route("/health", get(|| async { StatusCode::NO_CONTENT }))
         .merge(service_router)
         .nest("/v1", browser_router.into_axum())
         .layer(TraceLayer::new_for_http()))
