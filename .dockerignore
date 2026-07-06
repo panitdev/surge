@@ -1,0 +1,13 @@
+.git
+.github
+.agents
+.codex
+target
+**/target
+Dockerfile*
+README.md
+*.md
+*.log
+.env
+.env.*
+!.env.example
