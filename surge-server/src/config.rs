@@ -16,6 +16,13 @@ pub struct ServerConfig {
     /// zone (credentialed, over this union). Empty keeps the narrow,
     /// same-origin-only default.
     pub session_cors_origins: Vec<String>,
+    /// Explicit operator acknowledgment of served+inline (architecture.md
+    /// §6): this deployment is served (standalone, not embedded), so
+    /// enabling content-negotiated flow-init on `GET /login` means
+    /// credential entry gets proxied through a consuming service's origin.
+    /// Defaults to `false` — a served deployment stays redirect-only until
+    /// this is set.
+    pub allow_served_inline: bool,
 }
 
 impl ServerConfig {
@@ -49,6 +56,9 @@ impl ServerConfig {
             .ok()
             .map(|v| v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
             .unwrap_or_default();
+        let allow_served_inline = std::env::var("SURGE_ALLOW_SERVED_INLINE")
+            .map(|v| v == "1")
+            .unwrap_or(false);
 
         Ok(Self {
             database_url,
@@ -59,6 +69,7 @@ impl ServerConfig {
             session_ttl_hours,
             registration,
             session_cors_origins,
+            allow_served_inline,
         })
     }
 

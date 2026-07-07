@@ -32,6 +32,30 @@ pub enum RegistrationMode {
     Closed,
 }
 
+/// A browser-facing API version this router knows how to serve. Grows
+/// (additive, minor) the day a version ships; shrinks (major bump) the day
+/// one is sunset — see architecture.md §3. Never a single `const VERSION`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ApiVersion {
+    V1,
+    V2,
+}
+
+impl ApiVersion {
+    fn path(self) -> &'static str {
+        match self {
+            ApiVersion::V1 => "/v1",
+            ApiVersion::V2 => "/v2",
+        }
+    }
+}
+
+/// Every version currently live and nested by [`BrowserRouter::into_axum`].
+/// Sessions minted under any of these must remain readable by all of them
+/// forever (architecture.md §2) — deleting an entry here is the sunset
+/// major-bump, not a routine edit.
+pub const SUPPORTED: &[ApiVersion] = &[ApiVersion::V1, ApiVersion::V2];
+
 /// Configuration for the mountable browser perimeter router. `engine` and
 /// `provider` are deliberately separate: `provider` is the trusted,
 /// unthrottled `AuthProvider` surface (auth/register/verify/revoke), while
@@ -57,6 +81,15 @@ pub struct BrowserRouterConfig {
     /// Origins `return_to` is allowed to target on `GET /login`.
     pub return_origins: Vec<String>,
     pub registration: RegistrationMode,
+    /// Enables content-negotiated flow-init on `GET /login`: with
+    /// `Accept: application/json`, return the flow inline as JSON instead of
+    /// redirecting to `auth_ui_origin`. Required for served+inline
+    /// (architecture.md §6) — leave `false` (the default posture for a
+    /// served, non-embedded deployment) unless the operator has explicitly
+    /// acknowledged the coarsened-rate-limiting tradeoff that comes with it.
+    /// Embedded consumers, which have no such tradeoff, may set this `true`
+    /// unconditionally.
+    pub allow_inline: bool,
 }
 
 struct AppState {
@@ -88,11 +121,22 @@ impl BrowserRouter {
         })
     }
 
+    /// Nests every version in [`SUPPORTED`] under its own path prefix, all
+    /// live simultaneously in the one router this crate exports
+    /// (architecture.md §3). There is no unprefixed default: a caller picks
+    /// its version by which path it calls, and none of them are ever
+    /// removed except at a major bump.
     pub fn into_axum(self) -> Router {
         let state = Arc::new(AppState {
             config: self.config,
         });
 
+        SUPPORTED.iter().fold(Router::new(), |router, version| {
+            router.nest(version.path(), Self::version_router(Arc::clone(&state)))
+        })
+    }
+
+    fn version_router(state: Arc<AppState>) -> Router {
         let credential_entry = Router::new()
             .route("/login", get(start_login))
             .route("/flows/{id}", get(get_flow))
@@ -148,6 +192,7 @@ struct LoginQuery {
 async fn start_login(
     State(state): State<Arc<AppState>>,
     Query(query): Query<LoginQuery>,
+    headers: axum::http::HeaderMap,
 ) -> Result<Response, ApiError> {
     let return_url = url::Url::parse(&query.return_to).map_err(|_| {
         AuthError::Validation(ValidationError::Field {
@@ -177,6 +222,32 @@ async fn start_login(
     }
 
     let flow = state.config.engine.create_login_flow(&query.return_to).await?;
+
+    // Content-negotiated flow-init (architecture.md §7.4): a caller asking
+    // for JSON gets the flow inline instead of a redirect. Gated behind
+    // `allow_inline` because for a served (non-embedded) deployment this is
+    // the served+inline combination (§6), which requires the operator's
+    // explicit acknowledgment; plain browser navigation (no `Accept` header)
+    // always gets the redirect regardless.
+    let wants_json = state.config.allow_inline
+        && headers
+            .get(axum::http::header::ACCEPT)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.contains("application/json"));
+
+    if wants_json {
+        return Ok(Json(json!({
+            "flow_id": flow.id,
+            "csrf_token": flow.csrf_token,
+            "registration_mode": match state.config.registration {
+                RegistrationMode::Open => "open",
+                RegistrationMode::Invite => "invite",
+                RegistrationMode::Closed => "closed",
+            },
+        }))
+        .into_response());
+    }
+
     let redirect_url = format!("{}/login?flow={}", state.config.auth_ui_origin, flow.id);
     Ok(Redirect::to(&redirect_url).into_response())
 }

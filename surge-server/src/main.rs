@@ -1,13 +1,10 @@
-mod api;
-mod cli;
-mod config;
-
 use std::sync::Arc;
 
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
 use surge::{AuthProvider, EmbeddedProvider};
+use surge_server::{cli, config};
 
 #[derive(Parser)]
 #[command(name = "surge-server", about = "Surge authentication server")]

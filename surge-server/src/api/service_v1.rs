@@ -1,3 +1,9 @@
+//! Service-facing v1. Retire this module (and its `/v1` mount in
+//! `api/mod.rs`) when every `RemoteProvider` caller has been confirmed on
+//! v2 — a service-token traffic counter on these routes, or a manifest of
+//! which service runs which crate version, showing zero v1 traffic for a
+//! sustained window. Not before: `service_v2` currently reuses these
+//! handlers, so check that a divergence hasn't been added there first.
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
@@ -15,31 +21,31 @@ use super::AppState;
 
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
-        .route("/v1/sessions/verify", post(verify_session))
-        .route("/v1/sessions/revoke", post(revoke_session))
+        .route("/sessions/verify", post(verify_session))
+        .route("/sessions/revoke", post(revoke_session))
         .route(
-            "/v1/identities/{id}/revoke-sessions",
+            "/identities/{id}/revoke-sessions",
             post(revoke_all_sessions),
         )
-        .route("/v1/identities/{id}", get(get_identity))
-        .route("/v1/identities", get(get_identity_by_username))
-        .route("/v1/identities/{id}/profile", patch(update_profile))
-        .route("/v1/register", post(register))
+        .route("/identities/{id}", get(get_identity))
+        .route("/identities", get(get_identity_by_username))
+        .route("/identities/{id}/profile", patch(update_profile))
+        .route("/register", post(register))
         .route(
-            "/v1/register-and-authenticate",
+            "/register-and-authenticate",
             post(register_and_authenticate),
         )
-        .route("/v1/authenticate/password", post(authenticate_password))
+        .route("/authenticate/password", post(authenticate_password))
         .layer(middleware::from_fn_with_state(state.clone(), service_auth))
         .with_state(state)
 }
 
 #[derive(Deserialize)]
-struct TokenBody {
+pub(crate) struct TokenBody {
     token: String,
 }
 
-async fn verify_session(
+pub(crate) async fn verify_session(
     State(state): State<Arc<AppState>>,
     Extension(auth): Extension<ServiceAuth>,
     Json(body): Json<TokenBody>,
@@ -66,7 +72,7 @@ async fn verify_session(
     Ok(Json(serde_json::to_value(&session).unwrap()))
 }
 
-async fn revoke_session(
+pub(crate) async fn revoke_session(
     State(state): State<Arc<AppState>>,
     Extension(auth): Extension<ServiceAuth>,
     Json(body): Json<TokenBody>,
@@ -79,7 +85,7 @@ async fn revoke_session(
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
-async fn revoke_all_sessions(
+pub(crate) async fn revoke_all_sessions(
     State(state): State<Arc<AppState>>,
     Extension(auth): Extension<ServiceAuth>,
     Path(id): Path<uuid::Uuid>,
@@ -91,7 +97,7 @@ async fn revoke_all_sessions(
     Ok(Json(json!({"revoked": revoked})))
 }
 
-async fn get_identity(
+pub(crate) async fn get_identity(
     State(state): State<Arc<AppState>>,
     Extension(auth): Extension<ServiceAuth>,
     Path(id): Path<uuid::Uuid>,
@@ -103,11 +109,11 @@ async fn get_identity(
 }
 
 #[derive(Deserialize)]
-struct UsernameQuery {
+pub(crate) struct UsernameQuery {
     username: String,
 }
 
-async fn get_identity_by_username(
+pub(crate) async fn get_identity_by_username(
     State(state): State<Arc<AppState>>,
     Extension(auth): Extension<ServiceAuth>,
     Query(query): Query<UsernameQuery>,
@@ -134,7 +140,7 @@ async fn get_identity_by_username(
     Ok(Json(serde_json::to_value(&identity).unwrap()))
 }
 
-async fn update_profile(
+pub(crate) async fn update_profile(
     State(state): State<Arc<AppState>>,
     Extension(auth): Extension<ServiceAuth>,
     Path(id): Path<uuid::Uuid>,
@@ -150,13 +156,13 @@ async fn update_profile(
 }
 
 #[derive(Deserialize)]
-struct RegisterBody {
+pub(crate) struct RegisterBody {
     username: String,
     password: String,
     display_name: String,
 }
 
-async fn register(
+pub(crate) async fn register(
     State(state): State<Arc<AppState>>,
     Extension(auth): Extension<ServiceAuth>,
     Json(body): Json<RegisterBody>,
@@ -171,7 +177,7 @@ async fn register(
     ))
 }
 
-async fn register_and_authenticate(
+pub(crate) async fn register_and_authenticate(
     State(state): State<Arc<AppState>>,
     Extension(auth): Extension<ServiceAuth>,
     Json(body): Json<RegisterBody>,
@@ -189,7 +195,7 @@ async fn register_and_authenticate(
     ))
 }
 
-fn parse_register_body(body: RegisterBody) -> Result<RegisterRequest, AuthError> {
+pub(crate) fn parse_register_body(body: RegisterBody) -> Result<RegisterRequest, AuthError> {
     let username = Username::new(&body.username)
         .map_err(|e| AuthError::Validation(ValidationError::from(e)))?;
     let password = Password::new(secrecy::SecretString::from(body.password))
@@ -203,12 +209,12 @@ fn parse_register_body(body: RegisterBody) -> Result<RegisterRequest, AuthError>
 }
 
 #[derive(Deserialize)]
-struct AuthenticateBody {
+pub(crate) struct AuthenticateBody {
     username: String,
     password: String,
 }
 
-async fn authenticate_password(
+pub(crate) async fn authenticate_password(
     State(state): State<Arc<AppState>>,
     Extension(auth): Extension<ServiceAuth>,
     Json(body): Json<AuthenticateBody>,
