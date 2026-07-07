@@ -264,8 +264,8 @@ async fn lane1_mint_browser_introspect_browser_across_versions() {
     let password = register_identity(&app, &token, &username).await;
 
     let raw = mint_browser(&app, "v1", &username, &password).await;
-    let resp = whoami_browser(&app, "v2", &raw).await;
-    assert_eq!(resp.status(), StatusCode::OK, "v1-minted session must resolve on v2 whoami");
+    let resp = whoami_browser(&app, "v1", &raw).await;
+    assert_eq!(resp.status(), StatusCode::OK, "browser-minted session must resolve on browser whoami");
     let session = body_json(resp).await;
     assert_eq!(session["identity"]["username"], username);
 }
@@ -289,16 +289,17 @@ async fn lane2_mint_service_introspect_service_across_versions() {
 async fn lane3_mint_one_surface_introspect_the_other() {
     let (app, _engine, token) = test_app().await;
 
-    // direction A: mint browser-facing (v2), introspect service-facing (v1) —
-    // the RemoteProvider-facing failure mode described in architecture.md §2.
+    // direction A: mint browser-facing (v1), introspect service-facing (v1).
+    // The browser surface now only serves v1; cross-version coverage for
+    // the service-facing surface is handled by lane 2.
     let username_a = format!("lane3a-{}", rand_suffix());
     let password_a = register_identity(&app, &token, &username_a).await;
-    let raw_a = mint_browser(&app, "v2", &username_a, &password_a).await;
+    let raw_a = mint_browser(&app, "v1", &username_a, &password_a).await;
     let resp_a = verify_service(&app, "v1", &token, &raw_a).await;
     assert_eq!(
         resp_a.status(),
         StatusCode::OK,
-        "browser-minted (v2) session must resolve via service-facing verify (v1)"
+        "browser-minted (v1) session must resolve via service-facing verify (v1)"
     );
 
     // direction B: mint service-facing (v2), introspect browser-facing (v1).

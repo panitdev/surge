@@ -32,30 +32,6 @@ pub enum RegistrationMode {
     Closed,
 }
 
-/// A browser-facing API version this router knows how to serve. Grows
-/// (additive, minor) the day a version ships; shrinks (major bump) the day
-/// one is sunset — see architecture.md §3. Never a single `const VERSION`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ApiVersion {
-    V1,
-    V2,
-}
-
-impl ApiVersion {
-    fn path(self) -> &'static str {
-        match self {
-            ApiVersion::V1 => "/v1",
-            ApiVersion::V2 => "/v2",
-        }
-    }
-}
-
-/// Every version currently live and nested by [`BrowserRouter::into_axum`].
-/// Sessions minted under any of these must remain readable by all of them
-/// forever (architecture.md §2) — deleting an entry here is the sunset
-/// major-bump, not a routine edit.
-pub const SUPPORTED: &[ApiVersion] = &[ApiVersion::V1, ApiVersion::V2];
-
 /// Configuration for the mountable browser perimeter router. `engine` and
 /// `provider` are deliberately separate: `provider` is the trusted,
 /// unthrottled `AuthProvider` surface (auth/register/verify/revoke), while
@@ -121,34 +97,41 @@ impl BrowserRouter {
         })
     }
 
-    /// Nests every version in [`SUPPORTED`] under its own path prefix, all
-    /// live simultaneously in the one router this crate exports
-    /// (architecture.md §3). There is no unprefixed default: a caller picks
-    /// its version by which path it calls, and none of them are ever
-    /// removed except at a major bump.
+    /// Builds the mounted browser router at `/v1`. There is no unprefixed
+    /// default (architecture.md §3): a caller explicitly picks its version
+    /// by which path it calls. Currently only V1 is live; future versions
+    /// will be added as nested sub-routers here when they ship.
     pub fn into_axum(self) -> Router {
-        let state = Arc::new(AppState {
-            config: self.config,
-        });
+        Router::new().nest("/v1", V1Router::new(self.config).into_router())
+    }
+}
 
-        SUPPORTED.iter().fold(Router::new(), |router, version| {
-            router.nest(version.path(), Self::version_router(Arc::clone(&state)))
-        })
+/// The v1 browser-facing perimeter router — credential entry (login, flows)
+/// and session management (whoami, logout), each with its own CORS zone.
+struct V1Router {
+    state: Arc<AppState>,
+}
+
+impl V1Router {
+    fn new(config: Arc<BrowserRouterConfig>) -> Self {
+        Self {
+            state: Arc::new(AppState { config }),
+        }
     }
 
-    fn version_router(state: Arc<AppState>) -> Router {
+    fn into_router(self) -> Router {
         let credential_entry = Router::new()
             .route("/login", get(start_login))
             .route("/flows/{id}", get(get_flow))
             .route("/flows/{id}/password", post(submit_password))
             .route("/flows/{id}/register", post(submit_register))
-            .layer(cors::narrow(&state.config.auth_ui_origin))
-            .with_state(Arc::clone(&state));
+            .layer(cors::narrow(&self.state.config.auth_ui_origin))
+            .with_state(Arc::clone(&self.state));
 
-        let session_cors = if state.config.session_cors_origins.is_empty() {
-            cors::narrow(&state.config.auth_ui_origin)
+        let session_cors = if self.state.config.session_cors_origins.is_empty() {
+            cors::narrow(&self.state.config.auth_ui_origin)
         } else {
-            cors::union(&state.config.session_cors_origins)
+            cors::union(&self.state.config.session_cors_origins)
         };
 
         let session_management = Router::new()
@@ -158,7 +141,7 @@ impl BrowserRouter {
                 post(logout).layer(middleware::from_fn(require_header_csrf)),
             )
             .layer(session_cors)
-            .with_state(state);
+            .with_state(self.state);
 
         Router::new()
             .merge(credential_entry)

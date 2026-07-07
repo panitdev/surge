@@ -9,5 +9,5 @@ mod csrf;
 mod error;
 pub mod rate_limit;
 
-pub use browser::{browser, ApiVersion, BrowserRouter, BrowserRouterConfig, RegistrationMode, SUPPORTED};
+pub use browser::{browser, BrowserRouter, BrowserRouterConfig, RegistrationMode};
 pub use rate_limit::{PostgresRateLimiter, RateLimitConfig, RateLimitPolicy, RateLimiter};
