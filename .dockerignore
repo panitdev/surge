@@ -11,3 +11,8 @@ README.md
 .env
 .env.*
 !.env.example
+node_modules
+docs
+internal
+package.json
+bun.lock
