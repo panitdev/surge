@@ -1,23 +1,40 @@
 ---
-description: What Surge is, the two surfaces it exposes, and who each one is for.
+description: What Surge is, what it does for your application, and how to use it.
 ---
 
 # What is Surge
 
-Surge is an authentication engine. It exposes two surfaces that share a process and a database, but not a caller population, an auth mechanism, or a versioning strategy:
+Surge is an authentication engine you embed into your Rust web application or run as a standalone server. It handles user login flows, session management, password authentication, and service-to-service auth — so you don't have to build it yourself.
 
-| | Browser-facing | Service-facing |
-| --- | --- | --- |
-| Caller | SPA frontend (login/registration UI) | Backend services |
-| Auth | Session cookie | Bearer service token |
-| Path shape | `{mount}/v1/…`, `{mount}/v2/…` — multiple versions live at once | `/v1/…`, one version compiled into the caller |
+## How you use it
 
-These are two different answers to two different problems, not two maturity levels of the same idea.
+There are two ways to integrate Surge into your stack:
 
-## The one invariant that spans both
+**Embedded** — Add Surge as a dependency in your Axum application. Surge runs in the same process, sharing your database, and you mount its routes at a path of your choice. No separate deployment, no network hop for auth.
 
-**Surface may break across versions. Behavior may not, ever.**
+**Server** — Run `surge-server` as a standalone service. Your applications connect via HTTP using service tokens (Bearer auth). The server manages sessions and identities centrally.
 
-A session or token is a set of truths the engine makes true — an identity is bound to this cookie, this session exists. Once minted, on either surface, at any version, every reader owes that session the same truth. The substrate grows only by nullable, additive change; it never gets redefined out from under a caller.
+Both modes use the same database and the same session model. You can even mix them — embed Surge in one service while other services talk to the central server.
 
-See [Architecture](/guide/architecture) for how each surface implements this.
+## What Surge handles
+
+| Capability | Description |
+|---|---|
+| Login flows | Redirect-based and inline login with CSRF protection |
+| Session management | Cookie-based sessions with mint, verify, revoke, expiry, and garbage collection |
+| Service auth | Bearer token auth for backend-to-backend calls, with grant-based permissions |
+| Password auth | Argon2id hashing with secret pepper, validation rules, timing-safe comparisons |
+| Identity management | Create, update profile, enable/disable accounts, search by username |
+| Rate limiting | Per-IP and per-username windowed counters (Postgres-backed) |
+| Audit logging | Structured event trail for security and compliance |
+| Registration modes | Open registration, invite-only, or closed |
+
+## The stability guarantee
+
+Once Surge mints a session or token, that session or token means the same thing for its entire lifetime. Future versions of Surge may change API shapes, paths, or response formats, but they will never break the meaning of an already-minted credential. This guarantee holds regardless of which API version minted it.
+
+## Next steps
+
+- [Quickstart](/guide/quickstart) — get Surge running in five minutes
+- [Architecture](/guide/architecture) — how the stability guarantee works
+- [Login Flows](/features/login-flows) — how users sign in and register
