@@ -2,6 +2,10 @@ import { defineConfig } from 'vitepress'
 import llmstxt from 'vitepress-plugin-llms'
 
 // --- DEPLOY TARGET (change these two together to retarget) ---
+// Deployed to Cloudflare Pages (direct-upload from CI, not CF's own build)
+// and served at docs.panit.dev/surge/ via an org-level route/proxy that this
+// repo does not own or configure. This repo only ever emits static output
+// under the /surge/ base — it must never claim docs.panit.dev itself.
 const BASE = '/surge/'
 const DOMAIN = 'https://docs.panit.dev'
 // -------------------------------------------------------------
