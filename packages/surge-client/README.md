@@ -1,4 +1,4 @@
-# @panitdev/surge-client
+# @panit/surge-client
 
 Browser client for the [Surge](https://docs.surge.panit.dev) authentication API. Covers the full browser-facing v1 surface: login flows (init, inspect, password, register) and session management (whoami, logout).
 
@@ -7,13 +7,15 @@ The service API (`Authorization: Bearer aeg_svc_...` endpoints) is intentionally
 ## Install
 
 ```bash
-bun add @panitdev/surge-client
+bunx jsr add @panit/surge-client
+# or
+npx jsr add @panit/surge-client
 ```
 
 ## Usage
 
 ```ts
-import { SurgeClient, SurgeError } from "@panitdev/surge-client";
+import { SurgeClient, SurgeError } from "@panit/surge-client";
 
 const surge = new SurgeClient({ baseUrl: "https://auth.example.com" });
 ```

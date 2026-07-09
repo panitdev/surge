@@ -1,19 +1,19 @@
 ---
-description: Using the @panitdev/surge-client browser package to integrate Surge authentication into frontend applications.
+description: Using the @panit/surge-client browser package to integrate Surge authentication into frontend applications.
 ---
 
 # Surge Client (Browser)
 
-`@panitdev/surge-client` is the official browser package for the Surge authentication API. It covers the full browser-facing v1 surface — login flows (init, inspect, password, register) and session management (whoami, logout) — all using cookie-based sessions with `credentials: "include"`.
+`@panit/surge-client` is the official browser package for the Surge authentication API. It covers the full browser-facing v1 surface — login flows (init, inspect, password, register) and session management (whoami, logout) — all using cookie-based sessions with `credentials: "include"`.
 
 The service API (`Authorization: Bearer aeg_svc_...` endpoints) is intentionally not included. Service tokens must never be shipped to a browser.
 
 ## Install
 
 ```bash
-bun add @panitdev/surge-client
+bunx jsr add @panit/surge-client
 # or
-npm install @panitdev/surge-client
+npx jsr add @panit/surge-client
 ```
 
 ## Setup
@@ -21,7 +21,7 @@ npm install @panitdev/surge-client
 Import the client and point it at your Surge server:
 
 ```ts
-import { SurgeClient, SurgeError } from "@panitdev/surge-client";
+import { SurgeClient, SurgeError } from "@panit/surge-client";
 
 const surge = new SurgeClient({
   baseUrl: "https://auth.example.com",
@@ -47,7 +47,7 @@ Surge redirects to the auth UI, and after the user authenticates, it redirects b
 For single-page applications, use inline mode to drive login without full-page navigations. Requires `allow_inline` on the server.
 
 ```ts
-import { SurgeClient, SurgeError } from "@panitdev/surge-client";
+import { SurgeClient, SurgeError } from "@panit/surge-client";
 
 const surge = new SurgeClient({ baseUrl: "https://auth.example.com" });
 
@@ -174,5 +174,5 @@ import type {
   Session, Identity,
   PasswordSubmit, RegisterSubmit,
   SurgeErrorCode,
-} from "@panitdev/surge-client";
+} from "@panit/surge-client";
 ```
