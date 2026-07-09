@@ -46,6 +46,7 @@ export default defineConfig({
       {
         text: 'Integration',
         items: [
+          { text: 'Surge Client (Browser)', link: '/integration/surge-client' },
           { text: 'Embedding in Axum', link: '/integration/embedding' },
           { text: 'Running as a Server', link: '/integration/running-as-server' },
           { text: 'Configuration', link: '/integration/configuration' },
