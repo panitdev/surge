@@ -30,11 +30,14 @@
     "url": "https://github.com/panit-dev/surge",
     "directory": "packages/surge-client"
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
-    "prepublishOnly": "bun run build"
+    "prepublishOnly": "bun test && bun run build"
   },
   "devDependencies": {
     "@types/bun": "^1",
