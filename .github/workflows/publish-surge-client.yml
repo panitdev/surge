@@ -3,7 +3,7 @@ name: Publish @panit/surge-client
 on:
   push:
     tags:
-      - "surge-client-v*"
+      - "@panit/surge-client@*"
   workflow_dispatch:
 
 concurrency:
@@ -36,10 +36,10 @@ jobs:
         working-directory: packages/surge-client
         run: |
           VERSION=$(node -p "require('./jsr.json').version")
-          TAG="${GITHUB_REF_NAME#surge-client-v}"
+          TAG="${GITHUB_REF_NAME#@panit/surge-client@}"
 
           if [ "$VERSION" != "$TAG" ]; then
-            echo "Tag surge-client-v$TAG does not match jsr.json version $VERSION"
+            echo "Tag @panit/surge-client@$TAG does not match jsr.json version $VERSION"
             exit 1
           fi
 
