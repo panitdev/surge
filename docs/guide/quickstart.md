@@ -37,7 +37,7 @@ On first run, Surge automatically runs its schema migrations. You'll see:
 Service tokens let backend services call Surge's API. Create one:
 
 ```bash
-cargo run -p surge-server -- svc create my-service
+cargo run -p surge-server -- svc create --name my-service
 ```
 
 Output:

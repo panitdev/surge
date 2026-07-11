@@ -118,7 +118,9 @@ export SURGE_REGISTRATION=invite
 export SURGE_REGISTRATION=open
 ```
 
-After restarting (or reloading config), the new mode takes effect. No database migration is needed. Existing invite codes remain valid regardless of the current mode — switching to `open` doesn't revoke outstanding invites, and switching to `closed` doesn't delete them.
+After restarting (or reloading config), the new mode takes effect. No database migration is needed.
+
+Note: invite codes aren't creatable yet (see [Invite](#invite)), so there's nothing to migrate around for `invite` mode today.
 
 ## How modes affect the login flow UI
 
@@ -127,7 +129,7 @@ The flow-init response always includes `registration_mode`, which tells the fron
 | Mode | Flow init value | Frontend shows |
 |---|---|---|
 | `open` | `"registration_mode": "open"` | Login form + "Sign up" link |
-| `invite` | `"registration_mode": "invite"` | Login form + gated "Sign up (invite required)" |
+| `invite` | `"registration_mode": "invite"` | Login form + gated "Sign up (invite required)" — mode is accepted, but registration isn't yet functional (see [Invite](#invite)) |
 | `closed` | `"registration_mode": "closed"` | Login form only |
 
 The frontend is responsible for reading this value and rendering the appropriate UI. Surge doesn't serve UI — it only exposes the data that tells the UI what to render.

@@ -1,22 +1,22 @@
 ---
 layout: home
-description: Surge is an authentication engine with a browser-facing router and a service-facing API, sharing one session substrate.
+description: Surge is an authentication engine you embed into your Rust app or run as a standalone SSO server — handling login, sessions, and service auth so you don't have to build it yourself.
 hero:
   name: Surge
   text: Authentication engine
-  tagline: A shared session substrate exposed through a browser-facing router and a service-facing API.
+  tagline: Login flows, sessions, and service-to-service auth for your Rust app — embedded in-process or run centrally as SSO.
   actions:
     - theme: brand
       text: Introduction
       link: /guide/introduction
     - theme: alt
-      text: Architecture
-      link: /guide/architecture
+      text: Quickstart
+      link: /guide/quickstart
 features:
-  - title: Two surfaces, one substrate
-    details: A browser-facing router for SPA frontends and a service-facing API for backend callers, both reading and writing the same session/token substrate.
-  - title: Versioned without breaking behavior
-    details: Surface (paths, shapes) may change across versions. Behavior — what a session or token means once minted — never does.
-  - title: Built for embedding
-    details: Consuming services can mount the same router at their own path and run one engine instance against one database of record.
+  - title: Embed it, or run it centrally
+    details: Add Surge as a dependency in your Axum app with zero extra infrastructure, or run surge-server as a shared SSO service for multiple applications. Same database, same session model, either way.
+  - title: Handles the hard parts
+    details: Login flows, cookie-based sessions, Argon2id password hashing, service tokens, rate limiting, and audit logging — built in, not bolted on.
+  - title: Sessions that don't break
+    details: Once Surge mints a session or token, it keeps meaning the same thing for its lifetime. Upgrading Surge never invalidates credentials already issued.
 ---
