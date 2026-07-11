@@ -77,6 +77,7 @@ async fn test_app() -> (axum::Router, Arc<surge_engine::Engine>, String) {
         registration: surge::router::RegistrationMode::Open,
         session_cors_origins: vec![],
         allow_served_inline: true,
+        hydra_bridge: None,
     });
 
     let app = surge_server::api::router(Arc::clone(&engine), provider, config)

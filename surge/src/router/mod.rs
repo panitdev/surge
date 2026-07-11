@@ -7,7 +7,9 @@ mod cookie;
 mod cors;
 mod csrf;
 mod error;
+mod oauth_bridge;
 pub mod rate_limit;
 
 pub use browser::{browser, BrowserRouter, BrowserRouterConfig, RegistrationMode};
+pub use oauth_bridge::OauthBridgeConfig;
 pub use rate_limit::{PostgresRateLimiter, RateLimitConfig, RateLimitPolicy, RateLimiter};

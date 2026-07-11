@@ -66,6 +66,12 @@ pub struct BrowserRouterConfig {
     /// Embedded consumers, which have no such tradeoff, may set this `true`
     /// unconditionally.
     pub allow_inline: bool,
+    /// Opt-in Hydra login/consent bridge (rfc.md). `None` (the default):
+    /// no `/v1/oauth/*` routes are mounted and Hydra is never contacted.
+    /// `Some`: mounts the bridge inside this same `/v1` perimeter, which
+    /// structurally guarantees it only ever runs alongside the flow state
+    /// (`Engine`) it needs — a `RemoteProvider`-only consumer has neither.
+    pub oauth_bridge: Option<super::OauthBridgeConfig>,
 }
 
 struct AppState {
@@ -102,7 +108,15 @@ impl BrowserRouter {
     /// by which path it calls. Currently only V1 is live; future versions
     /// will be added as nested sub-routers here when they ship.
     pub fn into_axum(self) -> Router {
-        Router::new().nest("/v1", V1Router::new(self.config).into_router())
+        let oauth_bridge = self.config.oauth_bridge.clone();
+        let mut v1 = V1Router::new(Arc::clone(&self.config)).into_router();
+        if let Some(bridge_config) = oauth_bridge {
+            v1 = v1.merge(super::oauth_bridge::router(
+                Arc::clone(&self.config.provider),
+                bridge_config,
+            ));
+        }
+        Router::new().nest("/v1", v1)
     }
 }
 

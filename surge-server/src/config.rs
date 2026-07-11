@@ -23,6 +23,16 @@ pub struct ServerConfig {
     /// Defaults to `false` — a served deployment stays redirect-only until
     /// this is set.
     pub allow_served_inline: bool,
+    /// Opt-in Hydra login/consent bridge (rfc.md). `None` unless
+    /// `SURGE_HYDRA_ADMIN_URL` is set — presence of that URL is the
+    /// on-switch, no separate boolean flag.
+    pub hydra_bridge: Option<HydraBridgeConfig>,
+}
+
+pub struct HydraBridgeConfig {
+    pub admin_url: url::Url,
+    pub admin_timeout: Duration,
+    pub bridge_origin: String,
 }
 
 impl ServerConfig {
@@ -59,6 +69,29 @@ impl ServerConfig {
         let allow_served_inline = std::env::var("SURGE_ALLOW_SERVED_INLINE")
             .map(|v| v == "1")
             .unwrap_or(false);
+        let hydra_bridge = match std::env::var("SURGE_HYDRA_ADMIN_URL").ok() {
+            Some(admin_url) => {
+                let admin_url = url::Url::parse(&admin_url)
+                    .map_err(|e| anyhow::anyhow!("SURGE_HYDRA_ADMIN_URL is not a valid URL: {e}"))?;
+                let bridge_origin = std::env::var("SURGE_HYDRA_BRIDGE_ORIGIN").map_err(|_| {
+                    anyhow::anyhow!(
+                        "SURGE_HYDRA_ADMIN_URL is set but SURGE_HYDRA_BRIDGE_ORIGIN is not; \
+                         the bridge needs this server's own public origin to build its \
+                         return_to callback"
+                    )
+                })?;
+                let admin_timeout_secs: u64 = std::env::var("SURGE_HYDRA_ADMIN_TIMEOUT_SECS")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(10);
+                Some(HydraBridgeConfig {
+                    admin_url,
+                    admin_timeout: Duration::from_secs(admin_timeout_secs),
+                    bridge_origin,
+                })
+            }
+            None => None,
+        };
 
         Ok(Self {
             database_url,
@@ -70,6 +103,7 @@ impl ServerConfig {
             registration,
             session_cors_origins,
             allow_served_inline,
+            hydra_bridge,
         })
     }
 

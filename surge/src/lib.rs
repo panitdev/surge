@@ -1,4 +1,5 @@
 mod extract;
+pub mod hydra;
 mod remote;
 mod traits;
 

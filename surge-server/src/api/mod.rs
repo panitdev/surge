@@ -57,6 +57,18 @@ fn check_startup_coherence(config: &ServerConfig, return_origins: &[String]) -> 
         );
     }
 
+    if let Some(bridge) = &config.hydra_bridge {
+        if !return_origins.iter().any(|o| o == &bridge.bridge_origin) {
+            anyhow::bail!(
+                "SURGE_HYDRA_ADMIN_URL is set but SURGE_HYDRA_BRIDGE_ORIGIN ({}) is not among \
+                 registered return_origins; the bridge's own return_to callback would be \
+                 rejected by GET /v1/login's origin check, silently breaking every login \
+                 challenge. Register it with `surge-server svc create --origin`.",
+                bridge.bridge_origin
+            );
+        }
+    }
+
     Ok(())
 }
 
@@ -82,6 +94,14 @@ pub async fn router(
         RateLimitConfig::default(),
     ));
 
+    let oauth_bridge = config.hydra_bridge.as_ref().map(|bridge| {
+        surge::router::OauthBridgeConfig {
+            hydra_admin_url: bridge.admin_url.clone(),
+            hydra_admin_timeout: bridge.admin_timeout,
+            bridge_origin: bridge.bridge_origin.clone(),
+        }
+    });
+
     let browser_router = browser(BrowserRouterConfig {
         engine: Arc::clone(&engine),
         provider: Arc::clone(&provider),
@@ -93,6 +113,7 @@ pub async fn router(
         return_origins,
         registration: config.registration,
         allow_inline: config.allow_served_inline,
+        oauth_bridge,
     });
 
     browser_router.spawn_maintenance(Duration::from_secs(15 * 60));
