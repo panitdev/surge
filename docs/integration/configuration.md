@@ -186,6 +186,8 @@ The bridge mounts two routes:
 - `GET /v1/oauth/login` — handles Hydra login challenges
 - `GET /v1/oauth/consent` — handles Hydra consent challenges (auto-accepted for first-party clients)
 
+See [Hydra OAuth Bridge](/integration/hydra-oauth-bridge) for the full request-flow walkthrough, subject-identity and cookie-separation guarantees, and non-goals.
+
 ## Embedded config conversion
 
 `ServerConfig` provides an `embedded_config()` method that extracts the subset of settings relevant to an embedded provider:

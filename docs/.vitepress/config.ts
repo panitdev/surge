@@ -51,6 +51,7 @@ export default defineConfig({
           { text: 'Running as a Server', link: '/integration/running-as-server' },
           { text: 'Configuration', link: '/integration/configuration' },
           { text: 'Registration Modes', link: '/integration/registration-modes' },
+          { text: 'Hydra OAuth Bridge', link: '/integration/hydra-oauth-bridge' },
           { text: 'Migration', link: '/integration/migration' },
         ],
       },
