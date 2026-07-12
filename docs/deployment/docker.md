@@ -64,6 +64,9 @@ docker run ... ghcr.io/panitdev/surge:latest serve
 | `DATABASE_URL` | Yes | Postgres connection string |
 | `SURGE_PEPPER` | Yes | Must not be `dev-pepper-change-me` in production |
 | `SURGE_BIND` | No | Default: `0.0.0.0:3000` (set in Dockerfile) |
+| `SURGE_HYDRA_ADMIN_URL` | No | Ory Hydra admin API base URL; setting this enables the Hydra login/consent bridge |
+| `SURGE_HYDRA_BRIDGE_ORIGIN` | No (but required if `SURGE_HYDRA_ADMIN_URL` is set) | This server's own public origin for the bridge's `return_to` callback |
+| `SURGE_HYDRA_ADMIN_TIMEOUT_SECS` | No | Timeout in seconds for Hydra admin API requests (default: 10) |
 
 All other configuration variables are optional and fall back to defaults. See [Configuration Reference](/integration/configuration) for the full list.
 

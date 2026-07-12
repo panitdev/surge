@@ -39,6 +39,11 @@ SURGE_SESSION_CORS_ORIGINS=""
 
 # Inline flow-init — safe to enable for local dev
 SURGE_ALLOW_SERVED_INLINE=1
+
+# Hydra OAuth bridge — unset for local dev unless you run Hydra locally
+# SURGE_HYDRA_ADMIN_URL="http://localhost:4434"
+# SURGE_HYDRA_BRIDGE_ORIGIN="http://localhost:3000"
+# SURGE_HYDRA_ADMIN_TIMEOUT_SECS=10
 ```
 
 ### Development workflow
@@ -81,6 +86,11 @@ SURGE_SESSION_CORS_ORIGINS="https://auth.staging.example.com,https://app.staging
 
 # Inline flow-init — test with same settings as production
 SURGE_ALLOW_SERVED_INLINE=0
+
+# Hydra OAuth bridge — enable on staging to test the login/consent round-trip
+SURGE_HYDRA_ADMIN_URL="http://hydra:4434"
+SURGE_HYDRA_BRIDGE_ORIGIN="https://auth.staging.example.com"
+SURGE_HYDRA_ADMIN_TIMEOUT_SECS=10
 ```
 
 ### Staging checklist
@@ -128,6 +138,11 @@ SURGE_SESSION_CORS_ORIGINS="https://auth.example.com,https://app.example.com,htt
 
 # Inline flow-init — disabled on served deployments
 SURGE_ALLOW_SERVED_INLINE=0
+
+# Hydra OAuth bridge — admin URL from vault, bridge origin matches auth UI
+SURGE_HYDRA_ADMIN_URL="http://hydra:4434"
+SURGE_HYDRA_BRIDGE_ORIGIN="https://auth.example.com"
+SURGE_HYDRA_ADMIN_TIMEOUT_SECS=10
 ```
 
 ### Production hardening
@@ -140,6 +155,8 @@ SURGE_ALLOW_SERVED_INLINE=0
 | CORS origins | Explicit whitelist | Never use wildcards on credentialed endpoints |
 | Served inline | `false` | Keep credential entry on Surge's origin, not the app's |
 | Bind address | `0.0.0.0:3000` behind a reverse proxy | Reverse proxy handles TLS termination |
+| Hydra bridge origin | Registered as a `return_origin` | Startup coherence check rejects requests if `SURGE_HYDRA_BRIDGE_ORIGIN` isn't in the allowlist |
+| Hydra admin timeout | 10 seconds | Tune for your network; timeout prevents hung login challenges |
 
 Never run production with `SURGE_PEPPER="dev-pepper-change-me"` — it is a public, well-known value, and Surge does not detect or warn about it at startup, so this is on you to enforce in your deployment pipeline.
 
@@ -216,6 +233,7 @@ Surge validates configuration before accepting traffic. These checks run on ever
 // 3. Registration mode is parseable
 // 4. Pepper is not the dev default in production (warn)
 // 5. Served inline is acknowledged by the operator (warn)
+// 6. Hydra bridge origin (if set) is among registered return_origins (error)
 ```
 
 Failing checks either abort startup (hard errors) or log warnings (soft issues). Hard errors prevent Surge from starting — fix them before the server can accept traffic. Warnings are informational but should be addressed before production deployment.

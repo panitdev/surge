@@ -29,6 +29,9 @@ Most configuration is read from environment variables:
 | `SURGE_REGISTRATION` | `open` | Registration mode: `open`, `invite`, or `closed` |
 | `SURGE_SESSION_CORS_ORIGINS` | (empty) | Comma-separated origins for CORS session-management zone |
 | `SURGE_ALLOW_SERVED_INLINE` | `false` | Allow inline flow-init responses on served deployments |
+| `SURGE_HYDRA_ADMIN_URL` | (unset) | Ory Hydra admin API base URL (e.g. `http://hydra:4434`); setting this enables the Hydra login/consent bridge |
+| `SURGE_HYDRA_BRIDGE_ORIGIN` | (required if `SURGE_HYDRA_ADMIN_URL` is set) | This server's own public origin for the bridge's `return_to` callback (e.g. `https://auth.example.com`) |
+| `SURGE_HYDRA_ADMIN_TIMEOUT_SECS` | `10` | Timeout in seconds for Hydra admin API requests |
 
 ### Minimal start
 

@@ -23,6 +23,9 @@ Here is the complete reference:
 | `SURGE_REGISTRATION` | `open` | Registration mode (`open`, `invite`, `closed`) |
 | `SURGE_SESSION_CORS_ORIGINS` | empty | Comma-separated origins for credentialed CORS |
 | `SURGE_ALLOW_SERVED_INLINE` | `false` | Allow inline flow-init on served deployments |
+| `SURGE_HYDRA_ADMIN_URL` | (unset) | Ory Hydra admin API base URL; setting this enables the Hydra login/consent bridge |
+| `SURGE_HYDRA_BRIDGE_ORIGIN` | (required if `SURGE_HYDRA_ADMIN_URL` is set) | This server's own public origin for the bridge's `return_to` callback |
+| `SURGE_HYDRA_ADMIN_TIMEOUT_SECS` | `10` | Timeout in seconds for Hydra admin API requests |
 
 ## Database connection
 
@@ -166,6 +169,23 @@ export SURGE_ALLOW_SERVED_INLINE=0
 
 When enabled on a served deployment, credential entry is proxied through the consuming service's origin — Surge sees that service's IP, not the browser's. This coarsens per-IP rate limiting. Embedded consumers can enable this unconditionally (there is no such tradeoff when Surge runs in-process).
 
+## Hydra OAuth bridge (`SURGE_HYDRA_ADMIN_URL`, `SURGE_HYDRA_BRIDGE_ORIGIN`, `SURGE_HYDRA_ADMIN_TIMEOUT_SECS`)
+
+The Hydra login/consent bridge connects Surge to Ory Hydra as an OAuth 2.1 authorization server (see [rfc.md](/rfc.md)). It is opt-in — setting `SURGE_HYDRA_ADMIN_URL` is the on-switch; when unset, no bridge routes are mounted and Hydra is never contacted.
+
+```bash
+# Enable the bridge (all three are needed together)
+export SURGE_HYDRA_ADMIN_URL="http://hydra:4434"
+export SURGE_HYDRA_BRIDGE_ORIGIN="https://auth.example.com"
+export SURGE_HYDRA_ADMIN_TIMEOUT_SECS=10
+```
+
+`SURGE_HYDRA_ADMIN_URL` must point at Hydra's admin API (typically port `4434`, not the public port `4433`). `SURGE_HYDRA_BRIDGE_ORIGIN` is this server's own public origin — it must match a registered return origin or startup coherence will reject it with a hard error. `SURGE_HYDRA_ADMIN_TIMEOUT_SECS` controls the timeout for outbound requests to Hydra (default 10 seconds).
+
+The bridge mounts two routes:
+- `GET /v1/oauth/login` — handles Hydra login challenges
+- `GET /v1/oauth/consent` — handles Hydra consent challenges (auto-accepted for first-party clients)
+
 ## Embedded config conversion
 
 `ServerConfig` provides an `embedded_config()` method that extracts the subset of settings relevant to an embedded provider:
@@ -194,6 +214,9 @@ SURGE_SESSION_TTL_HOURS=72
 SURGE_REGISTRATION=open
 SURGE_SESSION_CORS_ORIGINS="https://auth.example.com,https://app.example.com"
 SURGE_ALLOW_SERVED_INLINE=0
+SURGE_HYDRA_ADMIN_URL="http://hydra:4434"
+SURGE_HYDRA_BRIDGE_ORIGIN="https://auth.example.com"
+SURGE_HYDRA_ADMIN_TIMEOUT_SECS=10
 ```
 
 **Related:** [Deployment: Docker](/deployment/docker), [Registration Modes](/integration/registration-modes), [Health Checks](/deployment/health-checks)
