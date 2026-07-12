@@ -183,7 +183,7 @@ impl<S: Send + Sync> FromRequestParts<S> for MaybeClientIp {
 
 #[derive(Deserialize)]
 struct LoginQuery {
-    return_to: String,
+    return_to: Option<String>,
 }
 
 async fn start_login(
@@ -191,35 +191,6 @@ async fn start_login(
     Query(query): Query<LoginQuery>,
     headers: axum::http::HeaderMap,
 ) -> Result<Response, ApiError> {
-    let return_url = url::Url::parse(&query.return_to).map_err(|_| {
-        AuthError::Validation(ValidationError::Field {
-            field: "return_to",
-            message: "invalid URL".into(),
-        })
-    })?;
-
-    let origin = format!(
-        "{}://{}",
-        return_url.scheme(),
-        return_url.host_str().unwrap_or("")
-    );
-    let origin_with_port = return_url.port().map(|port| format!("{origin}:{port}"));
-
-    let allowed = state.config.return_origins.iter().any(|o| o == &origin)
-        || origin_with_port
-            .as_ref()
-            .is_some_and(|o| state.config.return_origins.contains(o));
-
-    if !allowed {
-        return Err(AuthError::Validation(ValidationError::Field {
-            field: "return_to",
-            message: "origin not registered".into(),
-        })
-        .into());
-    }
-
-    let flow = state.config.engine.create_login_flow(&query.return_to).await?;
-
     // Content-negotiated flow-init (architecture.md §7.4): a caller asking
     // for JSON gets the flow inline instead of a redirect. Gated behind
     // `allow_inline` because for a served (non-embedded) deployment this is
@@ -231,6 +202,55 @@ async fn start_login(
             .get(axum::http::header::ACCEPT)
             .and_then(|v| v.to_str().ok())
             .is_some_and(|v| v.contains("application/json"));
+
+    // `return_to` is required for browser-navigation (redirect) logins,
+    // since it's the only place the post-login destination is recorded —
+    // there's no other channel for an unauthenticated redirect flow to
+    // communicate it. It's optional in inline mode: an embedded caller on
+    // that path manages its own post-login navigation and has no use for a
+    // server-chosen destination.
+    let return_to = match &query.return_to {
+        Some(return_to) => {
+            let return_url = url::Url::parse(return_to).map_err(|_| {
+                AuthError::Validation(ValidationError::Field {
+                    field: "return_to",
+                    message: "invalid URL".into(),
+                })
+            })?;
+
+            let origin = format!(
+                "{}://{}",
+                return_url.scheme(),
+                return_url.host_str().unwrap_or("")
+            );
+            let origin_with_port = return_url.port().map(|port| format!("{origin}:{port}"));
+
+            let allowed = state.config.return_origins.iter().any(|o| o == &origin)
+                || origin_with_port
+                    .as_ref()
+                    .is_some_and(|o| state.config.return_origins.contains(o));
+
+            if !allowed {
+                return Err(AuthError::Validation(ValidationError::Field {
+                    field: "return_to",
+                    message: "origin not registered".into(),
+                })
+                .into());
+            }
+
+            Some(return_to.as_str())
+        }
+        None if wants_json => None,
+        None => {
+            return Err(AuthError::Validation(ValidationError::Field {
+                field: "return_to",
+                message: "required".into(),
+            })
+            .into());
+        }
+    };
+
+    let flow = state.config.engine.create_login_flow(return_to).await?;
 
     if wants_json {
         return Ok(Json(json!({

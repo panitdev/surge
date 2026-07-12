@@ -67,7 +67,7 @@ The response also includes:
 Set-Cookie: surge_session=aeg_s_1a2b3c4d5e6f7g8h9i0j; HttpOnly; Secure; SameSite=Lax; Path=/; Domain=.example.com
 ```
 
-The `Set-Cookie` header instructs the browser to store the session token as an HTTP-only cookie. The `return_to` field contains the URL the client should navigate to after successful authentication — this is the URL provided as the `return_to` query parameter at flow init.
+The `Set-Cookie` header instructs the browser to store the session token as an HTTP-only cookie. The `return_to` field contains the URL the client should navigate to after successful authentication — this is the URL provided as the `return_to` query parameter at flow init. It is `null` if the flow was started without a `return_to` (only possible in [inline mode](/api/browser/flow-init) — the caller manages its own post-login navigation in that case).
 
 ## What happens on completion
 

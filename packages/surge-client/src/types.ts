@@ -61,8 +61,12 @@ export interface Flow {
 
 /** Response of a successful flow completion (password login or registration). */
 export interface FlowResult {
-  /** The URL to navigate to after authentication (the flow's `return_to`). */
-  return_to: string;
+  /**
+   * The URL to navigate to after authentication (the flow's `return_to`).
+   * `null` if the flow was started without a `return_to` (only possible in
+   * inline mode — see {@link SurgeClient.initLoginFlow}).
+   */
+  return_to: string | null;
   session: Session;
 }
 

@@ -66,6 +66,15 @@ const { return_to } = await surge.submitPassword(flow.flow_id, {
 window.location.assign(return_to);
 ```
 
+`return_to` is optional in inline mode (unlike redirect mode above): call `surge.initLoginFlow()` with no argument if your app manages its own post-login navigation. In that case `return_to` comes back `null` at completion, so guard the navigation call:
+
+```ts
+const flow = await surge.initLoginFlow();
+// ...
+const { return_to } = await surge.submitPassword(flow.flow_id, { /* ... */ });
+if (return_to) window.location.assign(return_to);
+```
+
 ### Handling the auth UI redirect target
 
 When the auth UI redirects back to your app with `?flow=aeg_f_...`, load the flow to inspect its state and CSRF token:

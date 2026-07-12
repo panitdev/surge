@@ -74,7 +74,7 @@ pub struct NewSession {
 #[allow(dead_code)]
 pub struct LoginFlowRow {
     pub id: String,
-    pub return_to: String,
+    pub return_to: Option<String>,
     pub csrf_token: String,
     pub state: String,
     pub attempts: i32,
@@ -87,7 +87,7 @@ pub struct LoginFlowRow {
 #[diesel(table_name = schema::login_flow)]
 pub struct NewLoginFlow<'a> {
     pub id: &'a str,
-    pub return_to: &'a str,
+    pub return_to: Option<&'a str>,
     pub csrf_token: &'a str,
     pub state: &'a str,
     pub attempts: i32,

@@ -88,7 +88,7 @@ The flow:
 4. Submit registration → `POST /v1/flows/{id}/register` with `csrf_token` in the request body
 5. On success → JSON response with `return_to` + session data + `Set-Cookie` header
 
-Inline mode gives you full control over the login UI while Surge manages the security-critical flow state.
+Inline mode gives you full control over the login UI while Surge manages the security-critical flow state. Unlike the redirect mode above, `return_to` is optional in inline mode — a frontend managing its own post-login navigation can start a flow without one, in which case completion returns `return_to: null` (guard `window.location.assign` accordingly).
 
 ## CSRF protection
 

@@ -12,7 +12,7 @@ const FLOW_MAX_ATTEMPTS: i32 = 5;
 
 pub struct FlowInfo {
     pub id: String,
-    pub return_to: String,
+    pub return_to: Option<String>,
     pub csrf_token: String,
     pub state: String,
     pub attempts: i32,
@@ -20,7 +20,7 @@ pub struct FlowInfo {
 }
 
 impl Engine {
-    pub async fn create_login_flow(&self, return_to: &str) -> Result<FlowInfo, AuthError> {
+    pub async fn create_login_flow(&self, return_to: Option<&str>) -> Result<FlowInfo, AuthError> {
         let mut conn = self.conn().await?;
         let flow_id = FlowId::generate();
         let csrf = FlowId::generate();
@@ -46,7 +46,7 @@ impl Engine {
 
         Ok(FlowInfo {
             id: flow_id.as_str().to_string(),
-            return_to: return_to.to_string(),
+            return_to: return_to.map(|s| s.to_string()),
             csrf_token: csrf.as_str().to_string(),
             state: "created".to_string(),
             attempts: 0,

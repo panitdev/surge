@@ -58,9 +58,16 @@ export class SurgeClient {
    * method surfaces as a `SurgeError` with code `unexpected_response`.
    *
    * @param returnTo Absolute URL to redirect to after successful login.
+   *   Optional in inline mode — omit it if the caller manages its own
+   *   post-login navigation; the flow's completion response will then
+   *   carry `return_to: null`.
    */
-  async initLoginFlow(returnTo: string): Promise<FlowInit> {
-    const response = await this.fetch(this.loginUrl(returnTo), {
+  async initLoginFlow(returnTo?: string): Promise<FlowInit> {
+    const url =
+      returnTo === undefined
+        ? `${this.baseUrl}/v1/login`
+        : this.loginUrl(returnTo);
+    const response = await this.fetch(url, {
       headers: { Accept: "application/json" },
       credentials: "include",
     });

@@ -68,7 +68,7 @@ The response also includes a `Set-Cookie` header with the session cookie:
 Set-Cookie: surge_session=aeg_s_1a2b3c4d5e6f7g8h9i0j; HttpOnly; Secure; SameSite=Lax; Path=/; Domain=.example.com
 ```
 
-The `return_to` field contains the URL the client should navigate to after registration — this is the URL provided at flow init. The user is logged in immediately — no separate password submission is needed.
+The `return_to` field contains the URL the client should navigate to after registration — this is the URL provided at flow init. It is `null` if the flow was started without a `return_to` (only possible in [inline mode](/api/browser/flow-init)). The user is logged in immediately — no separate password submission is needed.
 
 ## Registration mode enforcement
 

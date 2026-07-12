@@ -83,6 +83,16 @@ describe("initLoginFlow", () => {
     expect(err.status).toBe(422);
     expect(err.message).toBe("invalid URL");
   });
+
+  test("omits return_to from the request URL when called without one", async () => {
+    const { client, requests } = mockClient(
+      json({ flow_id: "aeg_f_x", csrf_token: "tok", registration_mode: "open" }),
+    );
+    await client.initLoginFlow();
+    const req = requests[0]!;
+    expect(req.url).toBe("https://auth.example.com/v1/login");
+    expect(req.url).not.toContain("return_to");
+  });
 });
 
 describe("getFlow", () => {
@@ -142,6 +152,16 @@ describe("submitPassword", () => {
     expect(err.code).toBe("rate_limited");
     expect(err.retryAfter).toBe(30);
     expect(err.isRetryable).toBe(true);
+  });
+
+  test("return_to is null when the flow was started without one", async () => {
+    const { client } = mockClient(json({ return_to: null, session }));
+    const res = await client.submitPassword("aeg_f_x", {
+      username: "alice",
+      password: "correct-horse-battery-staple",
+      csrf_token: "tok",
+    });
+    expect(res.return_to).toBeNull();
   });
 });
 

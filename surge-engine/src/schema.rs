@@ -33,7 +33,7 @@ diesel::table! {
 diesel::table! {
     surge.login_flow (id) {
         id -> Text,
-        return_to -> Text,
+        return_to -> Nullable<Text>,
         csrf_token -> Text,
         state -> Text,
         attempts -> Int4,

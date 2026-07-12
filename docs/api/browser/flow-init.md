@@ -57,9 +57,11 @@ Inline mode is for SPAs and JavaScript-driven frontends that manage their own lo
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `return_to` | `string` | Yes | An absolute URL to redirect to after successful login. Surge validates the URL's origin against the return origins registered for services via `svc create --origin` (see [Reference: CLI](/reference/cli)) to prevent open redirect attacks. |
+| `return_to` | `string` | Redirect mode: yes. Inline mode: no. | An absolute URL to redirect to after successful login. Surge validates the URL's origin against the return origins registered for services via `svc create --origin` (see [Reference: CLI](/reference/cli)) to prevent open redirect attacks. |
 
 The `return_to` is passed through the flow and used by the completion endpoints to set the post-login redirect target.
+
+`return_to` is required in redirect mode — it's the only channel that carries the post-login destination through an unauthenticated redirect flow. In inline mode it's optional: a caller managing its own post-login navigation can omit it. A flow started without one completes with `"return_to": null` (see [Flow Complete](/api/browser/flow-complete)).
 
 ## Registration mode in the response
 
@@ -77,7 +79,7 @@ The mode is set via the `SURGE_REGISTRATION` environment variable. See [Registra
 
 | Status | Type | Condition |
 |---|---|---|
-| `422` | `validation_error` | `return_to` is missing, isn't a valid absolute URL, or its origin isn't registered for any service |
+| `422` | `validation_error` | `return_to` is missing in redirect mode, isn't a valid absolute URL, or its origin isn't registered for any service |
 
 ```json
 { "error": "validation_error", "message": "invalid URL" }

@@ -33,7 +33,7 @@ CREATE INDEX idx_session_expires ON surge.session(expires_at) WHERE revoked_at I
 
 CREATE TABLE surge.login_flow (
     id TEXT PRIMARY KEY,
-    return_to TEXT NOT NULL,
+    return_to TEXT,
     csrf_token TEXT NOT NULL,
     state TEXT NOT NULL DEFAULT 'created',
     attempts INT NOT NULL DEFAULT 0,
