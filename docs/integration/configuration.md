@@ -171,7 +171,7 @@ When enabled on a served deployment, credential entry is proxied through the con
 
 ## Hydra OAuth bridge (`SURGE_HYDRA_ADMIN_URL`, `SURGE_HYDRA_BRIDGE_ORIGIN`, `SURGE_HYDRA_ADMIN_TIMEOUT_SECS`)
 
-The Hydra login/consent bridge connects Surge to Ory Hydra as an OAuth 2.1 authorization server (see [rfc.md](/rfc.md)). It is opt-in — setting `SURGE_HYDRA_ADMIN_URL` is the on-switch; when unset, no bridge routes are mounted and Hydra is never contacted.
+The Hydra login/consent bridge connects Surge to Ory Hydra as an OAuth 2.1 authorization server. It is opt-in — setting `SURGE_HYDRA_ADMIN_URL` is the on-switch; when unset, no bridge routes are mounted and Hydra is never contacted.
 
 ```bash
 # Enable the bridge (all three are needed together)
