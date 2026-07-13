@@ -150,17 +150,19 @@ This is the opt-in browser-to-Surge CORS zone. Leave it empty if your frontends 
 
 ## Served inline flow-init (`SURGE_ALLOW_SERVED_INLINE`)
 
-Controls whether `GET /v1/login` supports content-negotiated inline flow initiation (via `Accept: application/json`) in served mode. **Boolean parsing uses `== "1"`, not `== "true"`:**
+Controls whether `GET /v1/login` supports content-negotiated inline flow initiation (via `Accept: application/json`) in served mode. Accepts `1` or `true` (case-insensitive) as truthy; anything else, including unset, is `false`:
 
 ```rust
 let allow_served_inline = std::env::var("SURGE_ALLOW_SERVED_INLINE")
-    .map(|v| v == "1")
+    .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
     .unwrap_or(false);
 ```
 
 ```bash
 # Enable inline flow-init on a served deployment
 export SURGE_ALLOW_SERVED_INLINE=1
+# or
+export SURGE_ALLOW_SERVED_INLINE=true
 
 # Disable (default)
 export SURGE_ALLOW_SERVED_INLINE=0

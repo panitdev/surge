@@ -67,7 +67,7 @@ impl ServerConfig {
             .map(|v| v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
             .unwrap_or_default();
         let allow_served_inline = std::env::var("SURGE_ALLOW_SERVED_INLINE")
-            .map(|v| v == "1")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
         let hydra_bridge = match std::env::var("SURGE_HYDRA_ADMIN_URL").ok() {
             Some(admin_url) => {
