@@ -1,6 +1,6 @@
 {
   "name": "@panit/surge-client",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Browser client for the Surge authentication API (login flows, sessions).",
   "license": "MIT",
   "type": "module",
