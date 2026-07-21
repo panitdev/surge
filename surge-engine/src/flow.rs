@@ -17,6 +17,9 @@ pub struct FlowInfo {
     pub state: String,
     pub attempts: i32,
     pub error: Option<String>,
+    /// The password-verified identity, set when the flow transitions to
+    /// `awaiting_totp` (the mandatory second-factor step). `None` otherwise.
+    pub identity_id: Option<IdentityId>,
 }
 
 impl Engine {
@@ -51,6 +54,7 @@ impl Engine {
             state: "created".to_string(),
             attempts: 0,
             error: None,
+            identity_id: None,
         })
     }
 
@@ -86,7 +90,30 @@ impl Engine {
             state: row.state,
             attempts: row.attempts,
             error: row.error,
+            identity_id: row.identity_id.map(IdentityId::from_uuid),
         })
+    }
+
+    /// Transition a `created` flow to `awaiting_totp`, recording the
+    /// password-verified identity so the subsequent `POST /flows/{id}/totp`
+    /// step knows whom to challenge. No session is minted until that step.
+    pub async fn set_flow_awaiting_totp(
+        &self,
+        id: &str,
+        identity_id: IdentityId,
+    ) -> Result<(), AuthError> {
+        let mut conn = self.conn().await?;
+
+        diesel::update(login_flow::table.find(id))
+            .set((
+                login_flow::state.eq("awaiting_totp"),
+                login_flow::identity_id.eq(*identity_id.as_uuid()),
+            ))
+            .execute(&mut conn)
+            .await
+            .map_err(|e| AuthError::Internal(e.into()))?;
+
+        Ok(())
     }
 
     pub async fn record_flow_error(&self, id: &str, error: &str) -> Result<(), AuthError> {

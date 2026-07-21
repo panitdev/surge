@@ -19,6 +19,25 @@ diesel::table! {
 }
 
 diesel::table! {
+    surge.credential_totp (identity_id) {
+        identity_id -> Uuid,
+        secret_encrypted -> Text,
+        confirmed_at -> Nullable<Timestamptz>,
+        last_used_step -> Nullable<Int8>,
+        created_at -> Timestamptz,
+        updated_at -> Timestamptz,
+    }
+}
+
+diesel::table! {
+    surge.credential_passphrase (identity_id) {
+        identity_id -> Uuid,
+        hash -> Text,
+        updated_at -> Timestamptz,
+    }
+}
+
+diesel::table! {
     surge.session (id) {
         id -> Uuid,
         token_hash -> Bytea,
@@ -40,6 +59,7 @@ diesel::table! {
         error -> Nullable<Text>,
         expires_at -> Timestamptz,
         created_at -> Timestamptz,
+        identity_id -> Nullable<Uuid>,
     }
 }
 
@@ -84,6 +104,14 @@ diesel::table! {
 }
 
 diesel::joinable!(credential_password -> identity (identity_id));
+diesel::joinable!(credential_totp -> identity (identity_id));
+diesel::joinable!(credential_passphrase -> identity (identity_id));
 diesel::joinable!(session -> identity (identity_id));
 
-diesel::allow_tables_to_appear_in_same_query!(identity, credential_password, session,);
+diesel::allow_tables_to_appear_in_same_query!(
+    identity,
+    credential_password,
+    credential_totp,
+    credential_passphrase,
+    session,
+);

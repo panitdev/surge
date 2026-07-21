@@ -160,6 +160,19 @@ SURGE_HYDRA_ADMIN_TIMEOUT_SECS=10
 
 Never run production with `SURGE_PEPPER="dev-pepper-change-me"` — it is a public, well-known value, and Surge does not detect or warn about it at startup, so this is on you to enforce in your deployment pipeline.
 
+## Factor policy
+
+`SURGE_FACTOR_POLICY` sets the server-wide expectation for second-factor enrollment. It is a **soft recommendation** — it never blocks login or registration. Surge surfaces it in the `policy` block of login/register/`whoami` responses so the frontend can prompt the user to enroll.
+
+| Value | Meaning |
+|---|---|
+| `none` (default) | Password only; no factor is expected. |
+| `totp` | Users should enroll a TOTP authenticator. |
+| `passphrase` | Users should set a recovery passphrase. |
+| `both` | Users should enroll TOTP **and** a passphrase. Login still needs only one factor beyond the password. |
+
+Independently of this policy, **a user who has a confirmed TOTP must present it at login** (after the password), and the **passphrase can log in on its own**, bypassing password and TOTP. TOTP secrets are encrypted at rest with a key derived from `SURGE_PEPPER` — no additional secret is required.
+
 ## Secret management
 
 ### Database URL

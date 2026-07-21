@@ -67,6 +67,7 @@ async fn test_app() -> (axum::Router, String) {
         auth_ui_origin: AUTH_UI_ORIGIN.to_string(),
         session_ttl_hours: 1,
         registration: surge::router::RegistrationMode::Open,
+        factor_policy: surge::router::FactorPolicy::None,
         session_cors_origins: vec![],
         allow_served_inline: true,
         hydra_bridge: None,

@@ -56,8 +56,7 @@ impl Engine {
                 Ok(identity)
             }
             Err(diesel::result::Error::NotFound) => {
-                let dummy = format!("v{}${DUMMY_HASH_BODY}", self.pepper.current_version);
-                let _ = self.verify_hash(&dummy, password);
+                let _ = self.verify_hash(&self.dummy_hash(), password);
                 Err(AuthError::InvalidCredentials)
             }
             Err(e) => Err(AuthError::Internal(e.into())),
@@ -65,6 +64,42 @@ impl Engine {
     }
 
     pub(crate) fn hash_password(&self, password: &Password) -> Result<String, AuthError> {
+        self.hash_secret(password.expose())
+    }
+
+    /// A valid PHC hash that verifies against no password, version-prefixed for
+    /// the current pepper. Used on the not-found path so a missing credential
+    /// still burns comparable Argon2 time (anti-enumeration).
+    pub(crate) fn dummy_hash(&self) -> String {
+        format!("v{}${DUMMY_HASH_BODY}", self.pepper.current_version)
+    }
+
+    /// Identity-keyed sibling of [`Engine::verify_credential`] (which is
+    /// username-keyed). Used by the step-up fallback and authenticated
+    /// change-password, where the identity is already known from the session.
+    pub async fn verify_password_by_id(
+        &self,
+        identity_id: IdentityId,
+        password: &Password,
+    ) -> Result<(), AuthError> {
+        let mut conn = self.conn().await?;
+
+        let row: CredentialPasswordRow = credential_password::table
+            .find(*identity_id.as_uuid())
+            .select(CredentialPasswordRow::as_select())
+            .first(&mut conn)
+            .await
+            .map_err(|e| match e {
+                diesel::result::Error::NotFound => AuthError::InvalidCredentials,
+                other => AuthError::Internal(other.into()),
+            })?;
+
+        self.verify_secret(&row.hash, password.expose())
+    }
+
+    /// Peppered-Argon2 hashing over an arbitrary secret string, stored as
+    /// `v{version}${phc}`. Shared by password and passphrase.
+    pub(crate) fn hash_secret(&self, secret: &str) -> Result<String, AuthError> {
         let pepper = self
             .pepper
             .peppers
@@ -89,13 +124,19 @@ impl Engine {
 
         let salt = SaltString::generate(argon2::password_hash::rand_core::OsRng);
         let hash = argon2
-            .hash_password(password.expose().as_bytes(), &salt)
+            .hash_password(secret.as_bytes(), &salt)
             .map_err(|e| AuthError::Internal(anyhow::anyhow!("argon2 hash: {e}")))?;
 
         Ok(format!("v{}${}", self.pepper.current_version, hash))
     }
 
     fn verify_hash(&self, stored: &str, password: &Password) -> Result<(), AuthError> {
+        self.verify_secret(stored, password.expose())
+    }
+
+    /// Peppered-Argon2 verification core over a raw secret string. Shared by
+    /// password and passphrase.
+    pub(crate) fn verify_secret(&self, stored: &str, secret: &str) -> Result<(), AuthError> {
         let (version_str, hash_str) = stored
             .split_once('$')
             .ok_or(AuthError::InvalidCredentials)?;
@@ -128,7 +169,7 @@ impl Engine {
         .map_err(|e| AuthError::Internal(anyhow::anyhow!("argon2 init: {e}")))?;
 
         argon2
-            .verify_password(password.expose().as_bytes(), &parsed)
+            .verify_password(secret.as_bytes(), &parsed)
             .map_err(|_| AuthError::InvalidCredentials)
     }
 }

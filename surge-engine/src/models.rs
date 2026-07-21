@@ -46,6 +46,46 @@ pub struct NewCredentialPassword<'a> {
 }
 
 #[derive(Queryable, Selectable)]
+#[diesel(table_name = schema::credential_totp)]
+#[allow(dead_code)]
+pub struct CredentialTotpRow {
+    pub identity_id: Uuid,
+    pub secret_encrypted: String,
+    pub confirmed_at: Option<DateTime<Utc>>,
+    pub last_used_step: Option<i64>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Insertable)]
+#[diesel(table_name = schema::credential_totp)]
+pub struct NewCredentialTotp<'a> {
+    pub identity_id: Uuid,
+    pub secret_encrypted: &'a str,
+    pub confirmed_at: Option<DateTime<Utc>>,
+    pub last_used_step: Option<i64>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Queryable, Selectable)]
+#[diesel(table_name = schema::credential_passphrase)]
+#[allow(dead_code)]
+pub struct CredentialPassphraseRow {
+    pub identity_id: Uuid,
+    pub hash: String,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Insertable)]
+#[diesel(table_name = schema::credential_passphrase)]
+pub struct NewCredentialPassphrase<'a> {
+    pub identity_id: Uuid,
+    pub hash: &'a str,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Queryable, Selectable)]
 #[diesel(table_name = schema::session)]
 #[allow(dead_code)]
 pub struct SessionRow {
@@ -81,6 +121,7 @@ pub struct LoginFlowRow {
     pub error: Option<String>,
     pub expires_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
+    pub identity_id: Option<Uuid>,
 }
 
 #[derive(Insertable)]

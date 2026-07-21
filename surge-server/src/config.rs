@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use secrecy::SecretString;
-use surge::router::RegistrationMode;
+use surge::router::{FactorPolicy, RegistrationMode};
 use surge::EmbeddedConfig;
 
 pub struct ServerConfig {
@@ -12,6 +12,10 @@ pub struct ServerConfig {
     pub auth_ui_origin: String,
     pub session_ttl_hours: u64,
     pub registration: RegistrationMode,
+    /// Soft, server-wide factor-enrollment recommendation (`SURGE_FACTOR_POLICY`).
+    /// Never blocks login/registration; surfaced to the frontend so it can
+    /// prompt for enrollment.
+    pub factor_policy: FactorPolicy,
     /// Non-empty enables the opt-in browser->Surge session-management CORS
     /// zone (credentialed, over this union). Empty keeps the narrow,
     /// same-origin-only default.
@@ -62,6 +66,15 @@ impl ServerConfig {
             "closed" => RegistrationMode::Closed,
             _ => RegistrationMode::Open,
         };
+        let factor_policy = match std::env::var("SURGE_FACTOR_POLICY")
+            .unwrap_or_else(|_| "none".to_string())
+            .as_str()
+        {
+            "totp" => FactorPolicy::Totp,
+            "passphrase" => FactorPolicy::Passphrase,
+            "both" => FactorPolicy::Both,
+            _ => FactorPolicy::None,
+        };
         let session_cors_origins = std::env::var("SURGE_SESSION_CORS_ORIGINS")
             .ok()
             .map(|v| v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
@@ -101,6 +114,7 @@ impl ServerConfig {
             auth_ui_origin,
             session_ttl_hours,
             registration,
+            factor_policy,
             session_cors_origins,
             allow_served_inline,
             hydra_bridge,

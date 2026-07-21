@@ -7,7 +7,7 @@ use axum::http::request::Parts;
 use axum::http::StatusCode;
 use axum::middleware;
 use axum::response::{IntoResponse, Redirect, Response};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use axum_extra::extract::CookieJar;
 use secrecy::SecretString;
@@ -30,6 +30,31 @@ pub enum RegistrationMode {
     Open,
     Invite,
     Closed,
+}
+
+/// Server-wide expectation of which factors a user should have enrolled. A
+/// *soft recommendation* — it never blocks login or registration; it is
+/// surfaced in login/register/whoami responses (the `policy` block) so the
+/// frontend can prompt for enrollment. `Both` means "enroll both TOTP and a
+/// passphrase"; login still needs only the password (plus TOTP if enrolled).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FactorPolicy {
+    None,
+    Totp,
+    Passphrase,
+    Both,
+}
+
+impl FactorPolicy {
+    /// `(totp_required, passphrase_required)`.
+    pub fn requires(self) -> (bool, bool) {
+        match self {
+            FactorPolicy::None => (false, false),
+            FactorPolicy::Totp => (true, false),
+            FactorPolicy::Passphrase => (false, true),
+            FactorPolicy::Both => (true, true),
+        }
+    }
 }
 
 /// Configuration for the mountable browser perimeter router. `engine` and
@@ -57,6 +82,8 @@ pub struct BrowserRouterConfig {
     /// Origins `return_to` is allowed to target on `GET /login`.
     pub return_origins: Vec<String>,
     pub registration: RegistrationMode,
+    /// Soft factor-enrollment policy surfaced to the frontend (never blocks).
+    pub factor_policy: FactorPolicy,
     /// Enables content-negotiated flow-init on `GET /login`: with
     /// `Accept: application/json`, return the flow inline as JSON instead of
     /// redirecting to `auth_ui_origin`. Required for served+inline
@@ -138,6 +165,9 @@ impl V1Router {
             .route("/login", get(start_login))
             .route("/flows/{id}", get(get_flow))
             .route("/flows/{id}/password", post(submit_password))
+            .route("/flows/{id}/totp", post(submit_totp))
+            .route("/flows/{id}/passphrase", post(submit_passphrase))
+            .route("/flows/{id}/recover", post(submit_recover))
             .route("/flows/{id}/register", post(submit_register))
             .layer(cors::narrow(&self.state.config.auth_ui_origin))
             .with_state(Arc::clone(&self.state));
@@ -148,12 +178,25 @@ impl V1Router {
             cors::union(&self.state.config.session_cors_origins)
         };
 
+        // Authenticated factor management (session cookie; mutations guarded by
+        // the X-Surge-CSRF header, like logout). Lives in the session zone
+        // because it is driven by the logged-in user from the auth UI.
+        let csrf = || middleware::from_fn(require_header_csrf);
         let session_management = Router::new()
             .route("/whoami", get(whoami))
             .route(
                 "/logout",
-                post(logout).layer(middleware::from_fn(require_header_csrf)),
+                post(logout).layer(csrf()),
             )
+            .route("/factors", get(get_factors))
+            .route("/factors/totp/enroll", post(enroll_totp).layer(csrf()))
+            .route("/factors/totp/confirm", post(confirm_totp).layer(csrf()))
+            .route("/factors/totp", delete(remove_totp).layer(csrf()))
+            .route(
+                "/factors/passphrase",
+                post(set_passphrase).delete(remove_passphrase).layer(csrf()),
+            )
+            .route("/account/password", post(change_password).layer(csrf()))
             .layer(session_cors)
             .with_state(self.state);
 
@@ -328,31 +371,435 @@ async fn submit_password(
         }
     };
 
-    match state.config.provider.authenticate_password(&username, &password).await {
-        Ok(issued) => {
-            state.config.engine.complete_flow(&id).await?;
+    // Split verify from mint (unlike `provider.authenticate_password`, which
+    // bundles verify+mint+audit): a user with a confirmed TOTP must clear the
+    // second step before any session is minted.
+    let identity = match state.config.engine.verify_credential(&username, &password).await {
+        Ok(identity) => identity,
+        Err(e) => {
+            state.config.engine.record_flow_error(&id, "invalid_credentials").await?;
+            return Err(e.into());
+        }
+    };
 
-            let cookie = session_cookie(
-                issued.token.expose_secret(),
-                &state.config.cookie_domain,
-                state.config.session_ttl.as_secs() as i64,
-            );
-            let jar = CookieJar::new().add(cookie);
+    if state.config.engine.has_totp(identity.id).await? {
+        state
+            .config
+            .engine
+            .set_flow_awaiting_totp(&id, identity.id)
+            .await?;
+        return Ok(Json(json!({
+            "status": "totp_required",
+            "return_to": flow.return_to,
+        }))
+        .into_response());
+    }
 
-            Ok((
-                jar,
-                Json(json!({
-                    "return_to": flow.return_to,
-                    "session": serde_json::to_value(&issued.session).unwrap(),
-                })),
+    finish_login(
+        &state,
+        &id,
+        flow.return_to,
+        identity.id,
+        "authenticate",
+        json!({ "factors": ["password"] }),
+    )
+    .await
+}
+
+/// Shared tail of every login path: mint the session (always recorded as
+/// `authenticated_via = password` — factor specifics go to the audit log so
+/// the session-introspection wire contract stays append-only), audit, complete
+/// the flow, set the cookie, and return the session plus the policy block.
+async fn finish_login(
+    state: &AppState,
+    flow_id: &str,
+    return_to: Option<String>,
+    identity_id: IdentityId,
+    audit_action: &str,
+    audit_detail: serde_json::Value,
+) -> Result<Response, ApiError> {
+    let issued = state
+        .config
+        .engine
+        .mint_session(identity_id, AuthMethod::Password)
+        .await?;
+
+    state
+        .config
+        .engine
+        .audit(
+            surge_engine::audit::AuditActor::Identity {
+                id: identity_id.to_string(),
+            },
+            audit_action,
+            json!({ "session_id": issued.session.id.to_string() }),
+            Some(audit_detail),
+        )
+        .await?;
+
+    state.config.engine.complete_flow(flow_id).await?;
+
+    let cookie = session_cookie(
+        issued.token.expose_secret(),
+        &state.config.cookie_domain,
+        state.config.session_ttl.as_secs() as i64,
+    );
+    let jar = CookieJar::new().add(cookie);
+    let policy = policy_block(&state.config, identity_id).await?;
+
+    Ok((
+        jar,
+        Json(json!({
+            "return_to": return_to,
+            "session": serde_json::to_value(&issued.session).unwrap(),
+            "policy": policy,
+        })),
+    )
+        .into_response())
+}
+
+/// The soft-policy compliance block surfaced to the frontend.
+async fn policy_block(
+    config: &BrowserRouterConfig,
+    identity_id: IdentityId,
+) -> Result<serde_json::Value, AuthError> {
+    let status = config.engine.factor_status(identity_id).await?;
+    let (totp_required, passphrase_required) = config.factor_policy.requires();
+    let compliant =
+        (!totp_required || status.has_totp) && (!passphrase_required || status.has_passphrase);
+
+    Ok(json!({
+        "required": { "totp": totp_required, "passphrase": passphrase_required },
+        "has": { "totp": status.has_totp, "passphrase": status.has_passphrase },
+        "compliant": compliant,
+    }))
+}
+
+#[derive(Deserialize)]
+struct TotpSubmit {
+    code: String,
+    csrf_token: String,
+}
+
+/// Mandatory second step after password when TOTP is enrolled.
+async fn submit_totp(
+    State(state): State<Arc<AppState>>,
+    MaybeClientIp(ip): MaybeClientIp,
+    Path(id): Path<String>,
+    Json(body): Json<TotpSubmit>,
+) -> Result<Response, ApiError> {
+    let flow = state.config.engine.get_login_flow(&id).await?;
+    if flow.state != "awaiting_totp" {
+        return Err(AuthError::InvalidToken.into());
+    }
+    check_flow_csrf(&flow.csrf_token, &body.csrf_token)?;
+    let identity_id = flow.identity_id.ok_or(AuthError::InvalidToken)?;
+
+    state.config.rate_limiter.check("flow", "flow_submit", ip, None).await?;
+    // Per-identity limit is the real brute-force control here: the flow's
+    // attempt cap bounds nothing across freshly-created flows.
+    state
+        .config
+        .rate_limiter
+        .check("flow", "authenticate", ip, Some(&identity_id.to_string()))
+        .await?;
+
+    match state.config.engine.verify_totp(identity_id, &body.code).await {
+        Ok(()) => {
+            finish_login(
+                &state,
+                &id,
+                flow.return_to,
+                identity_id,
+                "authenticate",
+                json!({ "factors": ["password", "totp"] }),
             )
-                .into_response())
+            .await
+        }
+        Err(e) => {
+            state.config.engine.record_flow_error(&id, "invalid_totp").await?;
+            Err(e.into())
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct PassphraseLogin {
+    username: String,
+    passphrase: String,
+    csrf_token: String,
+}
+
+/// Standalone passphrase login — bypasses password and TOTP entirely.
+async fn submit_passphrase(
+    State(state): State<Arc<AppState>>,
+    MaybeClientIp(ip): MaybeClientIp,
+    Path(id): Path<String>,
+    Json(body): Json<PassphraseLogin>,
+) -> Result<Response, ApiError> {
+    let flow = state.config.engine.get_login_flow(&id).await?;
+    if flow.state != "created" {
+        return Err(AuthError::InvalidToken.into());
+    }
+    check_flow_csrf(&flow.csrf_token, &body.csrf_token)?;
+
+    state.config.rate_limiter.check("flow", "flow_submit", ip, None).await?;
+
+    let username = match Username::new(&body.username) {
+        Ok(u) => u,
+        Err(_) => {
+            state.config.engine.record_flow_error(&id, "invalid_credentials").await?;
+            return Err(AuthError::InvalidCredentials.into());
+        }
+    };
+    state
+        .config
+        .rate_limiter
+        .check("flow", "authenticate", ip, Some(username.as_str()))
+        .await?;
+
+    match state
+        .config
+        .engine
+        .verify_passphrase_by_username(&username, &body.passphrase)
+        .await
+    {
+        Ok(identity) => {
+            finish_login(
+                &state,
+                &id,
+                flow.return_to,
+                identity.id,
+                "passphrase_login",
+                json!({ "factors": ["passphrase"] }),
+            )
+            .await
         }
         Err(e) => {
             state.config.engine.record_flow_error(&id, "invalid_credentials").await?;
             Err(e.into())
         }
     }
+}
+
+#[derive(Deserialize)]
+struct RecoverSubmit {
+    username: String,
+    passphrase: String,
+    new_password: String,
+    csrf_token: String,
+}
+
+/// Unauthenticated password recovery, authorized by the passphrase.
+async fn submit_recover(
+    State(state): State<Arc<AppState>>,
+    MaybeClientIp(ip): MaybeClientIp,
+    Path(id): Path<String>,
+    Json(body): Json<RecoverSubmit>,
+) -> Result<Response, ApiError> {
+    let flow = state.config.engine.get_login_flow(&id).await?;
+    if flow.state != "created" {
+        return Err(AuthError::InvalidToken.into());
+    }
+    check_flow_csrf(&flow.csrf_token, &body.csrf_token)?;
+
+    state.config.rate_limiter.check("flow", "flow_submit", ip, None).await?;
+
+    let username = match Username::new(&body.username) {
+        Ok(u) => u,
+        Err(_) => {
+            state.config.engine.record_flow_error(&id, "invalid_credentials").await?;
+            return Err(AuthError::InvalidCredentials.into());
+        }
+    };
+    state
+        .config
+        .rate_limiter
+        .check("flow", "authenticate", ip, Some(username.as_str()))
+        .await?;
+
+    // Validate the new password before touching the passphrase oracle.
+    let new_password = Password::new(SecretString::from(body.new_password))
+        .map_err(|e| AuthError::Validation(ValidationError::from(e)))?;
+
+    match state
+        .config
+        .engine
+        .verify_passphrase_by_username(&username, &body.passphrase)
+        .await
+    {
+        Ok(identity) => {
+            state.config.engine.set_password(identity.id, &new_password).await?;
+            finish_login(
+                &state,
+                &id,
+                flow.return_to,
+                identity.id,
+                "password_reset",
+                json!({ "factors": ["passphrase"] }),
+            )
+            .await
+        }
+        Err(e) => {
+            state.config.engine.record_flow_error(&id, "invalid_credentials").await?;
+            Err(e.into())
+        }
+    }
+}
+
+/// Resolve the logged-in identity from the `surge_session` cookie (mirrors
+/// `whoami`). Used by the authenticated factor-management endpoints.
+async fn require_session(state: &AppState, jar: &CookieJar) -> Result<Session, ApiError> {
+    let cookie = jar.get("surge_session").ok_or(AuthError::InvalidToken)?;
+    let token = SessionToken::from_raw(cookie.value()).ok_or(AuthError::InvalidToken)?;
+    Ok(state.config.provider.verify_session(&token).await?)
+}
+
+/// Per-identity throttle for step-up-guarded mutations. A valid session is
+/// required to reach these, but the `step_up` secret still shouldn't be
+/// brute-forceable from a stolen session.
+async fn rate_limit_step_up(
+    state: &AppState,
+    ip: Option<std::net::IpAddr>,
+    id: IdentityId,
+) -> Result<(), ApiError> {
+    state
+        .config
+        .rate_limiter
+        .check("account", "authenticate", ip, Some(&id.to_string()))
+        .await?;
+    Ok(())
+}
+
+#[derive(Deserialize)]
+struct StepUp {
+    step_up: String,
+}
+
+#[derive(Deserialize)]
+struct ChangePassword {
+    step_up: String,
+    new_password: String,
+}
+
+async fn get_factors(
+    State(state): State<Arc<AppState>>,
+    jar: CookieJar,
+) -> Result<Response, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    let policy = policy_block(&state.config, session.identity.id).await?;
+    Ok(Json(json!({ "policy": policy })).into_response())
+}
+
+async fn enroll_totp(
+    State(state): State<Arc<AppState>>,
+    MaybeClientIp(ip): MaybeClientIp,
+    jar: CookieJar,
+    Json(body): Json<StepUp>,
+) -> Result<Response, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    let id = session.identity.id;
+    rate_limit_step_up(&state, ip, id).await?;
+    state.config.engine.verify_step_up(id, &body.step_up).await?;
+
+    let enrollment = state.config.engine.begin_totp_enrollment(id).await?;
+    Ok(Json(json!({
+        "otpauth_uri": enrollment.otpauth_uri,
+        "secret": enrollment.secret_base32,
+    }))
+    .into_response())
+}
+
+#[derive(Deserialize)]
+struct ConfirmTotp {
+    code: String,
+}
+
+async fn confirm_totp(
+    State(state): State<Arc<AppState>>,
+    MaybeClientIp(ip): MaybeClientIp,
+    jar: CookieJar,
+    Json(body): Json<ConfirmTotp>,
+) -> Result<Response, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    let id = session.identity.id;
+    rate_limit_step_up(&state, ip, id).await?;
+    state.config.engine.confirm_totp(id, &body.code).await?;
+    state
+        .config
+        .engine
+        .audit(
+            surge_engine::audit::AuditActor::Identity { id: id.to_string() },
+            "totp_enrolled",
+            json!({ "identity_id": id.to_string() }),
+            None,
+        )
+        .await?;
+    let policy = policy_block(&state.config, id).await?;
+    Ok(Json(json!({ "policy": policy })).into_response())
+}
+
+async fn remove_totp(
+    State(state): State<Arc<AppState>>,
+    MaybeClientIp(ip): MaybeClientIp,
+    jar: CookieJar,
+    Json(body): Json<StepUp>,
+) -> Result<Response, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    let id = session.identity.id;
+    rate_limit_step_up(&state, ip, id).await?;
+    state.config.engine.verify_step_up(id, &body.step_up).await?;
+    state.config.engine.remove_totp(id).await?;
+    let policy = policy_block(&state.config, id).await?;
+    Ok(Json(json!({ "policy": policy })).into_response())
+}
+
+async fn set_passphrase(
+    State(state): State<Arc<AppState>>,
+    MaybeClientIp(ip): MaybeClientIp,
+    jar: CookieJar,
+    Json(body): Json<StepUp>,
+) -> Result<Response, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    let id = session.identity.id;
+    rate_limit_step_up(&state, ip, id).await?;
+    // First-time set: no passphrase exists yet, so step-up falls back to the
+    // password. Rotating an existing one requires the current passphrase.
+    state.config.engine.verify_step_up(id, &body.step_up).await?;
+    let passphrase = state.config.engine.set_passphrase(id).await?;
+    Ok(Json(json!({ "passphrase": passphrase })).into_response())
+}
+
+async fn remove_passphrase(
+    State(state): State<Arc<AppState>>,
+    MaybeClientIp(ip): MaybeClientIp,
+    jar: CookieJar,
+    Json(body): Json<StepUp>,
+) -> Result<Response, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    let id = session.identity.id;
+    rate_limit_step_up(&state, ip, id).await?;
+    state.config.engine.verify_step_up(id, &body.step_up).await?;
+    state.config.engine.remove_passphrase(id).await?;
+    let policy = policy_block(&state.config, id).await?;
+    Ok(Json(json!({ "policy": policy })).into_response())
+}
+
+async fn change_password(
+    State(state): State<Arc<AppState>>,
+    MaybeClientIp(ip): MaybeClientIp,
+    jar: CookieJar,
+    Json(body): Json<ChangePassword>,
+) -> Result<Response, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    let id = session.identity.id;
+    rate_limit_step_up(&state, ip, id).await?;
+    state.config.engine.verify_step_up(id, &body.step_up).await?;
+
+    let new_password = Password::new(SecretString::from(body.new_password))
+        .map_err(|e| AuthError::Validation(ValidationError::from(e)))?;
+    state.config.engine.set_password(id, &new_password).await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 #[derive(Deserialize)]
@@ -414,6 +861,9 @@ async fn submit_register(
         state.config.session_ttl.as_secs() as i64,
     );
     let jar = CookieJar::new().add(cookie);
+    // A fresh user is non-compliant the moment they register under any
+    // non-`none` policy, so the frontend needs the block here too.
+    let policy = policy_block(&state.config, issued.session.identity.id).await?;
 
     Ok((
         StatusCode::CREATED,
@@ -421,6 +871,7 @@ async fn submit_register(
         Json(json!({
             "return_to": flow.return_to,
             "session": serde_json::to_value(&issued.session).unwrap(),
+            "policy": policy,
         })),
     )
         .into_response())
@@ -434,7 +885,10 @@ async fn whoami(State(state): State<Arc<AppState>>, jar: CookieJar) -> Result<im
     let cookie = jar.get("surge_session").ok_or(AuthError::InvalidToken)?;
     let token = SessionToken::from_raw(cookie.value()).ok_or(AuthError::InvalidToken)?;
     let session = state.config.provider.verify_session(&token).await?;
-    Ok(Json(serde_json::to_value(&session).unwrap()))
+    let policy = policy_block(&state.config, session.identity.id).await?;
+    let mut body = serde_json::to_value(&session).unwrap();
+    body["policy"] = policy;
+    Ok(Json(body))
 }
 
 async fn logout(State(state): State<Arc<AppState>>, jar: CookieJar) -> Result<Response, ApiError> {

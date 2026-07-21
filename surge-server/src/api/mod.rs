@@ -112,6 +112,7 @@ pub async fn router(
         session_cors_origins: config.session_cors_origins.clone(),
         return_origins,
         registration: config.registration,
+        factor_policy: config.factor_policy,
         allow_inline: config.allow_served_inline,
         oauth_bridge,
     });

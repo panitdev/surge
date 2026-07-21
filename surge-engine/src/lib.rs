@@ -4,11 +4,15 @@ pub mod types;
 
 pub mod audit;
 mod counter;
+mod crypto;
+mod factor;
 mod flow;
 mod identity;
 mod models;
 mod service;
 mod session;
+
+pub use factor::{FactorStatus, TotpEnrollment};
 
 use std::time::Duration;
 

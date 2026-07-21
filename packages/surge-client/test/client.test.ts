@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { SurgeClient, SurgeError } from "../src/index.js";
-import type { FlowResult, Session } from "../src/index.js";
+import type { FlowResult, PolicyBlock, Session } from "../src/index.js";
 
 const session: Session = {
   id: "018f9a1b-c2d3-4b5e-a6f7-d8e9f0a1b2c3",
@@ -17,6 +17,12 @@ const session: Session = {
   issued_at: "2026-07-08T12:00:00Z",
   expires_at: "2026-07-11T12:00:00Z",
   authenticated_via: "password",
+};
+
+const policy: PolicyBlock = {
+  required: { totp: false, passphrase: false },
+  has: { totp: false, passphrase: false },
+  compliant: true,
 };
 
 function json(body: unknown, status = 200): Response {
@@ -113,7 +119,11 @@ describe("getFlow", () => {
 });
 
 describe("submitPassword", () => {
-  const result: FlowResult = { return_to: "https://app.example.com/dashboard", session };
+  const result: FlowResult = {
+    return_to: "https://app.example.com/dashboard",
+    session,
+    policy,
+  };
 
   test("POSTs credentials with csrf_token in the body", async () => {
     const { client, requests } = mockClient(json(result));
@@ -123,7 +133,7 @@ describe("submitPassword", () => {
       csrf_token: "tok",
     });
     expect(res.return_to).toBe("https://app.example.com/dashboard");
-    expect(res.session.identity.username).toBe("alice");
+    expect("session" in res && res.session.identity.username).toBe("alice");
     const req = requests[0]!;
     expect(req.url).toBe("https://auth.example.com/v1/flows/aeg_f_x/password");
     expect(req.init?.method).toBe("POST");
@@ -155,7 +165,7 @@ describe("submitPassword", () => {
   });
 
   test("return_to is null when the flow was started without one", async () => {
-    const { client } = mockClient(json({ return_to: null, session }));
+    const { client } = mockClient(json({ return_to: null, session, policy }));
     const res = await client.submitPassword("aeg_f_x", {
       username: "alice",
       password: "correct-horse-battery-staple",
@@ -163,12 +173,117 @@ describe("submitPassword", () => {
     });
     expect(res.return_to).toBeNull();
   });
+
+  test("returns totp_required (no session) when the user has TOTP enrolled", async () => {
+    const { client } = mockClient(
+      json({ status: "totp_required", return_to: "https://app.example.com/" }),
+    );
+    const res = await client.submitPassword("aeg_f_x", {
+      username: "alice",
+      password: "correct-horse-battery-staple",
+      csrf_token: "tok",
+    });
+    expect("status" in res && res.status).toBe("totp_required");
+    expect("session" in res).toBe(false);
+  });
+});
+
+describe("second-factor and recovery flow steps", () => {
+  test("submitTotp POSTs the code to the totp step", async () => {
+    const { client, requests } = mockClient(
+      json({ return_to: null, session, policy }),
+    );
+    const res = await client.submitTotp("aeg_f_x", { code: "123456", csrf_token: "tok" });
+    expect(res.session.id).toBe(session.id);
+    expect(requests[0]!.url).toBe("https://auth.example.com/v1/flows/aeg_f_x/totp");
+    expect(JSON.parse(requests[0]!.init?.body as string)).toEqual({
+      code: "123456",
+      csrf_token: "tok",
+    });
+  });
+
+  test("submitPassphrase hits the passphrase step with username", async () => {
+    const { client, requests } = mockClient(
+      json({ return_to: null, session, policy }),
+    );
+    await client.submitPassphrase("aeg_f_x", {
+      username: "alice",
+      passphrase: "correct horse battery staple pin oak",
+      csrf_token: "tok",
+    });
+    expect(requests[0]!.url).toBe("https://auth.example.com/v1/flows/aeg_f_x/passphrase");
+  });
+
+  test("recoverPassword hits the recover step", async () => {
+    const { client, requests } = mockClient(
+      json({ return_to: null, session, policy }),
+    );
+    await client.recoverPassword("aeg_f_x", {
+      username: "alice",
+      passphrase: "correct horse battery staple pin oak",
+      new_password: "a-brand-new-password",
+      csrf_token: "tok",
+    });
+    expect(requests[0]!.url).toBe("https://auth.example.com/v1/flows/aeg_f_x/recover");
+  });
+});
+
+describe("factor management (authenticated)", () => {
+  test("getFactors reads the policy block", async () => {
+    const { client, requests } = mockClient(json({ policy }));
+    const res = await client.getFactors();
+    expect(res.policy.compliant).toBe(true);
+    expect(requests[0]!.url).toBe("https://auth.example.com/v1/factors");
+    expect(requests[0]!.init?.credentials).toBe("include");
+  });
+
+  test("enrollTotp sends step_up and the CSRF header, returns provisioning material", async () => {
+    const { client, requests } = mockClient(
+      json({ otpauth_uri: "otpauth://totp/Surge:alice?secret=ABC", secret: "ABC" }),
+    );
+    const res = await client.enrollTotp("current-password");
+    expect(res.otpauth_uri).toContain("otpauth://");
+    const req = requests[0]!;
+    expect(req.url).toBe("https://auth.example.com/v1/factors/totp/enroll");
+    expect(req.init?.method).toBe("POST");
+    expect(new Headers(req.init?.headers).get("X-Surge-CSRF")).toBe("1");
+    expect(JSON.parse(req.init?.body as string)).toEqual({ step_up: "current-password" });
+  });
+
+  test("setPassphrase returns the generated passphrase once", async () => {
+    const { client, requests } = mockClient(
+      json({ passphrase: "correct horse battery staple pin oak" }),
+    );
+    const res = await client.setPassphrase("current-password");
+    expect(res.passphrase.split(" ")).toHaveLength(6);
+    expect(requests[0]!.url).toBe("https://auth.example.com/v1/factors/passphrase");
+  });
+
+  test("removeTotp uses DELETE with the step-up proof", async () => {
+    const { client, requests } = mockClient(json({ policy }));
+    await client.removeTotp("my passphrase words here now go");
+    const req = requests[0]!;
+    expect(req.url).toBe("https://auth.example.com/v1/factors/totp");
+    expect(req.init?.method).toBe("DELETE");
+    expect(new Headers(req.init?.headers).get("X-Surge-CSRF")).toBe("1");
+  });
+
+  test("changePassword posts step_up and new_password, accepts 204", async () => {
+    const { client, requests } = mockClient(new Response(null, { status: 204 }));
+    await client.changePassword("current-passphrase", "a-brand-new-password");
+    const req = requests[0]!;
+    expect(req.url).toBe("https://auth.example.com/v1/account/password");
+    expect(JSON.parse(req.init?.body as string)).toEqual({
+      step_up: "current-passphrase",
+      new_password: "a-brand-new-password",
+    });
+  });
 });
 
 describe("register", () => {
   test("POSTs the registration body and parses the 201 result", async () => {
     const { client, requests } = mockClient(
-      json({ return_to: "https://app.example.com/", session }, 201),
+      json({ return_to: "https://app.example.com/", session, policy }, 201),
     );
     const res = await client.register("aeg_f_x", {
       username: "bob",

@@ -1,11 +1,18 @@
 import { errorFromResponse, SurgeError } from "./errors.js";
 import type {
+  FactorsResult,
   Flow,
   FlowInit,
   FlowResult,
+  PassphraseLogin,
+  PassphraseResult,
   PasswordSubmit,
+  PasswordSubmitResult,
+  RecoverSubmit,
   RegisterSubmit,
   Session,
+  TotpEnrollment,
+  TotpSubmit,
 } from "./types.js";
 
 export interface SurgeClientOptions {
@@ -98,12 +105,50 @@ export class SurgeClient {
 
   /**
    * Submits a password credential into an active flow
-   * (`POST /v1/flows/{id}/password`). On success the session cookie is set
-   * by the response and the returned `return_to` is where the app should
-   * navigate next.
+   * (`POST /v1/flows/{id}/password`). Two outcomes:
+   *
+   * - The user has no TOTP → logged in: the session cookie is set and a
+   *   {@link FlowResult} is returned.
+   * - The user has a confirmed TOTP → a {@link TotpRequired} is returned with
+   *   `status: "totp_required"` and no cookie; complete login with
+   *   {@link submitTotp}. Narrow on the `status` field to tell them apart.
    */
-  async submitPassword(flowId: string, body: PasswordSubmit): Promise<FlowResult> {
-    return this.submitFlow(flowId, "password", body);
+  async submitPassword(
+    flowId: string,
+    body: PasswordSubmit,
+  ): Promise<PasswordSubmitResult> {
+    return this.submitFlow<PasswordSubmitResult>(flowId, "password", body);
+  }
+
+  /**
+   * Completes the mandatory second step after {@link submitPassword} returned
+   * `totp_required` (`POST /v1/flows/{id}/totp`). On success the session
+   * cookie is set.
+   */
+  async submitTotp(flowId: string, body: TotpSubmit): Promise<FlowResult> {
+    return this.submitFlow<FlowResult>(flowId, "totp", body);
+  }
+
+  /**
+   * Logs in with the standalone passphrase, bypassing password and TOTP
+   * (`POST /v1/flows/{id}/passphrase`). On success the session cookie is set.
+   */
+  async submitPassphrase(
+    flowId: string,
+    body: PassphraseLogin,
+  ): Promise<FlowResult> {
+    return this.submitFlow<FlowResult>(flowId, "passphrase", body);
+  }
+
+  /**
+   * Unauthenticated password recovery authorized by the passphrase
+   * (`POST /v1/flows/{id}/recover`). Sets a new password and logs the user in.
+   */
+  async recoverPassword(
+    flowId: string,
+    body: RecoverSubmit,
+  ): Promise<FlowResult> {
+    return this.submitFlow<FlowResult>(flowId, "recover", body);
   }
 
   /**
@@ -112,7 +157,93 @@ export class SurgeClient {
    * the session cookie is set and no separate password submission is needed.
    */
   async register(flowId: string, body: RegisterSubmit): Promise<FlowResult> {
-    return this.submitFlow(flowId, "register", body);
+    return this.submitFlow<FlowResult>(flowId, "register", body);
+  }
+
+  /**
+   * Reads the logged-in user's factor status and policy compliance
+   * (`GET /v1/factors`).
+   */
+  async getFactors(): Promise<FactorsResult> {
+    const response = await this.fetch(`${this.baseUrl}/v1/factors`, {
+      credentials: "include",
+    });
+    if (!response.ok) throw await errorFromResponse(response);
+    return (await response.json()) as FactorsResult;
+  }
+
+  /**
+   * Begins TOTP enrollment (`POST /v1/factors/totp/enroll`). Returns the
+   * provisioning URI and secret; the enrollment is inactive until confirmed
+   * with {@link confirmTotp}. `stepUp` is the passphrase if the user has one,
+   * otherwise their current password.
+   */
+  async enrollTotp(stepUp: string): Promise<TotpEnrollment> {
+    const response = await this.authed(
+      "/v1/factors/totp/enroll",
+      "POST",
+      { step_up: stepUp },
+    );
+    return (await response.json()) as TotpEnrollment;
+  }
+
+  /**
+   * Confirms a pending TOTP enrollment with a code
+   * (`POST /v1/factors/totp/confirm`), activating it for login.
+   */
+  async confirmTotp(code: string): Promise<FactorsResult> {
+    const response = await this.authed(
+      "/v1/factors/totp/confirm",
+      "POST",
+      { code },
+    );
+    return (await response.json()) as FactorsResult;
+  }
+
+  /**
+   * Removes TOTP (`DELETE /v1/factors/totp`). `stepUp` is the passphrase if
+   * the user has one, otherwise their current password.
+   */
+  async removeTotp(stepUp: string): Promise<FactorsResult> {
+    const response = await this.authed("/v1/factors/totp", "DELETE", {
+      step_up: stepUp,
+    });
+    return (await response.json()) as FactorsResult;
+  }
+
+  /**
+   * Generates (or rotates) the passphrase (`POST /v1/factors/passphrase`).
+   * Returns the passphrase **once** — it is never recoverable afterward.
+   * `stepUp` is the existing passphrase if there is one, else the password.
+   */
+  async setPassphrase(stepUp: string): Promise<PassphraseResult> {
+    const response = await this.authed("/v1/factors/passphrase", "POST", {
+      step_up: stepUp,
+    });
+    return (await response.json()) as PassphraseResult;
+  }
+
+  /**
+   * Removes the passphrase (`DELETE /v1/factors/passphrase`). `stepUp` is the
+   * current passphrase.
+   */
+  async removePassphrase(stepUp: string): Promise<FactorsResult> {
+    const response = await this.authed("/v1/factors/passphrase", "DELETE", {
+      step_up: stepUp,
+    });
+    return (await response.json()) as FactorsResult;
+  }
+
+  /**
+   * Changes the password for the logged-in user (`POST /v1/account/password`).
+   * `stepUp` is the passphrase if the user has one, otherwise their current
+   * password.
+   */
+  async changePassword(stepUp: string, newPassword: string): Promise<void> {
+    await this.authed("/v1/account/password", "POST", {
+      step_up: stepUp,
+      new_password: newPassword,
+    });
   }
 
   /**
@@ -143,11 +274,16 @@ export class SurgeClient {
     if (!response.ok) throw await errorFromResponse(response);
   }
 
-  private async submitFlow(
+  private async submitFlow<T>(
     flowId: string,
-    action: "password" | "register",
-    body: PasswordSubmit | RegisterSubmit,
-  ): Promise<FlowResult> {
+    action: "password" | "totp" | "passphrase" | "recover" | "register",
+    body:
+      | PasswordSubmit
+      | TotpSubmit
+      | PassphraseLogin
+      | RecoverSubmit
+      | RegisterSubmit,
+  ): Promise<T> {
     const response = await this.fetch(
       `${this.baseUrl}/v1/flows/${encodeURIComponent(flowId)}/${action}`,
       {
@@ -158,7 +294,27 @@ export class SurgeClient {
       },
     );
     if (!response.ok) throw await errorFromResponse(response);
-    return (await response.json()) as FlowResult;
+    return (await response.json()) as T;
+  }
+
+  /**
+   * Cookie-authenticated, CSRF-guarded JSON request for the factor-management
+   * and account endpoints. Sends `X-Surge-CSRF: 1` (the header a cross-origin
+   * form post can't set) alongside the session cookie.
+   */
+  private async authed(
+    path: string,
+    method: "POST" | "DELETE",
+    body: unknown,
+  ): Promise<Response> {
+    const response = await this.fetch(`${this.baseUrl}${path}`, {
+      method,
+      headers: { "Content-Type": "application/json", "X-Surge-CSRF": "1" },
+      credentials: "include",
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) throw await errorFromResponse(response);
+    return response;
   }
 }
 

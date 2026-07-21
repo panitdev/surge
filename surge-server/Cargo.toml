@@ -39,3 +39,4 @@ uuid.workspace = true
 [dev-dependencies]
 reqwest.workspace = true
 tokio = { workspace = true, features = ["full", "test-util"] }
+totp-rs.workspace = true

@@ -38,6 +38,7 @@ export default defineConfig({
           { text: 'Service Authentication', link: '/features/service-authentication' },
           { text: 'Identity Management', link: '/features/identity-management' },
           { text: 'Password Authentication', link: '/features/password-authentication' },
+          { text: 'Second Factors', link: '/features/second-factors' },
           { text: 'Rate Limiting', link: '/features/rate-limiting' },
           { text: 'Audit Logging', link: '/features/audit-logging' },
           { text: 'CORS', link: '/features/cors' },
