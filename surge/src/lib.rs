@@ -6,6 +6,9 @@ mod traits;
 #[cfg(feature = "embedded")]
 mod embedded;
 
+#[cfg(feature = "test-provider")]
+mod test_provider;
+
 #[cfg(feature = "router")]
 pub mod router;
 
@@ -14,6 +17,9 @@ pub use traits::AuthProvider;
 
 #[cfg(feature = "embedded")]
 pub use embedded::{EmbeddedConfig, EmbeddedProvider};
+
+#[cfg(feature = "test-provider")]
+pub use test_provider::{TestConfig, TestProvider};
 
 pub use remote::{RemoteConfig, RemoteProvider};
 
@@ -34,5 +40,11 @@ pub async fn remote(
     config: RemoteConfig,
 ) -> Result<std::sync::Arc<dyn AuthProvider>, anyhow::Error> {
     let provider = RemoteProvider::new(config)?;
+    Ok(std::sync::Arc::new(provider))
+}
+
+#[cfg(feature = "test-provider")]
+pub fn test(config: TestConfig) -> Result<std::sync::Arc<dyn AuthProvider>, anyhow::Error> {
+    let provider = TestProvider::new(config)?;
     Ok(std::sync::Arc::new(provider))
 }

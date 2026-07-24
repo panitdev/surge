@@ -26,6 +26,27 @@ pub struct Identity {
     pub updated_at: DateTime<Utc>,
 }
 
+impl Identity {
+    pub fn new(
+        id: IdentityId,
+        username: Username,
+        display_name: String,
+        avatar_url: Option<Url>,
+        state: IdentityState,
+    ) -> Self {
+        let now = Utc::now();
+        Self {
+            id,
+            username,
+            display_name,
+            avatar_url,
+            state,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IdentityState {
@@ -61,6 +82,24 @@ pub struct Session {
     pub issued_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
     pub authenticated_via: AuthMethod,
+}
+
+impl Session {
+    pub fn new(
+        id: SessionId,
+        identity: Identity,
+        issued_at: DateTime<Utc>,
+        expires_at: DateTime<Utc>,
+        authenticated_via: AuthMethod,
+    ) -> Self {
+        Self {
+            id,
+            identity,
+            issued_at,
+            expires_at,
+            authenticated_via,
+        }
+    }
 }
 
 /// The sole carrier of a plaintext session token out of the engine/facade.

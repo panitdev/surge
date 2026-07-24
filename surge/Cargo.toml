@@ -7,6 +7,7 @@ license.workspace = true
 [features]
 default = []
 embedded = []
+test-provider = []
 router = ["dep:tower-http"]
 
 [dependencies]
