@@ -263,9 +263,22 @@ impl Engine {
         input.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
     }
 
-    /// Generate a fresh passphrase, store its hash (overwriting any existing
-    /// one), and return the plaintext **once** — it is never recoverable after.
-    pub async fn set_passphrase(&self, identity_id: IdentityId) -> Result<String, AuthError> {
+    /// Generate a fresh passphrase and store its hash *unconfirmed*. The
+    /// plaintext is returned once so the user can record it; it becomes active
+    /// only after `confirm_passphrase`. Calling again before confirming
+    /// overwrites the pending row (reroll). A *confirmed* passphrase is never
+    /// overwritten — remove it first.
+    pub async fn begin_passphrase_enrollment(
+        &self,
+        identity_id: IdentityId,
+    ) -> Result<String, AuthError> {
+        if self.has_passphrase(identity_id).await? {
+            return Err(AuthError::Validation(ValidationError::Field {
+                field: "passphrase",
+                message: "passphrase already enrolled; remove it before enrolling again".into(),
+            }));
+        }
+
         let passphrase = self.generate_passphrase();
         let hash = self.hash_secret(&passphrase)?;
         let now = Utc::now();
@@ -276,11 +289,13 @@ impl Engine {
                 identity_id: *identity_id.as_uuid(),
                 hash: &hash,
                 updated_at: now,
+                confirmed_at: None,
             })
             .on_conflict(credential_passphrase::identity_id)
             .do_update()
             .set((
                 credential_passphrase::hash.eq(&hash),
+                credential_passphrase::confirmed_at.eq::<Option<DateTime<Utc>>>(None),
                 credential_passphrase::updated_at.eq(now),
             ))
             .execute(&mut conn)
@@ -288,6 +303,42 @@ impl Engine {
             .map_err(|e| AuthError::Internal(e.into()))?;
 
         Ok(passphrase)
+    }
+
+    /// Confirm a pending passphrase enrollment by echoing the passphrase back.
+    /// The server verifies the hash matches the pending row before marking it
+    /// confirmed — this proves the user recorded it.
+    pub async fn confirm_passphrase(
+        &self,
+        identity_id: IdentityId,
+        passphrase: &str,
+    ) -> Result<(), AuthError> {
+        let mut conn = self.conn().await?;
+
+        let row: CredentialPassphraseRow = credential_passphrase::table
+            .find(*identity_id.as_uuid())
+            .filter(credential_passphrase::confirmed_at.is_null())
+            .select(CredentialPassphraseRow::as_select())
+            .first(&mut conn)
+            .await
+            .map_err(|e| match e {
+                diesel::result::Error::NotFound => AuthError::NotFound,
+                other => AuthError::Internal(other.into()),
+            })?;
+
+        self.verify_secret(&row.hash, &Self::canonical_passphrase(passphrase))?;
+
+        let now = Utc::now();
+        diesel::update(credential_passphrase::table.find(*identity_id.as_uuid()))
+            .set((
+                credential_passphrase::confirmed_at.eq(now),
+                credential_passphrase::updated_at.eq(now),
+            ))
+            .execute(&mut conn)
+            .await
+            .map_err(|e| AuthError::Internal(e.into()))?;
+
+        Ok(())
     }
 
     pub async fn verify_passphrase(
@@ -298,6 +349,7 @@ impl Engine {
         let mut conn = self.conn().await?;
         let row: CredentialPassphraseRow = credential_passphrase::table
             .find(*identity_id.as_uuid())
+            .filter(credential_passphrase::confirmed_at.is_not_null())
             .select(CredentialPassphraseRow::as_select())
             .first(&mut conn)
             .await
@@ -323,6 +375,7 @@ impl Engine {
             crate::schema::identity::table
                 .inner_join(credential_passphrase::table)
                 .filter(crate::schema::identity::username.eq(username.as_str()))
+                .filter(credential_passphrase::confirmed_at.is_not_null())
                 .select((
                     crate::models::IdentityRow::as_select(),
                     CredentialPassphraseRow::as_select(),
@@ -362,6 +415,7 @@ impl Engine {
         let mut conn = self.conn().await?;
         let count: i64 = credential_passphrase::table
             .find(*identity_id.as_uuid())
+            .filter(credential_passphrase::confirmed_at.is_not_null())
             .count()
             .get_result(&mut conn)
             .await

@@ -303,6 +303,29 @@ async fn passphrase_logs_in_standalone_and_authorizes_recovery() {
     let passphrase = body_json(resp).await["passphrase"].as_str().unwrap().to_string();
     assert_eq!(passphrase.split(' ').count(), 6, "6-word Diceware passphrase");
 
+    // Reroll: calling again before confirm overwrites the pending passphrase.
+    let resp = post_authed(
+        &app,
+        "/v1/factors/passphrase",
+        &cookie,
+        json!({ "step_up": PASSWORD }),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let passphrase = body_json(resp).await["passphrase"].as_str().unwrap().to_string();
+    assert_eq!(passphrase.split(' ').count(), 6, "rerolled passphrase");
+
+    // Confirm the passphrase by echoing it back.
+    let resp = post_authed(
+        &app,
+        "/v1/factors/passphrase/confirm",
+        &cookie,
+        json!({ "passphrase": passphrase }),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK, "passphrase confirm failed");
+    assert!(body_json(resp).await["policy"]["has"]["passphrase"].as_bool().unwrap());
+
     // Standalone passphrase login bypasses the password.
     let (flow, csrf) = start_flow(&app).await;
     let resp = post_flow(

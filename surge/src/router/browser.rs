@@ -194,8 +194,9 @@ impl V1Router {
             .route("/factors/totp", delete(remove_totp).layer(csrf()))
             .route(
                 "/factors/passphrase",
-                post(set_passphrase).delete(remove_passphrase).layer(csrf()),
+                post(enroll_passphrase).delete(remove_passphrase).layer(csrf()),
             )
+            .route("/factors/passphrase/confirm", post(confirm_passphrase).layer(csrf()))
             .route("/account/password", post(change_password).layer(csrf()))
             .layer(session_cors)
             .with_state(self.state);
@@ -754,7 +755,7 @@ async fn remove_totp(
     Ok(Json(json!({ "policy": policy })).into_response())
 }
 
-async fn set_passphrase(
+async fn enroll_passphrase(
     State(state): State<Arc<AppState>>,
     MaybeClientIp(ip): MaybeClientIp,
     jar: CookieJar,
@@ -763,11 +764,28 @@ async fn set_passphrase(
     let session = require_session(&state, &jar).await?;
     let id = session.identity.id;
     rate_limit_step_up(&state, ip, id).await?;
-    // First-time set: no passphrase exists yet, so step-up falls back to the
-    // password. Rotating an existing one requires the current passphrase.
     state.config.engine.verify_step_up(id, &body.step_up).await?;
-    let passphrase = state.config.engine.set_passphrase(id).await?;
+    let passphrase = state.config.engine.begin_passphrase_enrollment(id).await?;
     Ok(Json(json!({ "passphrase": passphrase })).into_response())
+}
+
+#[derive(Deserialize)]
+struct ConfirmPassphrase {
+    passphrase: String,
+}
+
+async fn confirm_passphrase(
+    State(state): State<Arc<AppState>>,
+    MaybeClientIp(ip): MaybeClientIp,
+    jar: CookieJar,
+    Json(body): Json<ConfirmPassphrase>,
+) -> Result<Response, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    let id = session.identity.id;
+    rate_limit_step_up(&state, ip, id).await?;
+    state.config.engine.confirm_passphrase(id, &body.passphrase).await?;
+    let policy = policy_block(&state.config, id).await?;
+    Ok(Json(json!({ "policy": policy })).into_response())
 }
 
 async fn remove_passphrase(

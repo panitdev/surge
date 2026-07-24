@@ -250,13 +250,24 @@ describe("factor management (authenticated)", () => {
     expect(JSON.parse(req.init?.body as string)).toEqual({ step_up: "current-password" });
   });
 
-  test("setPassphrase returns the generated passphrase once", async () => {
+  test("enrollPassphrase returns the generated passphrase once", async () => {
     const { client, requests } = mockClient(
       json({ passphrase: "correct horse battery staple pin oak" }),
     );
-    const res = await client.setPassphrase("current-password");
+    const res = await client.enrollPassphrase("current-password");
     expect(res.passphrase.split(" ")).toHaveLength(6);
     expect(requests[0]!.url).toBe("https://auth.example.com/v1/factors/passphrase");
+  });
+
+  test("confirmPassphrase echoes passphrase to confirm endpoint", async () => {
+    const { client, requests } = mockClient(json({ policy }));
+    await client.confirmPassphrase("correct horse battery staple pin oak");
+    const req = requests[0]!;
+    expect(req.url).toBe("https://auth.example.com/v1/factors/passphrase/confirm");
+    expect(req.init?.method).toBe("POST");
+    expect(JSON.parse(req.init?.body as string)).toEqual({
+      passphrase: "correct horse battery staple pin oak",
+    });
   });
 
   test("removeTotp uses DELETE with the step-up proof", async () => {

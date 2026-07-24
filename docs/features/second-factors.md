@@ -51,18 +51,19 @@ These endpoints require a valid `surge_session` and the `X-Surge-CSRF: 1` header
 | `POST /v1/factors/totp/enroll` | Begin enrollment → `{ otpauth_uri, secret }`. |
 | `POST /v1/factors/totp/confirm` | Confirm with one code → activates TOTP. |
 | `DELETE /v1/factors/totp` | Remove TOTP. |
-| `POST /v1/factors/passphrase` | Generate/rotate → returns the passphrase **once**. |
+| `POST /v1/factors/passphrase` | Begin enrollment → returns the passphrase **once**. Rerollable before confirm. |
+| `POST /v1/factors/passphrase/confirm` | Confirm enrollment → `{ passphrase }`. Activates the passphrase. |
 | `DELETE /v1/factors/passphrase` | Remove the passphrase. |
 | `POST /v1/account/password` | Change the password. |
 
 ## Step-up authorization
 
-Every sensitive action above (password change, TOTP enroll/remove, passphrase rotate/remove) requires a **step-up proof** supplied per request as `step_up`:
+Every sensitive action above (password change, TOTP enroll/remove, passphrase enroll/remove) requires a **step-up proof** supplied per request as `step_up`:
 
 - If the user **has a passphrase**, `step_up` must be the passphrase.
 - Otherwise it falls back to the **current password**.
 
-This is stateless — there is no elevated session to track. The frontend knows which to prompt from `GET /v1/factors` (`has.passphrase`). Confirming a pending TOTP enrollment needs only the session, since the enrollment itself was already step-up-gated.
+This is stateless — there is no elevated session to track. The frontend knows which to prompt from `GET /v1/factors` (`has.passphrase`). Confirming a pending enrollment (TOTP or passphrase) needs only the session, since the enrollment itself was already step-up-gated.
 
 ## Security notes
 

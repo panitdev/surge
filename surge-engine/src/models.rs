@@ -75,6 +75,7 @@ pub struct CredentialPassphraseRow {
     pub identity_id: Uuid,
     pub hash: String,
     pub updated_at: DateTime<Utc>,
+    pub confirmed_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Insertable)]
@@ -83,6 +84,7 @@ pub struct NewCredentialPassphrase<'a> {
     pub identity_id: Uuid,
     pub hash: &'a str,
     pub updated_at: DateTime<Utc>,
+    pub confirmed_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Queryable, Selectable)]

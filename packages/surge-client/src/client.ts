@@ -212,15 +212,32 @@ export class SurgeClient {
   }
 
   /**
-   * Generates (or rotates) the passphrase (`POST /v1/factors/passphrase`).
-   * Returns the passphrase **once** — it is never recoverable afterward.
-   * `stepUp` is the existing passphrase if there is one, else the password.
+   * Begins passphrase enrollment (`POST /v1/factors/passphrase`). Returns the
+   * generated passphrase so the user can record it. The passphrase is **not
+   * active** until confirmed with {@link confirmPassphrase}. Calling again
+   * before confirming rerolls (generates a new one). `stepUp` is the password
+   * (no confirmed passphrase exists yet — remove it first to re-enroll).
    */
-  async setPassphrase(stepUp: string): Promise<PassphraseResult> {
+  async enrollPassphrase(stepUp: string): Promise<PassphraseResult> {
     const response = await this.authed("/v1/factors/passphrase", "POST", {
       step_up: stepUp,
     });
     return (await response.json()) as PassphraseResult;
+  }
+
+  /**
+   * Confirms a pending passphrase enrollment
+   * (`POST /v1/factors/passphrase/confirm`). The user echoes the passphrase
+   * back to prove they recorded it; the server verifies against the pending
+   * hash and marks it confirmed.
+   */
+  async confirmPassphrase(passphrase: string): Promise<FactorsResult> {
+    const response = await this.authed(
+      "/v1/factors/passphrase/confirm",
+      "POST",
+      { passphrase },
+    );
+    return (await response.json()) as FactorsResult;
   }
 
   /**

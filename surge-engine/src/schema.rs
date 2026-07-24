@@ -34,6 +34,7 @@ diesel::table! {
         identity_id -> Uuid,
         hash -> Text,
         updated_at -> Timestamptz,
+        confirmed_at -> Nullable<Timestamptz>,
     }
 }
 
