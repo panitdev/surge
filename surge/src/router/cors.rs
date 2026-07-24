@@ -6,7 +6,7 @@ static CSRF_HEADER: HeaderName = HeaderName::from_static("x-surge-csrf");
 fn base() -> CorsLayer {
     CorsLayer::new()
         .allow_credentials(true)
-        .allow_methods([http::Method::GET, http::Method::POST])
+        .allow_methods([http::Method::GET, http::Method::POST, http::Method::DELETE])
         .allow_headers([
             http::header::CONTENT_TYPE,
             http::header::COOKIE,
