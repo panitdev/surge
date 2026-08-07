@@ -12,7 +12,7 @@ mod test_provider;
 #[cfg(feature = "router")]
 pub mod router;
 
-pub use extract::{require_header_csrf, me_logout_router, AuthSession};
+pub use extract::{me_logout_router, require_header_csrf, AuthRejection, AuthSession};
 pub use traits::AuthProvider;
 
 #[cfg(feature = "embedded")]

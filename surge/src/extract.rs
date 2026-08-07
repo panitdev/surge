@@ -41,15 +41,7 @@ where
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let provider: &Arc<dyn AuthProvider> = state.as_ref();
 
-        let token = extract_token(parts);
-
-        let token = match token {
-            Some(raw) => SessionToken::from_raw(&raw)
-                .ok_or_else(|| AuthRejection::Unauthorized("invalid token format".into()))?,
-            None => return Err(AuthRejection::Unauthorized("no session token".into())),
-        };
-
-        match provider.verify_session(&token).await {
+        match provider.verify_session(extract_token(parts)).await {
             Ok(session) => Ok(AuthSession(session)),
             Err(AuthError::InvalidToken | AuthError::SessionExpired) => {
                 Err(AuthRejection::Unauthorized("invalid or expired session".into()))
@@ -67,15 +59,15 @@ where
     }
 }
 
-fn extract_token(parts: &Parts) -> Option<String> {
+fn extract_token(parts: &Parts) -> Option<SessionToken> {
     let jar = CookieJar::from_headers(&parts.headers);
     if let Some(cookie) = jar.get("surge_session") {
-        return Some(cookie.value().to_string());
+        return SessionToken::from_raw(cookie.value());
     }
 
     let auth = parts.headers.get("authorization")?.to_str().ok()?;
     let token = auth.strip_prefix("Bearer ")?;
-    Some(token.to_string())
+    SessionToken::from_raw(token)
 }
 
 /// Cheap anti-CSRF gate for cookie-authenticated, state-changing endpoints:

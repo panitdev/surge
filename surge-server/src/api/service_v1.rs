@@ -54,7 +54,7 @@ pub(crate) async fn verify_session(
 
     let token =
         SessionToken::from_raw(&body.token).ok_or(AuthError::InvalidToken)?;
-    let session = state.provider.verify_session(&token).await?;
+    let session = state.provider.verify_session(Some(token)).await?;
 
     state
         .engine

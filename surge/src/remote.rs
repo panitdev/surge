@@ -128,8 +128,9 @@ impl RemoteProvider {
 
 #[async_trait]
 impl AuthProvider for RemoteProvider {
-    async fn verify_session(&self, token: &SessionToken) -> Result<Session, AuthError> {
-        let cache_key = Self::token_cache_key(token);
+    async fn verify_session(&self, token: Option<SessionToken>) -> Result<Session, AuthError> {
+        let token = token.ok_or(AuthError::InvalidToken)?;
+        let cache_key = Self::token_cache_key(&token);
 
         if let Some(session) = self.cache.get(&cache_key).await {
             return Ok(session);

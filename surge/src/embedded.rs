@@ -54,8 +54,9 @@ impl EmbeddedProvider {
 
 #[async_trait]
 impl AuthProvider for EmbeddedProvider {
-    async fn verify_session(&self, token: &SessionToken) -> Result<Session, AuthError> {
-        self.engine.verify_session(token).await
+    async fn verify_session(&self, token: Option<SessionToken>) -> Result<Session, AuthError> {
+        let token = token.ok_or(AuthError::InvalidToken)?;
+        self.engine.verify_session(&token).await
     }
 
     async fn revoke_session(&self, token: &SessionToken) -> Result<(), AuthError> {

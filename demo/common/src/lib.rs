@@ -184,7 +184,7 @@ async fn current_session(state: &AppState, jar: &CookieJar) -> Result<Option<Ses
     let Some(token) = token_from_jar(jar) else {
         return Ok(None);
     };
-    state.auth.verify_session(&token).await.map(Some)
+    state.auth.verify_session(Some(token)).await.map(Some)
 }
 
 fn token_from_jar(jar: &CookieJar) -> Option<SessionToken> {

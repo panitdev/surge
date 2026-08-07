@@ -72,7 +72,7 @@ impl TestProvider {
 
 #[async_trait]
 impl AuthProvider for TestProvider {
-    async fn verify_session(&self, _token: &SessionToken) -> Result<Session, AuthError> {
+    async fn verify_session(&self, _token: Option<SessionToken>) -> Result<Session, AuthError> {
         Ok(self.session())
     }
 
@@ -136,7 +136,7 @@ mod tests {
     async fn verify_session_always_succeeds() {
         let provider = TestProvider::new(TestConfig::default()).unwrap();
         let token = SessionToken::from_raw("aeg_s_anything_goes_here_1234").unwrap();
-        let session = provider.verify_session(&token).await.unwrap();
+        let session = provider.verify_session(Some(token)).await.unwrap();
         assert_eq!(session.identity.username.as_str(), "test-user");
         assert_eq!(session.identity.display_name, "Test User");
     }
@@ -154,7 +154,7 @@ mod tests {
         assert_eq!(updated.display_name, "New Name");
 
         let token = SessionToken::from_raw("aeg_s_anything_goes_here_1234").unwrap();
-        let session = provider.verify_session(&token).await.unwrap();
+        let session = provider.verify_session(Some(token)).await.unwrap();
         assert_eq!(session.identity.display_name, "New Name");
     }
 }

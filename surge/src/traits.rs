@@ -11,7 +11,12 @@ use surge_engine::types::*;
 /// `RateLimiter` before ever calling them.
 #[async_trait]
 pub trait AuthProvider: Send + Sync {
-    async fn verify_session(&self, token: &SessionToken) -> Result<Session, AuthError>;
+    /// `None` means the request carried no usable session token. Each
+    /// provider decides whether that authenticates the request.
+    async fn verify_session(
+        &self,
+        token: Option<SessionToken>,
+    ) -> Result<Session, AuthError>;
 
     async fn revoke_session(&self, token: &SessionToken) -> Result<(), AuthError>;
 

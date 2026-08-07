@@ -653,7 +653,7 @@ async fn submit_recover(
 async fn require_session(state: &AppState, jar: &CookieJar) -> Result<Session, ApiError> {
     let cookie = jar.get("surge_session").ok_or(AuthError::InvalidToken)?;
     let token = SessionToken::from_raw(cookie.value()).ok_or(AuthError::InvalidToken)?;
-    Ok(state.config.provider.verify_session(&token).await?)
+    Ok(state.config.provider.verify_session(Some(token)).await?)
 }
 
 /// Per-identity throttle for step-up-guarded mutations. A valid session is
@@ -902,7 +902,7 @@ async fn submit_register(
 async fn whoami(State(state): State<Arc<AppState>>, jar: CookieJar) -> Result<impl IntoResponse, ApiError> {
     let cookie = jar.get("surge_session").ok_or(AuthError::InvalidToken)?;
     let token = SessionToken::from_raw(cookie.value()).ok_or(AuthError::InvalidToken)?;
-    let session = state.config.provider.verify_session(&token).await?;
+    let session = state.config.provider.verify_session(Some(token)).await?;
     let policy = policy_block(&state.config, session.identity.id).await?;
     let mut body = serde_json::to_value(&session).unwrap();
     body["policy"] = policy;

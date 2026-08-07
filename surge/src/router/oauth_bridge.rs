@@ -101,7 +101,7 @@ async fn login_challenge(
 ) -> Result<Response, BridgeError> {
     let valid_session = match jar.get("surge_session") {
         Some(cookie) => match SessionToken::from_raw(cookie.value()) {
-            Some(token) => state.provider.verify_session(&token).await.ok(),
+            Some(token) => state.provider.verify_session(Some(token)).await.ok(),
             None => None,
         },
         None => None,

@@ -4,7 +4,7 @@ description: Use TestProvider for development and testing — every request is a
 
 # Test Provider
 
-During development you often iterate on features unrelated to auth. Standing up a database, registering a user, and logging in on every cycle slows you down. `TestProvider` removes that friction: it implements `AuthProvider` with a single fixed identity, accepts any session token, and needs no database or network.
+During development you often iterate on features unrelated to auth. Standing up a database, registering a user, and logging in on every cycle slows you down. `TestProvider` removes that friction: it implements `AuthProvider` with a single fixed identity, authenticates requests with or without a session token, and needs no database or network.
 
 ::: danger Production warning
 `TestProvider` authenticates **every** request unconditionally. It must never be used in production. It is gated behind the `test-provider` Cargo feature to prevent accidental inclusion.
@@ -53,7 +53,7 @@ The username must pass Surge's standard validation (3–32 lowercase alphanumeri
 
 | Method | Behavior |
 |---|---|
-| `verify_session` | Accepts any `aeg_s_*` token. Always returns the fixed identity. |
+| `verify_session` | Accepts `Some`(any `aeg_s_*` token) or `None`. Always returns the fixed identity. |
 | `authenticate_password` | Always succeeds, ignoring username and password. |
 | `register` | Returns the fixed identity without creating anything. |
 | `register_and_authenticate` | Returns the fixed identity with a session token. |
@@ -63,7 +63,7 @@ The username must pass Surge's standard validation (3–32 lowercase alphanumeri
 
 ## Using with the AuthSession extractor
 
-`TestProvider` works with the standard `AuthSession` extractor. The extractor reads the token from a `surge_session` cookie or `Authorization: Bearer` header, then calls `verify_session` — which the test provider always succeeds.
+`TestProvider` works with the standard `AuthSession` extractor. The extractor reads and parses the token from a `surge_session` cookie or `Authorization: Bearer` header, then calls `verify_session`. A missing or malformed carrier is passed as `None`; the test provider always succeeds, so no cookie or header is required.
 
 Your service code needs no changes:
 
@@ -75,7 +75,7 @@ async fn dashboard(AuthSession(session): AuthSession) -> String {
 }
 ```
 
-Requests just need any validly-prefixed token:
+Requests may omit authentication entirely. They can also provide any validly-prefixed token:
 
 ```bash
 curl http://localhost:3000/dashboard \
