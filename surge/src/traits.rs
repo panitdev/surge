@@ -6,9 +6,9 @@ use surge_engine::types::*;
 /// invoking them directly (service-to-service, CLI, tests) are assumed to
 /// already be inside a trust boundary.
 ///
-/// Untrusted input (a browser, a public form) must go through
-/// `surge::router::browser` instead, which wraps these same methods with a
-/// `RateLimiter` before ever calling them.
+/// Untrusted input (a browser, a public form) must go through the browser
+/// router instead (`browser_router()`), which wraps these same methods with
+/// rate limiting, CORS, and CSRF before ever calling them.
 #[async_trait]
 pub trait AuthProvider: Send + Sync {
     /// `None` means the request carried no usable session token. Each
@@ -49,11 +49,44 @@ pub trait AuthProvider: Send + Sync {
     ) -> Result<IssuedSession, AuthError>;
 
     /// Best-effort background maintenance (session GC, flow expiry, ...).
-    /// A provider with no router mounted on it does no background work by
-    /// itself; `surge::router::browser`'s `spawn_maintenance()` is what
-    /// drives this periodically. Default no-op so providers that have
-    /// nothing to sweep (e.g. `RemoteProvider`) need not implement it.
+    /// Mounting an embedded browser router drives this periodically; a
+    /// provider with no router mounted on it does no background work by
+    /// itself unless the caller runs `surge::router::spawn_maintenance`.
+    /// Default no-op so providers that have nothing to sweep (e.g.
+    /// `RemoteProvider`) need not implement it.
     async fn run_maintenance(&self) -> Result<(), AuthError> {
         Ok(())
+    }
+
+    /// Builds the browser-facing router at `/v1`. Each provider builds its
+    /// own variant: `EmbeddedProvider` runs handlers locally against its
+    /// Engine; `RemoteProvider` reverse-proxies to the remote surge-server.
+    /// The consumer mounts the result without caring which mode is active.
+    ///
+    /// The default is a router that answers every request with 501, so a
+    /// provider that has no browser perimeter degrades the way the rest of
+    /// this trait does — an error response — rather than taking the
+    /// process down mid-request.
+    #[cfg(feature = "router")]
+    fn browser_router(
+        self: std::sync::Arc<Self>,
+        config: crate::router::BrowserRouterConfig,
+    ) -> axum::Router {
+        let _ = config;
+        // Scoped under `/v1` rather than left as a bare top-level
+        // fallback: merging two routers that both define one panics, and
+        // this router gets merged into the application's.
+        axum::Router::new().nest(
+            "/v1",
+            axum::Router::new().fallback(|| async {
+                (
+                    axum::http::StatusCode::NOT_IMPLEMENTED,
+                    axum::Json(serde_json::json!({
+                        "error": "not_implemented",
+                        "message": "this AuthProvider does not implement browser_router()",
+                    })),
+                )
+            }),
+        )
     }
 }

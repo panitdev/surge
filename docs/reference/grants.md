@@ -13,6 +13,7 @@ Service tokens carry grants that control which API operations the service can pe
 | `identity_write` | Update identities (profile update, enable/disable) |
 | `direct_auth` | Authenticate users directly (password verification) |
 | `revoke` | Revoke sessions and tokens |
+| `browser_proxy` | Front the browser perimeter on behalf of end users |
 
 ## Grant-to-endpoint mapping
 
@@ -25,6 +26,7 @@ Each grant unlocks a specific set of service API endpoints:
 | `identity_write` | `PATCH /v1/identities/{id}` — update profile fields |
 | `direct_auth` | `POST /v1/authenticate/password` — authenticate with username + password; `POST /v1/register` — create an identity directly |
 | `revoke` | `POST /v1/sessions/revoke` — revoke a single session; `POST /v1/identities/{id}/revoke-sessions` — revoke all sessions for an identity |
+| `browser_proxy` | The browser endpoints (`/v1/login`, `/v1/flows/...`, `/v1/whoami`, ...) — permits stating the end user's address in `X-Surge-Client-Ip` |
 
 A request to an endpoint without the required grant returns `403 Forbidden`:
 
@@ -43,6 +45,12 @@ A request to an endpoint without the required grant returns `403 Forbidden`:
 Grants follow the principle of least privilege. A service token should carry only the grants it needs for its specific role. If a service only verifies sessions, give it `introspect` — not `identity_write` or `direct_auth`.
 
 A compromised token with only `introspect` can verify sessions; one with `identity_write` and `revoke` can disable accounts and force-logout every user. Grant scope accordingly.
+
+### The `browser_proxy` grant
+
+`browser_proxy` is what `RemoteProvider::browser_router()` uses. It does not unlock any privileged operation directly — the browser endpoints are public. What it authorizes is the *statement* a proxy makes about who its request is for: with it, `X-Surge-Client-Ip` becomes the key rate limiting is applied under.
+
+A compromised `browser_proxy` token can therefore pick which bucket its requests count against, evading per-IP rate limits on login. Give it only to services that actually mount a remote-mode browser router.
 
 ### The `revoke` grant is the most sensitive
 
@@ -78,7 +86,8 @@ Common service roles and their grant sets:
 | **User management service** | `identity_read`, `identity_write` | Look up, create, update, and disable identities |
 | **Admin panel** | `identity_read`, `identity_write`, `revoke` | Full identity management plus session revocation |
 | **Auth proxy** | `direct_auth` | Accept username/password and return session tokens |
-| **Full-access system service** | All five | Internal service that needs everything — use with extreme caution |
+| **Remote-mode web app** | `introspect`, `browser_proxy` | Verify sessions, and reverse-proxy the browser perimeter for its own users |
+| **Full-access system service** | All of them | Internal service that needs everything — use with extreme caution |
 
 ### Example: API gateway with session verification and user enrichment
 

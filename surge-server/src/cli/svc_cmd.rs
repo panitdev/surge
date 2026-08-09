@@ -34,6 +34,7 @@ pub async fn svc(cmd: SvcCommand, engine: Arc<Engine>) -> anyhow::Result<()> {
                 "identity_write",
                 "direct_auth",
                 "revoke",
+                "browser_proxy",
             ];
             for g in &grant {
                 if !valid_grants.contains(&g.as_str()) {

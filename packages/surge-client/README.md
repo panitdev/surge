@@ -1,6 +1,6 @@
 # @panit/surge-client
 
-Browser client for the [Surge](https://docs.surge.panit.dev) authentication API. Covers the full browser-facing v1 surface: login flows (init, inspect, password, register) and session management (whoami, logout).
+Browser client for the [Surge](https://docs.surge.panit.dev) authentication API. Covers the browser-facing v1 surface: login flows, session management, second-factor enrollment, and password changes.
 
 The service API (`Authorization: Bearer aeg_svc_...` endpoints) is intentionally not included — service tokens must never be shipped to a browser.
 
@@ -82,6 +82,22 @@ if (flow.registration_mode === "open") {
 ```ts
 await surge.logout(); // revokes the session, clears the cookie; idempotent
 ```
+
+### Second factors and password changes
+
+```ts
+const factors = await surge.getFactors();
+const enrollment = await surge.enrollTotp(stepUp);
+await surge.confirmTotp(code);
+await surge.changePassword(stepUp, "new-correct-horse-battery-staple");
+```
+
+`stepUp` is the user's passphrase when one is enrolled, otherwise their
+current password. The client also provides `enrollPassphrase`,
+`confirmPassphrase`, `removeTotp`, and `removePassphrase`.
+
+For a fresh login flow, `submitPassphrase` provides standalone passphrase
+login and `recoverPassword` provides passphrase-authorized password recovery.
 
 ## Error handling
 

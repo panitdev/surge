@@ -4,19 +4,17 @@ pub mod service_v1;
 pub mod service_v2;
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use axum::{Router, http::StatusCode, routing::get};
-use surge::router::{browser, BrowserRouterConfig, PostgresRateLimiter, RateLimitConfig};
-use surge::AuthProvider;
-use surge_engine::Engine;
+use surge::router::{BrowserRouterConfig, PostgresRateLimiter, RateLimitConfig};
+use surge::{AuthProvider, EmbeddedProvider};
 use tower_http::trace::TraceLayer;
 use tracing::warn;
 
 use crate::config::ServerConfig;
 
 pub struct AppState {
-    pub engine: Arc<Engine>,
+    pub engine: Arc<surge_engine::Engine>,
     pub provider: Arc<dyn AuthProvider>,
 }
 
@@ -73,14 +71,15 @@ fn check_startup_coherence(config: &ServerConfig, return_origins: &[String]) -> 
 }
 
 /// Assembles the introspection router (service-facing, this crate's own,
-/// versioned per architecture.md §4) and mounts the facade's browser
-/// router underneath it — the same mountable perimeter any embedded
-/// service would use, standalone-hosted here on `auth_ui_origin`.
+/// versioned per architecture.md §4) and mounts the provider's browser
+/// router underneath it.
 pub async fn router(
-    engine: Arc<Engine>,
-    provider: Arc<dyn AuthProvider>,
+    embedded: Arc<EmbeddedProvider>,
     config: Arc<ServerConfig>,
 ) -> anyhow::Result<Router> {
+    let engine = embedded.engine();
+    let provider: Arc<dyn AuthProvider> = Arc::clone(&embedded) as _;
+
     let state = Arc::new(AppState {
         engine: Arc::clone(&engine),
         provider: Arc::clone(&provider),
@@ -102,27 +101,25 @@ pub async fn router(
         }
     });
 
-    let browser_router = browser(BrowserRouterConfig {
-        engine: Arc::clone(&engine),
-        provider: Arc::clone(&provider),
-        rate_limiter,
+    let browser_router = Arc::clone(&embedded).browser_router(BrowserRouterConfig {
         cookie_domain: config.cookie_domain.clone(),
         session_ttl: config.session_ttl(),
         auth_ui_origin: config.auth_ui_origin.clone(),
         session_cors_origins: config.session_cors_origins.clone(),
-        return_origins,
-        registration: config.registration,
-        factor_policy: config.factor_policy,
-        allow_inline: config.allow_served_inline,
+        rate_limiter: Some(rate_limiter),
+        return_origins: Some(return_origins),
+        registration: Some(config.registration),
+        factor_policy: Some(config.factor_policy),
+        allow_inline: Some(config.allow_served_inline),
         oauth_bridge,
+        // Mounting the router starts the sweep.
+        maintenance_interval: None,
     });
-
-    browser_router.spawn_maintenance(Duration::from_secs(15 * 60));
 
     Ok(Router::new()
         .route("/health", get(|| async { StatusCode::NO_CONTENT }))
         .nest("/v1", service_v1::router(Arc::clone(&state)))
         .nest("/v2", service_v2::router(state))
-        .merge(browser_router.into_axum())
+        .merge(browser_router)
         .layer(TraceLayer::new_for_http()))
 }

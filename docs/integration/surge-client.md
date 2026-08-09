@@ -4,7 +4,7 @@ description: Using the @panit/surge-client browser package to integrate Surge au
 
 # Surge Client (Browser)
 
-`@panit/surge-client` is the official browser package for the Surge authentication API. It covers the full browser-facing v1 surface — login flows (init, inspect, password, register) and session management (whoami, logout) — all using cookie-based sessions with `credentials: "include"`.
+`@panit/surge-client` is the official browser package for the Surge authentication API. It covers the browser-facing v1 surface — login flows, session management, second-factor enrollment, and password changes — all using cookie-based sessions with `credentials: "include"`.
 
 The service API (`Authorization: Bearer aeg_svc_...` endpoints) is intentionally not included. Service tokens must never be shipped to a browser.
 
@@ -106,6 +106,30 @@ if (flow.registration_mode === "open") {
 ```
 
 Registration immediately logs the user in — the session cookie is set, and no separate password submission is needed.
+
+## Second factors and password changes
+
+The client also exposes the authenticated factor-management endpoints:
+
+```ts
+const factors = await surge.getFactors();
+
+// Step up with the passphrase when enrolled, otherwise the current password.
+const enrollment = await surge.enrollTotp(stepUp);
+await surge.confirmTotp(code);
+
+const passphrase = await surge.enrollPassphrase(stepUp);
+await surge.confirmPassphrase(passphrase.passphrase);
+
+await surge.changePassword(stepUp, "new-correct-horse-battery-staple");
+```
+
+Use `removeTotp`, `removePassphrase`, and the corresponding enrollment methods
+to manage factors. Factor mutations send `X-Surge-CSRF: 1` automatically.
+
+For unauthenticated recovery or standalone passphrase login, use
+`recoverPassword` or `submitPassphrase` on a fresh flow. These map to
+`POST /v1/flows/{id}/recover` and `POST /v1/flows/{id}/passphrase`.
 
 ## Check authentication state
 

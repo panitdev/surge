@@ -58,11 +58,11 @@ Examples of behavior changes:
 Surge's browser router nests multiple API versions side by side. When v2 ships, it exists alongside v1:
 
 ```rust
-// Inside BrowserRouter::into_axum()
+// Inside the browser router returned by provider.browser_router()
 Router::new()
-    .nest("/v1", V1Router::new(config).into_router())
+    .nest("/v1", v1_router)
     // Future:
-    // .nest("/v2", V2Router::new(config).into_router())
+    // .nest("/v2", v2_router)
 ```
 
 This means:

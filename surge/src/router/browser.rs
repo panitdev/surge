@@ -21,6 +21,7 @@ use super::cors;
 use super::csrf::check_flow_csrf;
 use super::error::ApiError;
 use super::rate_limit::RateLimiter;
+use super::trusted_proxy::{trusted_proxy, TrustedClientIp, TrustedProxyState};
 use crate::extract::require_header_csrf;
 use crate::traits::AuthProvider;
 use crate::*;
@@ -57,107 +58,139 @@ impl FactorPolicy {
     }
 }
 
-/// Configuration for the mountable browser perimeter router. `engine` and
-/// `provider` are deliberately separate: `provider` is the trusted,
-/// unthrottled `AuthProvider` surface (auth/register/verify/revoke), while
-/// `engine` gives this router direct access to login-flow state and the
-/// counter store — neither of which is part of `AuthProvider`, since a
-/// `RemoteProvider` (which never mounts this router) has neither.
+/// Browser-router configuration. Common fields are always required.
+/// Embedded-only fields are `Option` — required when the provider runs
+/// handlers locally (`EmbeddedProvider`), ignored when it proxies to a
+/// remote surge-server (`RemoteProvider`).
 pub struct BrowserRouterConfig {
-    pub engine: Arc<Engine>,
-    pub provider: Arc<dyn AuthProvider>,
-    pub rate_limiter: Arc<dyn RateLimiter>,
     pub cookie_domain: String,
     pub session_ttl: Duration,
     /// Origin the auth UI is served from. Sole allowed origin for the
     /// credential-entry zone, and the default for session-management when
-    /// `session_cors_origins` is empty. Also the redirect target for
-    /// `GET /login`.
+    /// `session_cors_origins` is empty.
     pub auth_ui_origin: String,
     /// Non-empty enables the opt-in browser->Surge session-management
     /// zone: credentialed CORS over this union instead of the narrow
     /// same-origin default (§8.2b). Leave empty for the default,
     /// same-origin-only `/me` + `/logout` path (see `extract::me_logout_router`).
     pub session_cors_origins: Vec<String>,
+
+    // -- Embedded-only fields (ignored by RemoteProvider) --
+
+    pub rate_limiter: Option<Arc<dyn RateLimiter>>,
     /// Origins `return_to` is allowed to target on `GET /login`.
-    pub return_origins: Vec<String>,
-    pub registration: RegistrationMode,
+    pub return_origins: Option<Vec<String>>,
+    pub registration: Option<RegistrationMode>,
     /// Soft factor-enrollment policy surfaced to the frontend (never blocks).
-    pub factor_policy: FactorPolicy,
+    pub factor_policy: Option<FactorPolicy>,
     /// Enables content-negotiated flow-init on `GET /login`: with
     /// `Accept: application/json`, return the flow inline as JSON instead of
     /// redirecting to `auth_ui_origin`. Required for served+inline
-    /// (architecture.md §6) — leave `false` (the default posture for a
-    /// served, non-embedded deployment) unless the operator has explicitly
-    /// acknowledged the coarsened-rate-limiting tradeoff that comes with it.
-    /// Embedded consumers, which have no such tradeoff, may set this `true`
-    /// unconditionally.
-    pub allow_inline: bool,
-    /// Opt-in Hydra login/consent bridge (rfc.md). `None` (the default):
-    /// no `/v1/oauth/*` routes are mounted and Hydra is never contacted.
-    /// `Some`: mounts the bridge inside this same `/v1` perimeter, which
-    /// structurally guarantees it only ever runs alongside the flow state
-    /// (`Engine`) it needs — a `RemoteProvider`-only consumer has neither.
+    /// (architecture.md §6).
+    pub allow_inline: Option<bool>,
+    /// Opt-in Hydra login/consent bridge (rfc.md).
     pub oauth_bridge: Option<super::OauthBridgeConfig>,
+    /// How often to run the background sweep (session GC, flow expiry).
+    /// `None` uses `DEFAULT_MAINTENANCE_INTERVAL`: mounting the router
+    /// starts the sweep, because a mounted router with no sweep silently
+    /// accumulates expired sessions and flows forever. `Duration::ZERO`
+    /// opts out, for callers driving `router::spawn_maintenance`
+    /// themselves. Ignored by `RemoteProvider`, whose upstream sweeps.
+    pub maintenance_interval: Option<Duration>,
 }
 
-struct AppState {
-    config: Arc<BrowserRouterConfig>,
+/// Default sweep cadence when `maintenance_interval` is left unset.
+pub const DEFAULT_MAINTENANCE_INTERVAL: Duration = Duration::from_secs(15 * 60);
+
+struct EmbeddedState {
+    cookie_domain: String,
+    session_ttl: Duration,
+    auth_ui_origin: String,
+    session_cors_origins: Vec<String>,
+    rate_limiter: Arc<dyn RateLimiter>,
+    return_origins: Vec<String>,
+    registration: RegistrationMode,
+    factor_policy: FactorPolicy,
+    allow_inline: bool,
+    engine: Arc<Engine>,
+    provider: Arc<dyn AuthProvider>,
 }
 
-pub struct BrowserRouter {
-    config: Arc<BrowserRouterConfig>,
-}
-
-pub fn browser(config: BrowserRouterConfig) -> BrowserRouter {
-    BrowserRouter {
-        config: Arc::new(config),
+/// Builds the embedded browser router at `/v1`. Handlers run locally
+/// against the provided Engine and AuthProvider.
+pub(crate) fn embedded_browser_router(
+    engine: Arc<Engine>,
+    provider: Arc<dyn AuthProvider>,
+    config: BrowserRouterConfig,
+) -> Router {
+    let oauth_bridge = config.oauth_bridge.clone();
+    let state = Arc::new(EmbeddedState {
+        auth_ui_origin: config.auth_ui_origin.clone(),
+        session_cors_origins: config.session_cors_origins,
+        cookie_domain: config.cookie_domain,
+        session_ttl: config.session_ttl,
+        rate_limiter: config.rate_limiter.expect("embedded mode requires rate_limiter"),
+        return_origins: config.return_origins.unwrap_or_default(),
+        registration: config.registration.unwrap_or(RegistrationMode::Closed),
+        factor_policy: config.factor_policy.unwrap_or(FactorPolicy::None),
+        allow_inline: config.allow_inline.unwrap_or(false),
+        engine,
+        provider: Arc::clone(&provider),
+    });
+    let mut v1 = V1Router::new(Arc::clone(&state)).into_router();
+    if let Some(bridge_config) = oauth_bridge {
+        v1 = v1.merge(super::oauth_bridge::router(
+            Arc::clone(&provider),
+            bridge_config,
+        ));
     }
+
+    // Outside both CORS zones: it resolves who the caller is on behalf of
+    // before any handler reads a rate-limit key.
+    let v1 = v1.layer(middleware::from_fn_with_state(
+        Arc::new(TrustedProxyState::new(Arc::clone(&state.engine))),
+        trusted_proxy,
+    ));
+
+    let interval = config
+        .maintenance_interval
+        .unwrap_or(DEFAULT_MAINTENANCE_INTERVAL);
+    if !interval.is_zero() {
+        spawn_maintenance(provider, interval);
+    }
+
+    Router::new().nest("/v1", v1)
 }
 
-impl BrowserRouter {
-    /// Spawns the background sweep (session GC, flow expiry) this router
-    /// owns. A provider mounted without a router does none of this itself.
-    pub fn spawn_maintenance(&self, interval: Duration) -> tokio::task::JoinHandle<()> {
-        let provider = Arc::clone(&self.config.provider);
-        tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(interval).await;
-                if let Err(e) = provider.run_maintenance().await {
-                    warn!(error = %e, "surge maintenance sweep failed");
-                }
+/// Spawns the background maintenance sweep (session GC, flow expiry).
+///
+/// Mounting an embedded browser router already starts this; call it
+/// directly only when driving the cadence yourself (paired with
+/// `maintenance_interval: Some(Duration::ZERO)`), or when running a
+/// provider with no router mounted on it at all.
+pub fn spawn_maintenance(
+    provider: Arc<dyn AuthProvider>,
+    interval: Duration,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(interval).await;
+            if let Err(e) = provider.run_maintenance().await {
+                warn!(error = %e, "surge maintenance sweep failed");
             }
-        })
-    }
-
-    /// Builds the mounted browser router at `/v1`. There is no unprefixed
-    /// default (architecture.md §3): a caller explicitly picks its version
-    /// by which path it calls. Currently only V1 is live; future versions
-    /// will be added as nested sub-routers here when they ship.
-    pub fn into_axum(self) -> Router {
-        let oauth_bridge = self.config.oauth_bridge.clone();
-        let mut v1 = V1Router::new(Arc::clone(&self.config)).into_router();
-        if let Some(bridge_config) = oauth_bridge {
-            v1 = v1.merge(super::oauth_bridge::router(
-                Arc::clone(&self.config.provider),
-                bridge_config,
-            ));
         }
-        Router::new().nest("/v1", v1)
-    }
+    })
 }
 
 /// The v1 browser-facing perimeter router — credential entry (login, flows)
 /// and session management (whoami, logout), each with its own CORS zone.
 struct V1Router {
-    state: Arc<AppState>,
+    state: Arc<EmbeddedState>,
 }
 
 impl V1Router {
-    fn new(config: Arc<BrowserRouterConfig>) -> Self {
-        Self {
-            state: Arc::new(AppState { config }),
-        }
+    fn new(state: Arc<EmbeddedState>) -> Self {
+        Self { state }
     }
 
     fn into_router(self) -> Router {
@@ -169,18 +202,15 @@ impl V1Router {
             .route("/flows/{id}/passphrase", post(submit_passphrase))
             .route("/flows/{id}/recover", post(submit_recover))
             .route("/flows/{id}/register", post(submit_register))
-            .layer(cors::narrow(&self.state.config.auth_ui_origin))
+            .layer(cors::narrow(&self.state.auth_ui_origin))
             .with_state(Arc::clone(&self.state));
 
-        let session_cors = if self.state.config.session_cors_origins.is_empty() {
-            cors::narrow(&self.state.config.auth_ui_origin)
+        let session_cors = if self.state.session_cors_origins.is_empty() {
+            cors::narrow(&self.state.auth_ui_origin)
         } else {
-            cors::union(&self.state.config.session_cors_origins)
+            cors::union(&self.state.session_cors_origins)
         };
 
-        // Authenticated factor management (session cookie; mutations guarded by
-        // the X-Surge-CSRF header, like logout). Lives in the session zone
-        // because it is driven by the logged-in user from the auth UI.
         let csrf = || middleware::from_fn(require_header_csrf);
         let session_management = Router::new()
             .route("/whoami", get(whoami))
@@ -207,21 +237,32 @@ impl V1Router {
     }
 }
 
-/// `ConnectInfo<SocketAddr>` isn't present unless the server was bound via
-/// `into_make_service_with_connect_info`; this extracts it if available
-/// without failing the request when it isn't.
+/// The address rate limiting is keyed on.
+///
+/// Prefers the end-user address stated by an authenticated proxy (see
+/// `trusted_proxy`) — behind a `RemoteProvider` the peer address is the
+/// service, and keying on it would put every one of that service's users
+/// in a single bucket. Falls back to the peer address, which itself is
+/// absent unless the server was bound via
+/// `into_make_service_with_connect_info`; missing it must not fail the
+/// request.
 struct MaybeClientIp(Option<std::net::IpAddr>);
 
 impl<S: Send + Sync> FromRequestParts<S> for MaybeClientIp {
     type Rejection = std::convert::Infallible;
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        Ok(Self(
+        let trusted = parts
+            .extensions
+            .get::<TrustedClientIp>()
+            .map(|TrustedClientIp(ip)| *ip);
+
+        Ok(Self(trusted.or_else(|| {
             parts
                 .extensions
                 .get::<ConnectInfo<SocketAddr>>()
-                .map(|ConnectInfo(addr)| addr.ip()),
-        ))
+                .map(|ConnectInfo(addr)| addr.ip())
+        })))
     }
 }
 
@@ -231,7 +272,7 @@ struct LoginQuery {
 }
 
 async fn start_login(
-    State(state): State<Arc<AppState>>,
+    State(state): State<Arc<EmbeddedState>>,
     Query(query): Query<LoginQuery>,
     headers: axum::http::HeaderMap,
 ) -> Result<Response, ApiError> {
@@ -241,7 +282,7 @@ async fn start_login(
     // the served+inline combination (§6), which requires the operator's
     // explicit acknowledgment; plain browser navigation (no `Accept` header)
     // always gets the redirect regardless.
-    let wants_json = state.config.allow_inline
+    let wants_json = state.allow_inline
         && headers
             .get(axum::http::header::ACCEPT)
             .and_then(|v| v.to_str().ok())
@@ -269,10 +310,10 @@ async fn start_login(
             );
             let origin_with_port = return_url.port().map(|port| format!("{origin}:{port}"));
 
-            let allowed = state.config.return_origins.iter().any(|o| o == &origin)
+            let allowed = state.return_origins.iter().any(|o| o == &origin)
                 || origin_with_port
                     .as_ref()
-                    .is_some_and(|o| state.config.return_origins.contains(o));
+                    .is_some_and(|o| state.return_origins.contains(o));
 
             if !allowed {
                 return Err(AuthError::Validation(ValidationError::Field {
@@ -294,13 +335,13 @@ async fn start_login(
         }
     };
 
-    let flow = state.config.engine.create_login_flow(return_to).await?;
+    let flow = state.engine.create_login_flow(return_to).await?;
 
     if wants_json {
         return Ok(Json(json!({
             "flow_id": flow.id,
             "csrf_token": flow.csrf_token,
-            "registration_mode": match state.config.registration {
+            "registration_mode": match state.registration {
                 RegistrationMode::Open => "open",
                 RegistrationMode::Invite => "invite",
                 RegistrationMode::Closed => "closed",
@@ -309,22 +350,22 @@ async fn start_login(
         .into_response());
     }
 
-    let redirect_url = format!("{}/login?flow={}", state.config.auth_ui_origin, flow.id);
+    let redirect_url = format!("{}/login?flow={}", state.auth_ui_origin, flow.id);
     Ok(Redirect::to(&redirect_url).into_response())
 }
 
 async fn get_flow(
-    State(state): State<Arc<AppState>>,
+    State(state): State<Arc<EmbeddedState>>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let flow = state.config.engine.get_login_flow(&id).await?;
+    let flow = state.engine.get_login_flow(&id).await?;
 
     Ok(Json(json!({
         "id": flow.id,
         "state": flow.state,
         "csrf_token": flow.csrf_token,
         "error": flow.error,
-        "registration_enabled": state.config.registration != RegistrationMode::Closed,
+        "registration_enabled": state.registration != RegistrationMode::Closed,
     })))
 }
 
@@ -336,30 +377,30 @@ struct PasswordSubmit {
 }
 
 async fn submit_password(
-    State(state): State<Arc<AppState>>,
+    State(state): State<Arc<EmbeddedState>>,
     MaybeClientIp(ip): MaybeClientIp,
     Path(id): Path<String>,
     Json(body): Json<PasswordSubmit>,
 ) -> Result<Response, ApiError> {
-    let flow = state.config.engine.get_login_flow(&id).await?;
+    let flow = state.engine.get_login_flow(&id).await?;
 
     if flow.state != "created" {
         return Err(AuthError::InvalidToken.into());
     }
     check_flow_csrf(&flow.csrf_token, &body.csrf_token)?;
 
-    state.config.rate_limiter.check("flow", "flow_submit", ip, None).await?;
+    state.rate_limiter.check("flow", "flow_submit", ip, None).await?;
 
     let username = match Username::new(&body.username) {
         Ok(u) => u,
         Err(_) => {
-            state.config.engine.record_flow_error(&id, "invalid_credentials").await?;
+            state.engine.record_flow_error(&id, "invalid_credentials").await?;
             return Err(AuthError::InvalidCredentials.into());
         }
     };
 
     state
-        .config
+        
         .rate_limiter
         .check("flow", "authenticate", ip, Some(username.as_str()))
         .await?;
@@ -367,7 +408,7 @@ async fn submit_password(
     let password = match Password::new(SecretString::from(body.password)) {
         Ok(p) => p,
         Err(_) => {
-            state.config.engine.record_flow_error(&id, "invalid_credentials").await?;
+            state.engine.record_flow_error(&id, "invalid_credentials").await?;
             return Err(AuthError::InvalidCredentials.into());
         }
     };
@@ -375,17 +416,16 @@ async fn submit_password(
     // Split verify from mint (unlike `provider.authenticate_password`, which
     // bundles verify+mint+audit): a user with a confirmed TOTP must clear the
     // second step before any session is minted.
-    let identity = match state.config.engine.verify_credential(&username, &password).await {
+    let identity = match state.engine.verify_credential(&username, &password).await {
         Ok(identity) => identity,
         Err(e) => {
-            state.config.engine.record_flow_error(&id, "invalid_credentials").await?;
+            state.engine.record_flow_error(&id, "invalid_credentials").await?;
             return Err(e.into());
         }
     };
 
-    if state.config.engine.has_totp(identity.id).await? {
+    if state.engine.has_totp(identity.id).await? {
         state
-            .config
             .engine
             .set_flow_awaiting_totp(&id, identity.id)
             .await?;
@@ -412,7 +452,7 @@ async fn submit_password(
 /// the session-introspection wire contract stays append-only), audit, complete
 /// the flow, set the cookie, and return the session plus the policy block.
 async fn finish_login(
-    state: &AppState,
+    state: &EmbeddedState,
     flow_id: &str,
     return_to: Option<String>,
     identity_id: IdentityId,
@@ -420,13 +460,11 @@ async fn finish_login(
     audit_detail: serde_json::Value,
 ) -> Result<Response, ApiError> {
     let issued = state
-        .config
         .engine
         .mint_session(identity_id, AuthMethod::Password)
         .await?;
 
     state
-        .config
         .engine
         .audit(
             surge_engine::audit::AuditActor::Identity {
@@ -438,15 +476,15 @@ async fn finish_login(
         )
         .await?;
 
-    state.config.engine.complete_flow(flow_id).await?;
+    state.engine.complete_flow(flow_id).await?;
 
     let cookie = session_cookie(
         issued.token.expose_secret(),
-        &state.config.cookie_domain,
-        state.config.session_ttl.as_secs() as i64,
+        &state.cookie_domain,
+        state.session_ttl.as_secs() as i64,
     );
     let jar = CookieJar::new().add(cookie);
-    let policy = policy_block(&state.config, identity_id).await?;
+    let policy = policy_block(&state, identity_id).await?;
 
     Ok((
         jar,
@@ -461,11 +499,11 @@ async fn finish_login(
 
 /// The soft-policy compliance block surfaced to the frontend.
 async fn policy_block(
-    config: &BrowserRouterConfig,
+    state: &EmbeddedState,
     identity_id: IdentityId,
 ) -> Result<serde_json::Value, AuthError> {
-    let status = config.engine.factor_status(identity_id).await?;
-    let (totp_required, passphrase_required) = config.factor_policy.requires();
+    let status = state.engine.factor_status(identity_id).await?;
+    let (totp_required, passphrase_required) = state.factor_policy.requires();
     let compliant =
         (!totp_required || status.has_totp) && (!passphrase_required || status.has_passphrase);
 
@@ -484,28 +522,28 @@ struct TotpSubmit {
 
 /// Mandatory second step after password when TOTP is enrolled.
 async fn submit_totp(
-    State(state): State<Arc<AppState>>,
+    State(state): State<Arc<EmbeddedState>>,
     MaybeClientIp(ip): MaybeClientIp,
     Path(id): Path<String>,
     Json(body): Json<TotpSubmit>,
 ) -> Result<Response, ApiError> {
-    let flow = state.config.engine.get_login_flow(&id).await?;
+    let flow = state.engine.get_login_flow(&id).await?;
     if flow.state != "awaiting_totp" {
         return Err(AuthError::InvalidToken.into());
     }
     check_flow_csrf(&flow.csrf_token, &body.csrf_token)?;
     let identity_id = flow.identity_id.ok_or(AuthError::InvalidToken)?;
 
-    state.config.rate_limiter.check("flow", "flow_submit", ip, None).await?;
+    state.rate_limiter.check("flow", "flow_submit", ip, None).await?;
     // Per-identity limit is the real brute-force control here: the flow's
     // attempt cap bounds nothing across freshly-created flows.
     state
-        .config
+        
         .rate_limiter
         .check("flow", "authenticate", ip, Some(&identity_id.to_string()))
         .await?;
 
-    match state.config.engine.verify_totp(identity_id, &body.code).await {
+    match state.engine.verify_totp(identity_id, &body.code).await {
         Ok(()) => {
             finish_login(
                 &state,
@@ -518,7 +556,7 @@ async fn submit_totp(
             .await
         }
         Err(e) => {
-            state.config.engine.record_flow_error(&id, "invalid_totp").await?;
+            state.engine.record_flow_error(&id, "invalid_totp").await?;
             Err(e.into())
         }
     }
@@ -533,34 +571,33 @@ struct PassphraseLogin {
 
 /// Standalone passphrase login — bypasses password and TOTP entirely.
 async fn submit_passphrase(
-    State(state): State<Arc<AppState>>,
+    State(state): State<Arc<EmbeddedState>>,
     MaybeClientIp(ip): MaybeClientIp,
     Path(id): Path<String>,
     Json(body): Json<PassphraseLogin>,
 ) -> Result<Response, ApiError> {
-    let flow = state.config.engine.get_login_flow(&id).await?;
+    let flow = state.engine.get_login_flow(&id).await?;
     if flow.state != "created" {
         return Err(AuthError::InvalidToken.into());
     }
     check_flow_csrf(&flow.csrf_token, &body.csrf_token)?;
 
-    state.config.rate_limiter.check("flow", "flow_submit", ip, None).await?;
+    state.rate_limiter.check("flow", "flow_submit", ip, None).await?;
 
     let username = match Username::new(&body.username) {
         Ok(u) => u,
         Err(_) => {
-            state.config.engine.record_flow_error(&id, "invalid_credentials").await?;
+            state.engine.record_flow_error(&id, "invalid_credentials").await?;
             return Err(AuthError::InvalidCredentials.into());
         }
     };
     state
-        .config
+        
         .rate_limiter
         .check("flow", "authenticate", ip, Some(username.as_str()))
         .await?;
 
     match state
-        .config
         .engine
         .verify_passphrase_by_username(&username, &body.passphrase)
         .await
@@ -577,7 +614,7 @@ async fn submit_passphrase(
             .await
         }
         Err(e) => {
-            state.config.engine.record_flow_error(&id, "invalid_credentials").await?;
+            state.engine.record_flow_error(&id, "invalid_credentials").await?;
             Err(e.into())
         }
     }
@@ -593,28 +630,28 @@ struct RecoverSubmit {
 
 /// Unauthenticated password recovery, authorized by the passphrase.
 async fn submit_recover(
-    State(state): State<Arc<AppState>>,
+    State(state): State<Arc<EmbeddedState>>,
     MaybeClientIp(ip): MaybeClientIp,
     Path(id): Path<String>,
     Json(body): Json<RecoverSubmit>,
 ) -> Result<Response, ApiError> {
-    let flow = state.config.engine.get_login_flow(&id).await?;
+    let flow = state.engine.get_login_flow(&id).await?;
     if flow.state != "created" {
         return Err(AuthError::InvalidToken.into());
     }
     check_flow_csrf(&flow.csrf_token, &body.csrf_token)?;
 
-    state.config.rate_limiter.check("flow", "flow_submit", ip, None).await?;
+    state.rate_limiter.check("flow", "flow_submit", ip, None).await?;
 
     let username = match Username::new(&body.username) {
         Ok(u) => u,
         Err(_) => {
-            state.config.engine.record_flow_error(&id, "invalid_credentials").await?;
+            state.engine.record_flow_error(&id, "invalid_credentials").await?;
             return Err(AuthError::InvalidCredentials.into());
         }
     };
     state
-        .config
+        
         .rate_limiter
         .check("flow", "authenticate", ip, Some(username.as_str()))
         .await?;
@@ -624,13 +661,12 @@ async fn submit_recover(
         .map_err(|e| AuthError::Validation(ValidationError::from(e)))?;
 
     match state
-        .config
         .engine
         .verify_passphrase_by_username(&username, &body.passphrase)
         .await
     {
         Ok(identity) => {
-            state.config.engine.set_password(identity.id, &new_password).await?;
+            state.engine.set_password(identity.id, &new_password).await?;
             finish_login(
                 &state,
                 &id,
@@ -642,7 +678,7 @@ async fn submit_recover(
             .await
         }
         Err(e) => {
-            state.config.engine.record_flow_error(&id, "invalid_credentials").await?;
+            state.engine.record_flow_error(&id, "invalid_credentials").await?;
             Err(e.into())
         }
     }
@@ -650,22 +686,22 @@ async fn submit_recover(
 
 /// Resolve the logged-in identity from the `surge_session` cookie (mirrors
 /// `whoami`). Used by the authenticated factor-management endpoints.
-async fn require_session(state: &AppState, jar: &CookieJar) -> Result<Session, ApiError> {
+async fn require_session(state: &EmbeddedState, jar: &CookieJar) -> Result<Session, ApiError> {
     let cookie = jar.get("surge_session").ok_or(AuthError::InvalidToken)?;
     let token = SessionToken::from_raw(cookie.value()).ok_or(AuthError::InvalidToken)?;
-    Ok(state.config.provider.verify_session(Some(token)).await?)
+    Ok(state.provider.verify_session(Some(token)).await?)
 }
 
 /// Per-identity throttle for step-up-guarded mutations. A valid session is
 /// required to reach these, but the `step_up` secret still shouldn't be
 /// brute-forceable from a stolen session.
 async fn rate_limit_step_up(
-    state: &AppState,
+    state: &EmbeddedState,
     ip: Option<std::net::IpAddr>,
     id: IdentityId,
 ) -> Result<(), ApiError> {
     state
-        .config
+        
         .rate_limiter
         .check("account", "authenticate", ip, Some(&id.to_string()))
         .await?;
@@ -684,16 +720,16 @@ struct ChangePassword {
 }
 
 async fn get_factors(
-    State(state): State<Arc<AppState>>,
+    State(state): State<Arc<EmbeddedState>>,
     jar: CookieJar,
 ) -> Result<Response, ApiError> {
     let session = require_session(&state, &jar).await?;
-    let policy = policy_block(&state.config, session.identity.id).await?;
+    let policy = policy_block(&state, session.identity.id).await?;
     Ok(Json(json!({ "policy": policy })).into_response())
 }
 
 async fn enroll_totp(
-    State(state): State<Arc<AppState>>,
+    State(state): State<Arc<EmbeddedState>>,
     MaybeClientIp(ip): MaybeClientIp,
     jar: CookieJar,
     Json(body): Json<StepUp>,
@@ -701,9 +737,9 @@ async fn enroll_totp(
     let session = require_session(&state, &jar).await?;
     let id = session.identity.id;
     rate_limit_step_up(&state, ip, id).await?;
-    state.config.engine.verify_step_up(id, &body.step_up).await?;
+    state.engine.verify_step_up(id, &body.step_up).await?;
 
-    let enrollment = state.config.engine.begin_totp_enrollment(id).await?;
+    let enrollment = state.engine.begin_totp_enrollment(id).await?;
     Ok(Json(json!({
         "otpauth_uri": enrollment.otpauth_uri,
         "secret": enrollment.secret_base32,
@@ -717,7 +753,7 @@ struct ConfirmTotp {
 }
 
 async fn confirm_totp(
-    State(state): State<Arc<AppState>>,
+    State(state): State<Arc<EmbeddedState>>,
     MaybeClientIp(ip): MaybeClientIp,
     jar: CookieJar,
     Json(body): Json<ConfirmTotp>,
@@ -725,9 +761,8 @@ async fn confirm_totp(
     let session = require_session(&state, &jar).await?;
     let id = session.identity.id;
     rate_limit_step_up(&state, ip, id).await?;
-    state.config.engine.confirm_totp(id, &body.code).await?;
+    state.engine.confirm_totp(id, &body.code).await?;
     state
-        .config
         .engine
         .audit(
             surge_engine::audit::AuditActor::Identity { id: id.to_string() },
@@ -736,12 +771,12 @@ async fn confirm_totp(
             None,
         )
         .await?;
-    let policy = policy_block(&state.config, id).await?;
+    let policy = policy_block(&state, id).await?;
     Ok(Json(json!({ "policy": policy })).into_response())
 }
 
 async fn remove_totp(
-    State(state): State<Arc<AppState>>,
+    State(state): State<Arc<EmbeddedState>>,
     MaybeClientIp(ip): MaybeClientIp,
     jar: CookieJar,
     Json(body): Json<StepUp>,
@@ -749,14 +784,14 @@ async fn remove_totp(
     let session = require_session(&state, &jar).await?;
     let id = session.identity.id;
     rate_limit_step_up(&state, ip, id).await?;
-    state.config.engine.verify_step_up(id, &body.step_up).await?;
-    state.config.engine.remove_totp(id).await?;
-    let policy = policy_block(&state.config, id).await?;
+    state.engine.verify_step_up(id, &body.step_up).await?;
+    state.engine.remove_totp(id).await?;
+    let policy = policy_block(&state, id).await?;
     Ok(Json(json!({ "policy": policy })).into_response())
 }
 
 async fn enroll_passphrase(
-    State(state): State<Arc<AppState>>,
+    State(state): State<Arc<EmbeddedState>>,
     MaybeClientIp(ip): MaybeClientIp,
     jar: CookieJar,
     Json(body): Json<StepUp>,
@@ -764,8 +799,8 @@ async fn enroll_passphrase(
     let session = require_session(&state, &jar).await?;
     let id = session.identity.id;
     rate_limit_step_up(&state, ip, id).await?;
-    state.config.engine.verify_step_up(id, &body.step_up).await?;
-    let passphrase = state.config.engine.begin_passphrase_enrollment(id).await?;
+    state.engine.verify_step_up(id, &body.step_up).await?;
+    let passphrase = state.engine.begin_passphrase_enrollment(id).await?;
     Ok(Json(json!({ "passphrase": passphrase })).into_response())
 }
 
@@ -775,7 +810,7 @@ struct ConfirmPassphrase {
 }
 
 async fn confirm_passphrase(
-    State(state): State<Arc<AppState>>,
+    State(state): State<Arc<EmbeddedState>>,
     MaybeClientIp(ip): MaybeClientIp,
     jar: CookieJar,
     Json(body): Json<ConfirmPassphrase>,
@@ -783,13 +818,13 @@ async fn confirm_passphrase(
     let session = require_session(&state, &jar).await?;
     let id = session.identity.id;
     rate_limit_step_up(&state, ip, id).await?;
-    state.config.engine.confirm_passphrase(id, &body.passphrase).await?;
-    let policy = policy_block(&state.config, id).await?;
+    state.engine.confirm_passphrase(id, &body.passphrase).await?;
+    let policy = policy_block(&state, id).await?;
     Ok(Json(json!({ "policy": policy })).into_response())
 }
 
 async fn remove_passphrase(
-    State(state): State<Arc<AppState>>,
+    State(state): State<Arc<EmbeddedState>>,
     MaybeClientIp(ip): MaybeClientIp,
     jar: CookieJar,
     Json(body): Json<StepUp>,
@@ -797,14 +832,14 @@ async fn remove_passphrase(
     let session = require_session(&state, &jar).await?;
     let id = session.identity.id;
     rate_limit_step_up(&state, ip, id).await?;
-    state.config.engine.verify_step_up(id, &body.step_up).await?;
-    state.config.engine.remove_passphrase(id).await?;
-    let policy = policy_block(&state.config, id).await?;
+    state.engine.verify_step_up(id, &body.step_up).await?;
+    state.engine.remove_passphrase(id).await?;
+    let policy = policy_block(&state, id).await?;
     Ok(Json(json!({ "policy": policy })).into_response())
 }
 
 async fn change_password(
-    State(state): State<Arc<AppState>>,
+    State(state): State<Arc<EmbeddedState>>,
     MaybeClientIp(ip): MaybeClientIp,
     jar: CookieJar,
     Json(body): Json<ChangePassword>,
@@ -812,11 +847,11 @@ async fn change_password(
     let session = require_session(&state, &jar).await?;
     let id = session.identity.id;
     rate_limit_step_up(&state, ip, id).await?;
-    state.config.engine.verify_step_up(id, &body.step_up).await?;
+    state.engine.verify_step_up(id, &body.step_up).await?;
 
     let new_password = Password::new(SecretString::from(body.new_password))
         .map_err(|e| AuthError::Validation(ValidationError::from(e)))?;
-    state.config.engine.set_password(id, &new_password).await?;
+    state.engine.set_password(id, &new_password).await?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -829,12 +864,12 @@ struct RegisterSubmit {
 }
 
 async fn submit_register(
-    State(state): State<Arc<AppState>>,
+    State(state): State<Arc<EmbeddedState>>,
     MaybeClientIp(ip): MaybeClientIp,
     Path(id): Path<String>,
     Json(body): Json<RegisterSubmit>,
 ) -> Result<Response, ApiError> {
-    match state.config.registration {
+    match state.registration {
         RegistrationMode::Closed => return Err(AuthError::Forbidden.into()),
         RegistrationMode::Invite => {
             return Err(AuthError::Internal(anyhow::anyhow!(
@@ -845,15 +880,15 @@ async fn submit_register(
         RegistrationMode::Open => {}
     }
 
-    let flow = state.config.engine.get_login_flow(&id).await?;
+    let flow = state.engine.get_login_flow(&id).await?;
     if flow.state != "created" {
         return Err(AuthError::InvalidToken.into());
     }
     check_flow_csrf(&flow.csrf_token, &body.csrf_token)?;
 
-    state.config.rate_limiter.check("flow", "flow_submit", ip, None).await?;
+    state.rate_limiter.check("flow", "flow_submit", ip, None).await?;
     state
-        .config
+        
         .rate_limiter
         .check("flow", "register", ip, None)
         .await?;
@@ -869,19 +904,19 @@ async fn submit_register(
         display_name: body.display_name,
     };
 
-    let issued = state.config.provider.register_and_authenticate(req).await?;
+    let issued = state.provider.register_and_authenticate(req).await?;
 
-    state.config.engine.complete_flow(&id).await?;
+    state.engine.complete_flow(&id).await?;
 
     let cookie = session_cookie(
         issued.token.expose_secret(),
-        &state.config.cookie_domain,
-        state.config.session_ttl.as_secs() as i64,
+        &state.cookie_domain,
+        state.session_ttl.as_secs() as i64,
     );
     let jar = CookieJar::new().add(cookie);
     // A fresh user is non-compliant the moment they register under any
     // non-`none` policy, so the frontend needs the block here too.
-    let policy = policy_block(&state.config, issued.session.identity.id).await?;
+    let policy = policy_block(&state, issued.session.identity.id).await?;
 
     Ok((
         StatusCode::CREATED,
@@ -899,24 +934,24 @@ async fn submit_register(
 /// behind credentialed `session_cors_origins`. Prefer
 /// `extract::me_logout_router` (same-origin default) unless a Panit
 /// service genuinely needs direct browser calls to Surge.
-async fn whoami(State(state): State<Arc<AppState>>, jar: CookieJar) -> Result<impl IntoResponse, ApiError> {
+async fn whoami(State(state): State<Arc<EmbeddedState>>, jar: CookieJar) -> Result<impl IntoResponse, ApiError> {
     let cookie = jar.get("surge_session").ok_or(AuthError::InvalidToken)?;
     let token = SessionToken::from_raw(cookie.value()).ok_or(AuthError::InvalidToken)?;
-    let session = state.config.provider.verify_session(Some(token)).await?;
-    let policy = policy_block(&state.config, session.identity.id).await?;
+    let session = state.provider.verify_session(Some(token)).await?;
+    let policy = policy_block(&state, session.identity.id).await?;
     let mut body = serde_json::to_value(&session).unwrap();
     body["policy"] = policy;
     Ok(Json(body))
 }
 
-async fn logout(State(state): State<Arc<AppState>>, jar: CookieJar) -> Result<Response, ApiError> {
+async fn logout(State(state): State<Arc<EmbeddedState>>, jar: CookieJar) -> Result<Response, ApiError> {
     if let Some(cookie) = jar.get("surge_session") {
         if let Some(token) = SessionToken::from_raw(cookie.value()) {
-            let _ = state.config.provider.revoke_session(&token).await;
+            let _ = state.provider.revoke_session(&token).await;
         }
     }
 
-    let removal = removal_cookie(&state.config.cookie_domain);
+    let removal = removal_cookie(&state.cookie_domain);
     let jar = CookieJar::new().add(removal);
     Ok((jar, StatusCode::NO_CONTENT).into_response())
 }

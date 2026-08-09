@@ -132,7 +132,7 @@ Store this token securely — it cannot be retrieved again.
 | Flag | Required | Description |
 |---|---|---|
 | `--name` | Yes | Human-readable name for the service (used in audit logs) |
-| `--grant` | Yes | Repeatable flag for each grant: `introspect`, `identity_read`, `identity_write`, `direct_auth`, `revoke` |
+| `--grant` | Yes | Repeatable flag for each grant: `introspect`, `identity_read`, `identity_write`, `direct_auth`, `revoke`, `browser_proxy` |
 | `--origin` | No | Repeatable flag; registers a return origin the service can redirect browser logins back to |
 
 The raw token is printed to stdout once. Store it immediately in a secrets manager or environment variable. The token hash is stored in the database — the raw token cannot be recovered.

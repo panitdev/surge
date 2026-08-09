@@ -39,16 +39,17 @@ async fn test_app() -> (axum::Router, Arc<surge_engine::Engine>, String) {
     let database_url = std::env::var("DATABASE_URL")
         .expect("DATABASE_URL must be set to run the cross-version canary");
 
-    let embedded = EmbeddedProvider::new(EmbeddedConfig {
-        database_url: SecretString::from(database_url),
-        pepper: SecretString::from("canary-test-pepper".to_string()),
-        session_ttl: Duration::from_secs(3600),
-    })
-    .await
-    .expect("failed to stand up EmbeddedProvider against DATABASE_URL");
+    let embedded = Arc::new(
+        EmbeddedProvider::new(EmbeddedConfig {
+            database_url: SecretString::from(database_url),
+            pepper: SecretString::from("canary-test-pepper".to_string()),
+            session_ttl: Duration::from_secs(3600),
+        })
+        .await
+        .expect("failed to stand up EmbeddedProvider against DATABASE_URL"),
+    );
 
     let engine = embedded.engine();
-    let provider: Arc<dyn surge::AuthProvider> = Arc::new(embedded);
 
     let suffix: u32 = rand_suffix();
     let svc_name = format!("canary-svc-{suffix}");
@@ -81,7 +82,7 @@ async fn test_app() -> (axum::Router, Arc<surge_engine::Engine>, String) {
         hydra_bridge: None,
     });
 
-    let app = surge_server::api::router(Arc::clone(&engine), provider, config)
+    let app = surge_server::api::router(embedded, config)
         .await
         .expect("router assembly");
 

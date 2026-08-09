@@ -142,7 +142,7 @@ See [Registration Modes](/integration/registration-modes) for how each mode affe
 A comma-separated list of origins allowed to make credentialed cross-origin requests to session-management endpoints (`/v1/whoami`, `/v1/logout`). When empty (the default), only same-origin requests are allowed.
 
 ```bash
-# Allow the auth UI and two applications to call /me and /logout
+# Allow the auth UI and two applications to call /whoami and /logout
 export SURGE_SESSION_CORS_ORIGINS="https://auth.example.com,https://app.example.com,https://admin.example.com"
 ```
 

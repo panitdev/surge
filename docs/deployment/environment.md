@@ -133,7 +133,7 @@ SURGE_SESSION_TTL_HOURS=72
 # Registration — match your policy
 SURGE_REGISTRATION=open
 
-# CORS — explicitly list every origin that calls /me or /logout
+# CORS — explicitly list every origin that calls /whoami or /logout
 SURGE_SESSION_CORS_ORIGINS="https://auth.example.com,https://app.example.com,https://admin.example.com"
 
 # Inline flow-init — disabled on served deployments

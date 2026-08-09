@@ -30,11 +30,15 @@ Your application code works with `Arc<dyn AuthProvider>` — it never knows whic
 
 ## How browser login works in each mode
 
-**Embedded**: you mount the `BrowserRouter` on your Axum app. Users visit `your-app.com/api/surge/v1/login`, complete the flow, and receive a session cookie set on your domain. Everything — the login form, credential verification, session minting, `whoami`, logout — runs in your process against your database.
+In both modes, you call `provider.browser_router(config)` and get back an `axum::Router`. The provider decides what happens internally:
 
-**Served**: `surge-server` hosts the login routes at its own address (e.g. `auth.example.com/v1/login`). Your app redirects unauthenticated users to `surge-server` with a `return_to` param. The user logs in there, gets a session cookie, and is redirected back to your app. Your app then calls `surge-server` (via `RemoteProvider`) to verify sessions or manage identities. The user never interacts with your app's auth endpoints — they're on `surge-server`'s domain.
+**Embedded** (`EmbeddedProvider`): handlers run in your process. Users visit `your-app.com/api/surge/v1/login`, complete the flow, and receive a session cookie set on your domain. Everything — credential verification, session minting, `whoami`, logout — runs locally against your database.
 
-In both modes, your app uses the same `AuthProvider` methods to check sessions and look up identities. The browser routing is the only axis that differs — and it's a deployment choice, not a code change.
+**Served** (`RemoteProvider`): the router acts as a reverse proxy, forwarding browser requests to the remote `surge-server` (which already serves all the same endpoints). Cookie domains are rewritten to your local domain. Your app's consumers see identical routes — they never know whether auth is local or proxied.
+
+The proxy is inside `surge-server`'s trust boundary, not an anonymous client of it: it authenticates with your service token (which needs the `browser_proxy` grant) and states the end user's address in `X-Surge-Client-Ip`, so rate limits are keyed on the actual user rather than collapsing your whole user base into your service's one address. `surge-server` rejects that header unless a valid `browser_proxy` token accompanies it. See [Embedding → Remote mode](/integration/embedding#remote-mode-the-browser-perimeter-is-a-proxy).
+
+Your app uses the same `AuthProvider` methods to check sessions and look up identities. The browser routing is mode-agnostic — it's a deployment choice, not a code change.
 
 ## Switching between modes
 

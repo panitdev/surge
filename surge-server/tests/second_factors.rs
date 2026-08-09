@@ -30,16 +30,17 @@ async fn test_app(policy: FactorPolicy) -> (axum::Router, String) {
     let database_url =
         std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
 
-    let embedded = EmbeddedProvider::new(EmbeddedConfig {
-        database_url: SecretString::from(database_url),
-        pepper: SecretString::from("factors-test-pepper".to_string()),
-        session_ttl: Duration::from_secs(3600),
-    })
-    .await
-    .expect("failed to stand up EmbeddedProvider against DATABASE_URL");
+    let embedded = Arc::new(
+        EmbeddedProvider::new(EmbeddedConfig {
+            database_url: SecretString::from(database_url),
+            pepper: SecretString::from("factors-test-pepper".to_string()),
+            session_ttl: Duration::from_secs(3600),
+        })
+        .await
+        .expect("failed to stand up EmbeddedProvider against DATABASE_URL"),
+    );
 
     let engine = embedded.engine();
-    let provider: Arc<dyn surge::AuthProvider> = Arc::new(embedded);
 
     let svc_name = format!("factors-svc-{}", rand_suffix());
     let token = surge_engine::types::ServiceToken::generate();
@@ -67,7 +68,7 @@ async fn test_app(policy: FactorPolicy) -> (axum::Router, String) {
         hydra_bridge: None,
     });
 
-    let app = surge_server::api::router(Arc::clone(&engine), provider, config)
+    let app = surge_server::api::router(embedded, config)
         .await
         .expect("router assembly");
 

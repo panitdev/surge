@@ -154,4 +154,17 @@ impl AuthProvider for EmbeddedProvider {
         self.engine.gc_expired_login_flows().await?;
         Ok(())
     }
+
+    #[cfg(feature = "router")]
+    fn browser_router(
+        self: Arc<Self>,
+        config: crate::router::BrowserRouterConfig,
+    ) -> axum::Router {
+        let engine = self.engine();
+        crate::router::embedded_browser_router(
+            engine,
+            self as Arc<dyn AuthProvider>,
+            config,
+        )
+    }
 }

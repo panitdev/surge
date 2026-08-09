@@ -271,4 +271,19 @@ impl AuthProvider for RemoteProvider {
 
         Self::parse_issued_session(resp).await
     }
+
+    #[cfg(feature = "router")]
+    fn browser_router(
+        self: std::sync::Arc<Self>,
+        config: crate::router::BrowserRouterConfig,
+    ) -> axum::Router {
+        crate::router::proxy_browser_router(crate::router::ProxyConfig {
+            upstream_base_url: self.base_url.clone(),
+            cookie_domain: config.cookie_domain,
+            auth_ui_origin: config.auth_ui_origin,
+            session_cors_origins: config.session_cors_origins,
+            service_token: self.service_token.clone(),
+            client: self.client.clone(),
+        })
+    }
 }

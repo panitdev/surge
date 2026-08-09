@@ -5,8 +5,7 @@ use clap::Args;
 use tokio::net::TcpListener;
 use tracing::info;
 
-use surge::AuthProvider;
-use surge_engine::Engine;
+use surge::EmbeddedProvider;
 
 use crate::api;
 use crate::config::ServerConfig;
@@ -19,13 +18,12 @@ pub struct ServeArgs {
 
 pub async fn serve(
     args: ServeArgs,
-    engine: Arc<Engine>,
-    provider: Arc<dyn AuthProvider>,
+    embedded: Arc<EmbeddedProvider>,
     config: ServerConfig,
 ) -> anyhow::Result<()> {
     let bind = args.bind.unwrap_or_else(|| config.bind_addr.clone());
     let config = Arc::new(config);
-    let app = api::router(engine, provider, config).await?;
+    let app = api::router(embedded, config).await?;
 
     let listener = TcpListener::bind(&bind).await?;
     info!(addr = %bind, "surge-server listening");
