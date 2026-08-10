@@ -10,11 +10,15 @@ mod error;
 mod oauth_bridge;
 mod proxy;
 pub mod rate_limit;
+#[cfg(feature = "test-provider")]
+mod test;
 mod trusted_proxy;
 
 pub use browser::{BrowserRouterConfig, FactorPolicy, RegistrationMode};
 pub use browser::{spawn_maintenance, DEFAULT_MAINTENANCE_INTERVAL};
 pub(crate) use browser::embedded_browser_router;
 pub(crate) use proxy::{proxy_browser_router, ProxyConfig};
+#[cfg(feature = "test-provider")]
+pub(crate) use test::test_browser_router;
 pub use oauth_bridge::OauthBridgeConfig;
 pub use rate_limit::{PostgresRateLimiter, RateLimitConfig, RateLimitPolicy, RateLimiter};

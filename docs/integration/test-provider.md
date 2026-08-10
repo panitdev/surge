@@ -60,6 +60,33 @@ The username must pass Surge's standard validation (3–32 lowercase alphanumeri
 | `identity` / `identity_by_username` | Returns the fixed identity regardless of arguments. |
 | `update_profile` | Applies the patch in memory; subsequent calls reflect the change. |
 | `revoke_session` / `revoke_all_sessions` | No-ops — the provider stays "always authenticated". |
+| `browser_router` | Serves `GET /v1/whoami` only. Every other perimeter route returns `501`. |
+
+## Browser router
+
+`TestProvider` mounts a read-only perimeter, so a frontend can answer "am I logged in, and who am I?" without a database:
+
+```rust
+let app = Router::new()
+    .merge(Arc::clone(&provider).browser_router(BrowserRouterConfig {
+        cookie_domain: "localhost".into(),
+        session_ttl: Duration::from_secs(3600),
+        auth_ui_origin: "http://localhost:5173".into(),
+        session_cors_origins: vec![],
+        // Embedded-only fields are ignored — no rate limiter needed.
+        rate_limiter: None,
+        return_origins: None,
+        registration: None,
+        factor_policy: None,
+        allow_inline: None,
+        oauth_bridge: None,
+        maintenance_interval: None,
+    }));
+```
+
+`GET /v1/whoami` returns the same session JSON as the real perimeter ([Whoami](/api/browser/whoami)), always `200` — there is no unauthenticated state to represent. It carries no `policy` block, since the fixed identity enrolls no factors.
+
+Everything else — `/v1/login`, the flow routes, `/v1/logout`, the factor routes — answers `501 not_implemented`. The identity is fixed, so there is no credential to submit and no session to revoke; returning `501` surfaces that instead of faking success. If your frontend calls `logout()`, expect it to fail under `TestProvider` and branch accordingly.
 
 ## Using with the AuthSession extractor
 

@@ -126,6 +126,18 @@ impl AuthProvider for TestProvider {
     ) -> Result<IssuedSession, AuthError> {
         Ok(self.issued_session())
     }
+
+    /// Read-only perimeter: `GET /v1/whoami` and nothing else. The
+    /// identity is fixed and every request authenticates as it, so there
+    /// is no credential to enter and no session to revoke — the mutating
+    /// routes stay 501 rather than pretending to succeed.
+    #[cfg(feature = "router")]
+    fn browser_router(
+        self: std::sync::Arc<Self>,
+        config: crate::router::BrowserRouterConfig,
+    ) -> axum::Router {
+        crate::router::test_browser_router(self as std::sync::Arc<dyn AuthProvider>, config)
+    }
 }
 
 #[cfg(test)]

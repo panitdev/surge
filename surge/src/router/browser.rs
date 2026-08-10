@@ -69,10 +69,10 @@ pub struct BrowserRouterConfig {
     /// credential-entry zone, and the default for session-management when
     /// `session_cors_origins` is empty.
     pub auth_ui_origin: String,
-    /// Non-empty enables the opt-in browser->Surge session-management
-    /// zone: credentialed CORS over this union instead of the narrow
-    /// same-origin default (§8.2b). Leave empty for the default,
-    /// same-origin-only `/me` + `/logout` path (see `extract::me_logout_router`).
+    /// Origins allowed to call the session-management zone (`whoami`,
+    /// `logout`, factors) with credentials. Leave empty to restrict that
+    /// zone to `auth_ui_origin`; set it when your frontend is served from
+    /// an origin other than the auth UI's (§8.2b).
     pub session_cors_origins: Vec<String>,
 
     // -- Embedded-only fields (ignored by RemoteProvider) --
@@ -930,10 +930,10 @@ async fn submit_register(
         .into_response())
 }
 
-/// Browser->Surge session resolution — the opt-in path (§8.2b), gated
-/// behind credentialed `session_cors_origins`. Prefer
-/// `extract::me_logout_router` (same-origin default) unless a Panit
-/// service genuinely needs direct browser calls to Surge.
+/// Browser->Surge session resolution: the frontend's "am I logged in, and
+/// who am I?" call. Read-only, so no CSRF gate — it only inspects the
+/// session cookie. Cross-origin callers need `session_cors_origins`
+/// (§8.2b); same-origin frontends work with it empty.
 async fn whoami(State(state): State<Arc<EmbeddedState>>, jar: CookieJar) -> Result<impl IntoResponse, ApiError> {
     let cookie = jar.get("surge_session").ok_or(AuthError::InvalidToken)?;
     let token = SessionToken::from_raw(cookie.value()).ok_or(AuthError::InvalidToken)?;
