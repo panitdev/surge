@@ -7,6 +7,8 @@ use tracing::warn;
 use crate::traits::AuthProvider;
 use crate::*;
 
+const TEST_IDENTITY_ID: uuid::Uuid = uuid::Uuid::from_u128(0x00000000000070008000000000000007);
+
 pub struct TestConfig {
     pub username: String,
     pub display_name: String,
@@ -33,7 +35,7 @@ impl TestProvider {
             .map_err(|e| anyhow::anyhow!("invalid test username: {e}"))?;
 
         let identity = Identity::new(
-            IdentityId::new(),
+            IdentityId::from_uuid(TEST_IDENTITY_ID),
             username,
             config.display_name,
             None,
@@ -168,5 +170,14 @@ mod tests {
         let token = SessionToken::from_raw("aeg_s_anything_goes_here_1234").unwrap();
         let session = provider.verify_session(Some(token)).await.unwrap();
         assert_eq!(session.identity.display_name, "New Name");
+    }
+
+    #[test]
+    fn identity_id_is_fixed() {
+        let provider = TestProvider::new(TestConfig::default()).unwrap();
+        assert_eq!(
+            provider.identity.read().unwrap().id.into_uuid(),
+            TEST_IDENTITY_ID
+        );
     }
 }
