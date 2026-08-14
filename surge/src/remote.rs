@@ -28,7 +28,18 @@ pub struct RemoteProvider {
 
 impl RemoteProvider {
     pub fn new(config: RemoteConfig) -> Result<Self, anyhow::Error> {
-        let client = Client::builder().timeout(config.timeout).build()?;
+        // Redirects are never this client's to resolve. It serves two callers, and
+        // following breaks one of them badly: `browser_router`'s proxy exists to hand
+        // upstream's response back to the browser, and upstream answers `GET /v1/login`
+        // with a 303 to the auth UI. Followed here, the browser instead receives that
+        // page's HTML under *this* service's origin — root-relative assets 404, and the
+        // `flow` id, which only ever lived in the `Location` header, is lost. The
+        // service-token API calls are the other caller; they expect JSON and have no
+        // redirect to follow.
+        let client = Client::builder()
+            .timeout(config.timeout)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()?;
 
         let cache = Cache::builder()
             .max_capacity(config.cache_max_entries)

@@ -453,4 +453,82 @@ mod tests {
             "surge_session=abc"
         );
     }
+
+    /// `GET /v1/login` is answered by upstream with a redirect to the auth UI,
+    /// and that redirect is for the *browser* to follow — it carries the flow id,
+    /// and the auth UI must load under its own origin to resolve its assets.
+    ///
+    /// Built through `RemoteProvider` rather than `test_router` on purpose: the
+    /// redirect policy lives on the client the provider constructs, so a router
+    /// handed a test-local `Client::new()` would pass this while production
+    /// silently followed the hop and served the auth UI's HTML as a 200.
+    #[tokio::test]
+    async fn upstream_redirect_reaches_the_browser() {
+        use tower::ServiceExt;
+
+        let app = Router::new().route(
+            "/v1/login",
+            get(|| async {
+                (
+                    StatusCode::SEE_OTHER,
+                    [(
+                        axum::http::header::LOCATION,
+                        "https://auth.example.com/login?flow=aeg_f_test",
+                    )],
+                )
+                    .into_response()
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let provider = std::sync::Arc::new(
+            crate::remote::RemoteProvider::new(crate::RemoteConfig {
+                base_url: Url::parse(&format!("http://{addr}")).unwrap(),
+                service_token: SecretString::from("aeg_svc_test"),
+                cache_ttl: std::time::Duration::from_secs(30),
+                cache_max_entries: 10,
+                timeout: std::time::Duration::from_secs(5),
+            })
+            .unwrap(),
+        );
+
+        let response = crate::traits::AuthProvider::browser_router(
+            provider,
+            crate::router::BrowserRouterConfig {
+                cookie_domain: "app.example.com".into(),
+                session_ttl: std::time::Duration::from_secs(3600),
+                auth_ui_origin: "https://auth.example.com".into(),
+                session_cors_origins: vec!["https://app.example.com".into()],
+                rate_limiter: None,
+                return_origins: None,
+                registration: None,
+                factor_policy: None,
+                allow_inline: None,
+                oauth_bridge: None,
+                maintenance_interval: None,
+            },
+        )
+        .oneshot(
+            axum::http::Request::builder()
+                .uri("/v1/login?return_to=https://app.example.com/")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::LOCATION)
+                .unwrap(),
+            "https://auth.example.com/login?flow=aeg_f_test"
+        );
+    }
 }
