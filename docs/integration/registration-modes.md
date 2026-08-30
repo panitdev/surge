@@ -100,7 +100,7 @@ HTTP/1.1 403 Forbidden
 The service API remains the only path for identity creation:
 
 ```bash
-curl -X POST http://localhost:3000/v2/register \
+curl -X POST http://localhost:3000/v1/register \
   -H "Authorization: Bearer aeg_svc_..." \
   -H "Content-Type: application/json" \
   -d '{"username": "bob", "password": "correct-horse-battery-staple", "display_name": "Bob"}'

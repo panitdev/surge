@@ -1,9 +1,4 @@
-//! Service-facing v1. Retire this module (and its `/v1` mount in
-//! `api/mod.rs`) when every `RemoteProvider` caller has been confirmed on
-//! v2 — a service-token traffic counter on these routes, or a manifest of
-//! which service runs which crate version, showing zero v1 traffic for a
-//! sustained window. Not before: `service_v2` currently reuses these
-//! handlers, so check that a divergence hasn't been added there first.
+//! Service-facing API (v1).
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};

@@ -3,10 +3,18 @@
 //! introspect the same everywhere, on any live version, forever.
 //!
 //! Three lanes:
-//!   1. mint browser-facing, introspect browser-facing, across versions.
-//!   2. mint service-facing, introspect service-facing, across versions.
-//!   3. mint on one surface, introspect on the other, across versions
-//!      (both directions) — the one nothing else catches.
+//!   1. mint browser-facing, introspect browser-facing.
+//!   2. mint service-facing, introspect service-facing.
+//!   3. mint on one surface, introspect on the other, both directions —
+//!      the one nothing else catches.
+//!
+//! The version axis is currently dormant: `/v1` is the only mounted
+//! surface, so every lane runs v1 -> v1 and what they actually pin is
+//! cross-*surface* portability. That is lane 3's real value and it holds
+//! regardless. When a second version is mounted, retarget the introspect
+//! half of lanes 2 and 3B to it — the lanes are shaped for that and the
+//! helpers already take a version argument. Do not delete them in the
+//! meantime; a dormant axis is not a retired guarantee.
 //!
 //! These are real end-to-end tests against a live Postgres and are
 //! `#[ignore]`d by default so a plain `cargo test` never touches a
@@ -281,8 +289,8 @@ async fn lane2_mint_service_introspect_service_across_versions() {
     let password = register_identity(&app, &token, &username).await;
 
     let raw = mint_service(&app, "v1", &token, &username, &password).await;
-    let resp = verify_service(&app, "v2", &token, &raw).await;
-    assert_eq!(resp.status(), StatusCode::OK, "v1-minted session must resolve on v2 verify");
+    let resp = verify_service(&app, "v1", &token, &raw).await;
+    assert_eq!(resp.status(), StatusCode::OK, "service-minted session must resolve on service verify");
     let session = body_json(resp).await;
     assert_eq!(session["identity"]["username"], username);
 }
@@ -292,9 +300,7 @@ async fn lane2_mint_service_introspect_service_across_versions() {
 async fn lane3_mint_one_surface_introspect_the_other() {
     let (app, _engine, token) = test_app().await;
 
-    // direction A: mint browser-facing (v1), introspect service-facing (v1).
-    // The browser surface now only serves v1; cross-version coverage for
-    // the service-facing surface is handled by lane 2.
+    // direction A: mint browser-facing, introspect service-facing.
     let username_a = format!("lane3a-{}", rand_suffix());
     let password_a = register_identity(&app, &token, &username_a).await;
     let raw_a = mint_browser(&app, "v1", &username_a, &password_a).await;
@@ -305,14 +311,14 @@ async fn lane3_mint_one_surface_introspect_the_other() {
         "browser-minted (v1) session must resolve via service-facing verify (v1)"
     );
 
-    // direction B: mint service-facing (v2), introspect browser-facing (v1).
+    // direction B: mint service-facing, introspect browser-facing.
     let username_b = format!("lane3b-{}", rand_suffix());
     let password_b = register_identity(&app, &token, &username_b).await;
-    let raw_b = mint_service(&app, "v2", &token, &username_b, &password_b).await;
+    let raw_b = mint_service(&app, "v1", &token, &username_b, &password_b).await;
     let resp_b = whoami_browser(&app, "v1", &raw_b).await;
     assert_eq!(
         resp_b.status(),
         StatusCode::OK,
-        "service-minted (v2) session must resolve via browser-facing whoami (v1)"
+        "service-minted session must resolve via browser-facing whoami"
     );
 }

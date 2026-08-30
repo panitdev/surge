@@ -12,20 +12,22 @@ Surge's core guarantee is: **a session or token minted under version N is valid 
 
 This applies regardless of:
 - **Provider type** — embedded or served, sessions are portable across the boundary
-- **API version** — a session minted on the v1 browser surface is introspectable through the v2 service surface, and vice versa
-- **Mixed-version deployments** — you can have some services on v1 and others on v2 simultaneously
+- **Surface** — a session minted on the browser surface is introspectable through the service surface, and vice versa
+
+`/v1` is currently the only mounted API version, so there is no cross-version
+path to exercise today. The guarantee is about the credential store, which is
+version-independent: sessions live in `surge.session` and are resolved the same
+way by every surface.
 
 ```bash
-# Session minted by v1 embedded provider
+# Session minted through the browser surface
 curl -X POST http://localhost:3000/v1/flows/aeg_f_.../password \
   -H "Content-Type: application/json" \
   -d '{"username": "alice", "password": "...", "csrf_token": "aeg_csrf_..."}'
 # → session cookie returned
 
-# ... upgrade to v2 ...
-
-# Same session still verifies through v2 service endpoint
-curl -X POST http://localhost:3000/v2/sessions/verify \
+# The same session verifies through the service surface
+curl -X POST http://localhost:3000/v1/sessions/verify \
   -H "Authorization: Bearer aeg_svc_..." \
   -H "Content-Type: application/json" \
   -d '{"token": "aeg_s_1a2b3c4d5e6f7g8h9i0j"}'
@@ -53,9 +55,11 @@ Examples of behavior changes:
 - Session GC interval adjustment
 - Improved error messages on auth failures
 
-## Browser-facing: multiple versions live simultaneously
+## Browser-facing: versions live side by side
 
-Surge's browser router nests multiple API versions side by side. When v2 ships, it exists alongside v1:
+Surge's browser router is built to nest API versions side by side. Today it
+mounts `/v1` alone; when v2 ships, it exists alongside v1 rather than replacing
+it:
 
 ```rust
 // Inside the browser router returned by provider.browser_router()
@@ -67,21 +71,24 @@ Router::new()
 
 This means:
 - **No forced migration deadline** — v1 callers continue working as long as v1 is shipped
-- **Gradual adoption** — your frontend can move from `/v1/whoami` to `/v2/whoami` at your own pace
+- **Gradual adoption** — when a new version is added, your frontend can move to it at its own pace
 - **Coexistence** — different parts of your app can use different versions simultaneously
 
 Versions grow additively in minor releases (new version added, old one kept) and shrink in major releases (old version removed). When a version is removed, sessions and tokens minted under that version are still honored — removal only affects the API surface, never the credential store.
 
 ## Service-facing: staged rollouts
 
-For service-facing APIs (`/v1/service/...`, `/v2/...`), only one version is served at a time. Upgrade your services in stages:
+The service-facing API is mounted at `/v1`. When a future release adds a second
+version, upgrade your services in stages:
 
-1. **Deploy surge-server** with the new version. Old endpoints are still available (if the old version is still present).
+1. **Deploy surge-server** with the new version. Old endpoints remain available.
 2. **Update one service** at a time to use the new API paths.
 3. **Verify** session introspection works across old and new service versions.
 4. **Remove old version** when all services have migrated (major release).
 
-During the transition, services on different versions share the same session store — a session verified by a v1-connected service is equally valid when verified by a v2-connected service.
+During such a transition, services on different versions share the same session
+store — a session verified by a service on one version is equally valid when
+verified by a service on another.
 
 ## Database migrations
 
@@ -132,7 +139,7 @@ let response = app
     .oneshot(
         Request::builder()
             .method("POST")
-            .uri("/v2/sessions/verify")
+            .uri("/v1/sessions/verify")
             .header("Authorization", format!("Bearer {}", token.expose_secret()))
             .header("Content-Type", "application/json")
             .body(Body::from(json!({"token": session_token}).to_string()))

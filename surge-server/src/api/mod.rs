@@ -1,7 +1,6 @@
 pub mod error;
 pub mod middleware;
 pub mod service_v1;
-pub mod service_v2;
 
 use std::sync::Arc;
 
@@ -118,8 +117,7 @@ pub async fn router(
 
     Ok(Router::new()
         .route("/health", get(|| async { StatusCode::NO_CONTENT }))
-        .nest("/v1", service_v1::router(Arc::clone(&state)))
-        .nest("/v2", service_v2::router(state))
+        .nest("/v1", service_v1::router(state))
         .merge(browser_router)
         .layer(TraceLayer::new_for_http()))
 }
