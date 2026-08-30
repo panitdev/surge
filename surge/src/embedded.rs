@@ -149,6 +149,99 @@ impl AuthProvider for EmbeddedProvider {
         Ok(issued)
     }
 
+    async fn authenticate_by_link(
+        &self,
+        provider: &str,
+        subject: &str,
+        seed: &LinkSeed,
+    ) -> Result<LinkAuth, AuthError> {
+        let auth = self
+            .engine
+            .authenticate_by_link(provider, subject, seed)
+            .await?;
+
+        self.engine
+            .audit(
+                surge_engine::audit::AuditActor::Identity {
+                    id: auth.issued.session.identity.id.to_string(),
+                },
+                if auth.created {
+                    "register_by_link"
+                } else {
+                    "authenticate_by_link"
+                },
+                serde_json::json!({
+                    "session_id": auth.issued.session.id.to_string(),
+                    "provider": provider,
+                }),
+                None,
+            )
+            .await?;
+
+        Ok(auth)
+    }
+
+    async fn link_identity(
+        &self,
+        identity_id: IdentityId,
+        provider: &str,
+        subject: &str,
+        verified: bool,
+    ) -> Result<IdentityLink, AuthError> {
+        let link = self
+            .engine
+            .link_identity(identity_id, provider, subject, verified)
+            .await?;
+
+        self.engine
+            .audit(
+                surge_engine::audit::AuditActor::Identity {
+                    id: identity_id.to_string(),
+                },
+                "link_identity",
+                serde_json::json!({
+                    "provider": provider,
+                    "subject": subject,
+                    "verified": link.is_verified(),
+                }),
+                None,
+            )
+            .await?;
+
+        Ok(link)
+    }
+
+    async fn identity_links(&self, identity_id: IdentityId) -> Result<Vec<IdentityLink>, AuthError> {
+        self.engine.identity_links(identity_id).await
+    }
+
+    async fn unlink_identity(
+        &self,
+        identity_id: IdentityId,
+        provider: &str,
+        subject: &str,
+    ) -> Result<(), AuthError> {
+        self.engine
+            .unlink_identity(identity_id, provider, subject)
+            .await?;
+
+        self.engine
+            .audit(
+                surge_engine::audit::AuditActor::Identity {
+                    id: identity_id.to_string(),
+                },
+                "unlink_identity",
+                serde_json::json!({
+                    "provider": provider,
+                    "subject": subject,
+                }),
+                None,
+            )
+            .await?;
+
+        Ok(())
+    }
+
     async fn run_maintenance(&self) -> Result<(), AuthError> {
         self.engine.gc_expired_sessions().await?;
         self.engine.gc_expired_login_flows().await?;

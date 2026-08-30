@@ -172,3 +172,23 @@ pub struct NewAuditEntry {
     pub subject: serde_json::Value,
     pub detail: Option<serde_json::Value>,
 }
+
+#[derive(Queryable, Selectable)]
+#[diesel(table_name = schema::identity_link)]
+pub struct IdentityLinkRow {
+    pub provider: String,
+    pub subject: String,
+    pub identity_id: Uuid,
+    pub verified_at: Option<DateTime<Utc>>,
+    pub linked_at: DateTime<Utc>,
+}
+
+#[derive(Insertable)]
+#[diesel(table_name = schema::identity_link)]
+pub struct NewIdentityLink<'a> {
+    pub provider: &'a str,
+    pub subject: &'a str,
+    pub identity_id: Uuid,
+    pub verified_at: Option<DateTime<Utc>>,
+    pub linked_at: DateTime<Utc>,
+}

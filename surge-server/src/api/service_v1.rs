@@ -31,6 +31,11 @@ pub fn router(state: Arc<AppState>) -> Router {
             post(register_and_authenticate),
         )
         .route("/authenticate/password", post(authenticate_password))
+        .route("/authenticate/link", post(authenticate_by_link))
+        .route(
+            "/identities/{id}/links",
+            get(identity_links).post(link_identity).delete(unlink_identity),
+        )
         .layer(middleware::from_fn_with_state(state.clone(), service_auth))
         .with_state(state)
 }
@@ -230,4 +235,156 @@ pub(crate) async fn authenticate_password(
         "session": serde_json::to_value(&issued.session).unwrap(),
         "token": issued.token.expose_secret(),
     })))
+}
+
+/// Both columns are `TEXT`, so this is a policy cap rather than a column
+/// width — it bounds what a caller can push through, not what fits.
+const MAX_LINK_REF_LEN: usize = 255;
+
+/// `provider` and `subject` together address an external account. Neither is
+/// interpreted here — the pair is opaque to Surge — but an empty or unbounded
+/// value is never a real account reference, and `subject` is matched verbatim
+/// against a primary key.
+fn validate_link_ref(provider: &str, subject: &str) -> Result<(), AuthError> {
+    for (field, value) in [("provider", provider), ("subject", subject)] {
+        if value.is_empty() {
+            return Err(AuthError::Validation(ValidationError::Field {
+                field,
+                message: "must not be empty".into(),
+            }));
+        }
+        if value.len() > MAX_LINK_REF_LEN {
+            return Err(AuthError::Validation(ValidationError::Field {
+                field,
+                message: format!("must be at most {MAX_LINK_REF_LEN} bytes"),
+            }));
+        }
+    }
+    Ok(())
+}
+
+#[derive(Deserialize)]
+pub(crate) struct LinkSeedBody {
+    username: String,
+    display_name: String,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct AuthenticateLinkBody {
+    provider: String,
+    subject: String,
+    seed: LinkSeedBody,
+}
+
+/// Sign in through an external provider, creating the identity on first sight.
+/// `201` distinguishes the signup from the `200` returning-login so a caller
+/// can branch without reading the body.
+pub(crate) async fn authenticate_by_link(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<ServiceAuth>,
+    Json(body): Json<AuthenticateLinkBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    require_grant(&auth, "external_auth").map_err(|_| AuthError::Forbidden)?;
+
+    validate_link_ref(&body.provider, &body.subject)?;
+
+    let username = Username::new(&body.seed.username)
+        .map_err(|e| AuthError::Validation(ValidationError::from(e)))?;
+    let seed = LinkSeed {
+        username,
+        display_name: body.seed.display_name,
+    };
+
+    let auth = state
+        .provider
+        .authenticate_by_link(&body.provider, &body.subject, &seed)
+        .await?;
+
+    let status = if auth.created {
+        axum::http::StatusCode::CREATED
+    } else {
+        axum::http::StatusCode::OK
+    };
+
+    Ok((
+        status,
+        Json(json!({
+            "session": serde_json::to_value(&auth.issued.session).unwrap(),
+            "token": auth.issued.token.expose_secret(),
+            "created": auth.created,
+        })),
+    ))
+}
+
+#[derive(Deserialize)]
+pub(crate) struct LinkBody {
+    provider: String,
+    subject: String,
+    #[serde(default)]
+    verified: bool,
+}
+
+pub(crate) async fn link_identity(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<ServiceAuth>,
+    Path(id): Path<uuid::Uuid>,
+    Json(body): Json<LinkBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    require_grant(&auth, "external_link").map_err(|_| AuthError::Forbidden)?;
+
+    validate_link_ref(&body.provider, &body.subject)?;
+
+    let link = state
+        .provider
+        .link_identity(
+            IdentityId::from_uuid(id),
+            &body.provider,
+            &body.subject,
+            body.verified,
+        )
+        .await?;
+
+    Ok((
+        axum::http::StatusCode::CREATED,
+        Json(serde_json::to_value(&link).unwrap()),
+    ))
+}
+
+pub(crate) async fn identity_links(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<ServiceAuth>,
+    Path(id): Path<uuid::Uuid>,
+) -> Result<impl IntoResponse, ApiError> {
+    require_grant(&auth, "identity_read").map_err(|_| AuthError::Forbidden)?;
+
+    let links = state
+        .provider
+        .identity_links(IdentityId::from_uuid(id))
+        .await?;
+
+    Ok(Json(serde_json::to_value(&links).unwrap()))
+}
+
+#[derive(Deserialize)]
+pub(crate) struct UnlinkBody {
+    provider: String,
+    subject: String,
+}
+
+pub(crate) async fn unlink_identity(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<ServiceAuth>,
+    Path(id): Path<uuid::Uuid>,
+    Json(body): Json<UnlinkBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    require_grant(&auth, "external_link").map_err(|_| AuthError::Forbidden)?;
+
+    validate_link_ref(&body.provider, &body.subject)?;
+
+    state
+        .provider
+        .unlink_identity(IdentityId::from_uuid(id), &body.provider, &body.subject)
+        .await?;
+
+    Ok(axum::http::StatusCode::NO_CONTENT)
 }

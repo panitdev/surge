@@ -16,7 +16,7 @@ Requires a service token with the `direct_auth` grant:
 Authorization: Bearer aeg_svc_1a2b3c4d5e6f7g8h9i0j
 ```
 
-Without `direct_auth`, the request is rejected with `403 Forbidden` — even if the service has other grants like `identity_read` or `introspect`. The `direct_auth` grant is specifically scoped to password authentication.
+Without `direct_auth`, the request is rejected with `403 Forbidden` — even if the service has other grants like `identity_read` or `introspect`. The `direct_auth` grant is specifically scoped to password authentication; signing in through an external provider is [a separate grant and endpoint](/api/service/links).
 
 ## Request
 

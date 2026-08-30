@@ -135,6 +135,23 @@ impl RemoteProvider {
             .ok_or_else(|| AuthError::Internal(anyhow::anyhow!("server returned invalid token")))?;
         Ok(IssuedSession::new(body.session, token))
     }
+
+    async fn parse_link_auth(resp: reqwest::Response) -> Result<LinkAuth, AuthError> {
+        #[derive(serde::Deserialize)]
+        struct LinkAuthResponse {
+            session: Session,
+            token: String,
+            created: bool,
+        }
+
+        let body: LinkAuthResponse = Self::parse_or_error(resp).await?;
+        let token = SessionToken::from_raw(&body.token)
+            .ok_or_else(|| AuthError::Internal(anyhow::anyhow!("server returned invalid token")))?;
+        Ok(LinkAuth::new(
+            IssuedSession::new(body.session, token),
+            body.created,
+        ))
+    }
 }
 
 #[async_trait]
@@ -281,6 +298,93 @@ impl AuthProvider for RemoteProvider {
             .map_err(Self::map_reqwest_err)?;
 
         Self::parse_issued_session(resp).await
+    }
+
+    async fn authenticate_by_link(
+        &self,
+        provider: &str,
+        subject: &str,
+        seed: &LinkSeed,
+    ) -> Result<LinkAuth, AuthError> {
+        let resp = self
+            .authed(reqwest::Method::POST, "/v1/authenticate/link")
+            .json(&serde_json::json!({
+                "provider": provider,
+                "subject": subject,
+                "seed": {
+                    "username": seed.username.as_str(),
+                    "display_name": seed.display_name,
+                },
+            }))
+            .send()
+            .await
+            .map_err(Self::map_reqwest_err)?;
+
+        Self::parse_link_auth(resp).await
+    }
+
+    async fn link_identity(
+        &self,
+        identity_id: IdentityId,
+        provider: &str,
+        subject: &str,
+        verified: bool,
+    ) -> Result<IdentityLink, AuthError> {
+        let resp = self
+            .authed(
+                reqwest::Method::POST,
+                &format!("/v1/identities/{identity_id}/links"),
+            )
+            .json(&serde_json::json!({
+                "provider": provider,
+                "subject": subject,
+                "verified": verified,
+            }))
+            .send()
+            .await
+            .map_err(Self::map_reqwest_err)?;
+
+        Self::parse_or_error(resp).await
+    }
+
+    async fn identity_links(&self, identity_id: IdentityId) -> Result<Vec<IdentityLink>, AuthError> {
+        let resp = self
+            .authed(
+                reqwest::Method::GET,
+                &format!("/v1/identities/{identity_id}/links"),
+            )
+            .send()
+            .await
+            .map_err(Self::map_reqwest_err)?;
+
+        Self::parse_or_error(resp).await
+    }
+
+    async fn unlink_identity(
+        &self,
+        identity_id: IdentityId,
+        provider: &str,
+        subject: &str,
+    ) -> Result<(), AuthError> {
+        let resp = self
+            .authed(
+                reqwest::Method::DELETE,
+                &format!("/v1/identities/{identity_id}/links"),
+            )
+            .json(&serde_json::json!({
+                "provider": provider,
+                "subject": subject,
+            }))
+            .send()
+            .await
+            .map_err(Self::map_reqwest_err)?;
+
+        let status = resp.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        let body: serde_json::Value = resp.json().await.unwrap_or_default();
+        Err(Self::map_error(status, &body))
     }
 
     #[cfg(feature = "router")]

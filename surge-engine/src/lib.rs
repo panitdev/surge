@@ -8,6 +8,7 @@ mod crypto;
 mod factor;
 mod flow;
 mod identity;
+mod link;
 mod models;
 mod service;
 mod session;

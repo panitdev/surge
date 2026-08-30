@@ -97,6 +97,16 @@ diesel::table! {
 }
 
 diesel::table! {
+    surge.identity_link (provider, subject) {
+        provider -> Text,
+        subject -> Text,
+        identity_id -> Uuid,
+        verified_at -> Nullable<Timestamptz>,
+        linked_at -> Timestamptz,
+    }
+}
+
+diesel::table! {
     surge.rate_limit_window (key, window_start) {
         key -> Text,
         window_start -> Timestamptz,
@@ -107,6 +117,7 @@ diesel::table! {
 diesel::joinable!(credential_password -> identity (identity_id));
 diesel::joinable!(credential_totp -> identity (identity_id));
 diesel::joinable!(credential_passphrase -> identity (identity_id));
+diesel::joinable!(identity_link -> identity (identity_id));
 diesel::joinable!(session -> identity (identity_id));
 
 diesel::allow_tables_to_appear_in_same_query!(
@@ -114,5 +125,6 @@ diesel::allow_tables_to_appear_in_same_query!(
     credential_password,
     credential_totp,
     credential_passphrase,
+    identity_link,
     session,
 );

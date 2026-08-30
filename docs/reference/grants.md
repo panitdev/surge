@@ -14,6 +14,8 @@ Service tokens carry grants that control which API operations the service can pe
 | `direct_auth` | Authenticate users directly (password verification) |
 | `revoke` | Revoke sessions and tokens |
 | `browser_proxy` | Front the browser perimeter on behalf of end users |
+| `external_auth` | Sign users in through an external provider (email, OAuth), creating the identity on first sight |
+| `external_link` | Attach an external provider account to an existing identity, or detach one |
 
 ## Grant-to-endpoint mapping
 
@@ -22,11 +24,13 @@ Each grant unlocks a specific set of service API endpoints:
 | Grant | Endpoints unlocked |
 |---|---|
 | `introspect` | `POST /v1/sessions/verify` — verify a session token; inspect session metadata |
-| `identity_read` | `GET /v1/identities/{id}` — get identity by UUID; `GET /v1/identities?username=...` — search by username |
+| `identity_read` | `GET /v1/identities/{id}` — get identity by UUID; `GET /v1/identities?username=...` — search by username; `GET /v1/identities/{id}/links` — list linked provider accounts |
 | `identity_write` | `PATCH /v1/identities/{id}` — update profile fields |
 | `direct_auth` | `POST /v1/authenticate/password` — authenticate with username + password; `POST /v1/register` — create an identity directly |
 | `revoke` | `POST /v1/sessions/revoke` — revoke a single session; `POST /v1/identities/{id}/revoke-sessions` — revoke all sessions for an identity |
 | `browser_proxy` | The browser endpoints (`/v1/login`, `/v1/flows/...`, `/v1/whoami`, ...) — permits stating the end user's address in `X-Surge-Client-Ip` |
+| `external_auth` | `POST /v1/authenticate/link` — resolve a `(provider, subject)` pair to a session, creating the identity if the link is new |
+| `external_link` | `POST /v1/identities/{id}/links` — attach or confirm a link; `DELETE /v1/identities/{id}/links` — detach one |
 
 A request to an endpoint without the required grant returns `403 Forbidden`:
 
@@ -51,6 +55,37 @@ A compromised token with only `introspect` can verify sessions; one with `identi
 `browser_proxy` is what `RemoteProvider::browser_router()` uses. It does not unlock any privileged operation directly — the browser endpoints are public. What it authorizes is the *statement* a proxy makes about who its request is for: with it, `X-Surge-Client-Ip` becomes the key rate limiting is applied under.
 
 A compromised `browser_proxy` token can therefore pick which bucket its requests count against, evading per-IP rate limits on login. Give it only to services that actually mount a remote-mode browser router.
+
+### The external grants assert proof of control
+
+Surge stores links — `("email", "alice@example.com")`, `("google", "117...")` — but it never talks to a provider itself. It sends no mail and performs no OAuth code exchange, so it cannot check that the person in front of your service actually controls the subject being claimed. The `external_auth` grant *is* that assertion: holding it means the service has already completed the handshake before calling.
+
+`POST /v1/authenticate/link` therefore mints a session from a `(provider, subject)` pair with no secret in the request — for the email provider, the subject is the user's public address. A compromised `external_auth` token can sign in as any identity with a verified link, so it belongs only on the service that terminates the provider handshake, and nowhere else.
+
+`external_link` is separate because attaching a subject to an *existing* identity is account-binding: a service able to link `google:attacker@example.com` to someone else's identity could then sign in as them. Signing users in through a provider does not require binding new providers to established accounts, so the two capabilities stay apart.
+
+`direct_auth` remains scoped to password authentication and unlocks neither.
+
+### Verified and unverified links
+
+A link carries a `verified_at` timestamp, and **only a verified link can authenticate**. An unverified link is a pending claim — an address someone typed into account settings that nobody has proven control of — and `POST /v1/authenticate/link` will not resolve it.
+
+That distinction is what makes the two-step email flow safe to build:
+
+```bash
+# 1. User adds an address in settings. Nothing is proven yet, so verified=false.
+curl -X POST http://localhost:3000/v1/identities/$ID/links \
+  -H "Authorization: Bearer aeg_svc_..." \
+  -d '{"provider": "email", "subject": "alice@example.com", "verified": false}'
+
+# 2. Your service mails a token. When it comes back, re-post the same link
+#    with verified=true — the call is idempotent and only refreshes the flag.
+curl -X POST http://localhost:3000/v1/identities/$ID/links \
+  -H "Authorization: Bearer aeg_svc_..." \
+  -d '{"provider": "email", "subject": "alice@example.com", "verified": true}'
+```
+
+Between those two calls the address is inert: it cannot sign anyone in, and it cannot be used to recover the account. Re-posting a subject that is already linked to a *different* identity fails rather than moving it.
 
 ### The `revoke` grant is the most sensitive
 
@@ -87,6 +122,8 @@ Common service roles and their grant sets:
 | **Admin panel** | `identity_read`, `identity_write`, `revoke` | Full identity management plus session revocation |
 | **Auth proxy** | `direct_auth` | Accept username/password and return session tokens |
 | **Remote-mode web app** | `introspect`, `browser_proxy` | Verify sessions, and reverse-proxy the browser perimeter for its own users |
+| **OAuth / email sign-in service** | `external_auth` | Terminates the provider handshake, then resolves the resulting `(provider, subject)` to a session |
+| **Account settings service** | `identity_read`, `external_link` | Lets a signed-in user list, attach, and disconnect provider accounts |
 | **Full-access system service** | All of them | Internal service that needs everything — use with extreme caution |
 
 ### Example: API gateway with session verification and user enrichment

@@ -48,6 +48,55 @@ pub trait AuthProvider: Send + Sync {
         password: &Password,
     ) -> Result<IssuedSession, AuthError>;
 
+    /// Sign in through an external provider, creating the identity on first
+    /// sight. `seed` is consulted only when the link resolves to nobody, so a
+    /// callback can pass the same value every time without knowing whether it
+    /// is handling a signup or a returning user.
+    ///
+    /// Only *verified* links authenticate. Surge cannot check an external
+    /// account itself, so reaching this method is the caller's assertion that
+    /// it already established proof of control — the OAuth code exchange
+    /// completed, or the emailed token came back.
+    async fn authenticate_by_link(
+        &self,
+        provider: &str,
+        subject: &str,
+        seed: &LinkSeed,
+    ) -> Result<LinkAuth, AuthError> {
+        let _ = (provider, subject, seed);
+        Err(AuthError::Forbidden)
+    }
+
+    /// Attach a provider account to an identity that already exists, or
+    /// confirm one already attached. Distinct from signing in through a link:
+    /// binding a subject to an established account is how an account takeover
+    /// would be staged, so it is a separate capability.
+    async fn link_identity(
+        &self,
+        identity_id: IdentityId,
+        provider: &str,
+        subject: &str,
+        verified: bool,
+    ) -> Result<IdentityLink, AuthError> {
+        let _ = (identity_id, provider, subject, verified);
+        Err(AuthError::Forbidden)
+    }
+
+    async fn identity_links(&self, identity_id: IdentityId) -> Result<Vec<IdentityLink>, AuthError> {
+        let _ = identity_id;
+        Err(AuthError::Forbidden)
+    }
+
+    async fn unlink_identity(
+        &self,
+        identity_id: IdentityId,
+        provider: &str,
+        subject: &str,
+    ) -> Result<(), AuthError> {
+        let _ = (identity_id, provider, subject);
+        Err(AuthError::Forbidden)
+    }
+
     /// Best-effort background maintenance (session GC, flow expiry, ...).
     /// Mounting an embedded browser router drives this periodically; a
     /// provider with no router mounted on it does no background work by
