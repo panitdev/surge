@@ -3,6 +3,7 @@ pub mod schema;
 pub mod types;
 
 pub mod audit;
+pub mod oauth;
 mod counter;
 mod crypto;
 mod factor;

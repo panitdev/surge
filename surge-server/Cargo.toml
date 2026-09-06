@@ -25,7 +25,7 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 surge-engine = { path = "../surge-engine" }
-surge = { path = "../surge", features = ["embedded", "router"] }
+surge = { path = "../surge", features = ["embedded", "router", "oauth-as"] }
 thiserror.workspace = true
 time.workspace = true
 tokio.workspace = true
@@ -37,6 +37,12 @@ url.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+base64.workspace = true
+# The resource-server half, exercised end to end by `oauth_resource_server.rs`
+# against a real listening authorization server.
+surge = { path = "../surge", features = ["embedded", "router", "oauth-as", "resource-server"] }
+jsonwebtoken.workspace = true
+futures-util.workspace = true
 reqwest.workspace = true
 tokio = { workspace = true, features = ["full", "test-util"] }
 totp-rs.workspace = true

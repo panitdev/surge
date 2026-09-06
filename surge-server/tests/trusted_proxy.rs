@@ -89,6 +89,7 @@ async fn test_app() -> (axum::Router, Tokens) {
         session_cors_origins: vec![],
         allow_served_inline: true,
         hydra_bridge: None,
+        oauth_as: None,
     });
 
     let app = surge_server::api::router(embedded, config)

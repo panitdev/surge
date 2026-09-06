@@ -27,10 +27,31 @@ pub struct ServerConfig {
     /// Defaults to `false` — a served deployment stays redirect-only until
     /// this is set.
     pub allow_served_inline: bool,
-    /// Opt-in Hydra login/consent bridge (rfc.md). `None` unless
+    /// Opt-in Hydra login/consent bridge
+    /// (`docs/integration/hydra-oauth-bridge.md`). `None` unless
     /// `SURGE_HYDRA_ADMIN_URL` is set — presence of that URL is the
     /// on-switch, no separate boolean flag.
     pub hydra_bridge: Option<HydraBridgeConfig>,
+    /// Opt-in native OAuth 2.1 / OIDC authorization server
+    /// (internal/oauth-as.md). `None` unless `SURGE_OAUTH_ISSUER` is set —
+    /// same shape as the Hydra bridge: the URL is the on-switch.
+    pub oauth_as: Option<OauthAsSettings>,
+}
+
+/// §8's table, parsed. Every default here is the MCP-correct one, and two of
+/// them are security parameters rather than preferences: `access_ttl` is the
+/// revocation window for any resource server verifying offline, and
+/// `allow_dynamic_registration` opens an unauthenticated endpoint.
+pub struct OauthAsSettings {
+    pub issuer: String,
+    pub access_ttl: Duration,
+    pub refresh_ttl: Duration,
+    pub key_rotation: Duration,
+    pub allow_dynamic_registration: bool,
+    pub require_resource: bool,
+    pub default_resource: Option<String>,
+    pub dcr_ttl: Duration,
+    pub enable_oidc: bool,
 }
 
 pub struct HydraBridgeConfig {
@@ -106,6 +127,39 @@ impl ServerConfig {
             None => None,
         };
 
+        let oauth_as = match std::env::var("SURGE_OAUTH_ISSUER").ok() {
+            Some(issuer) => {
+                let parsed = url::Url::parse(&issuer)
+                    .map_err(|e| anyhow::anyhow!("SURGE_OAUTH_ISSUER is not a valid URL: {e}"))?;
+                if parsed.scheme() != "https" && !is_loopback(&bind_addr) {
+                    anyhow::bail!(
+                        "SURGE_OAUTH_ISSUER ({issuer}) is not https and this server is not bound \
+                         to loopback; an issuer reachable over plaintext makes every token it \
+                         signs interceptable in transit"
+                    );
+                }
+                Some(OauthAsSettings {
+                    issuer: issuer.trim_end_matches('/').to_string(),
+                    access_ttl: Duration::from_secs(env_u64("SURGE_OAUTH_ACCESS_TTL_SECS", 600)),
+                    refresh_ttl: Duration::from_secs(
+                        env_u64("SURGE_OAUTH_REFRESH_TTL_DAYS", 30) * 86_400,
+                    ),
+                    key_rotation: Duration::from_secs(
+                        env_u64("SURGE_OAUTH_KEY_ROTATION_DAYS", 90) * 86_400,
+                    ),
+                    allow_dynamic_registration: env_flag(
+                        "SURGE_OAUTH_ALLOW_DYNAMIC_REGISTRATION",
+                        false,
+                    ),
+                    require_resource: env_flag("SURGE_OAUTH_REQUIRE_RESOURCE", true),
+                    default_resource: std::env::var("SURGE_OAUTH_DEFAULT_RESOURCE").ok(),
+                    dcr_ttl: Duration::from_secs(env_u64("SURGE_OAUTH_DCR_TTL_DAYS", 30) * 86_400),
+                    enable_oidc: env_flag("SURGE_OAUTH_ENABLE_OIDC", true),
+                })
+            }
+            None => None,
+        };
+
         Ok(Self {
             database_url,
             pepper,
@@ -118,6 +172,7 @@ impl ServerConfig {
             session_cors_origins,
             allow_served_inline,
             hydra_bridge,
+            oauth_as,
         })
     }
 
@@ -132,4 +187,36 @@ impl ServerConfig {
     pub fn session_ttl(&self) -> Duration {
         Duration::from_secs(self.session_ttl_hours * 3600)
     }
+}
+
+impl ServerConfig {
+    /// Whether the open-registration warning applies. A method rather than a
+    /// field read so the condition lives next to nothing else that could
+    /// drift from it.
+    pub fn allow_dynamic_registration_warning(&self) -> bool {
+        self.oauth_as
+            .as_ref()
+            .is_some_and(|o| o.allow_dynamic_registration)
+    }
+}
+
+fn env_u64(key: &str, default: u64) -> u64 {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
+
+fn env_flag(key: &str, default: bool) -> bool {
+    match std::env::var(key) {
+        Ok(v) => v == "1" || v.eq_ignore_ascii_case("true"),
+        Err(_) => default,
+    }
+}
+
+/// Whether the bind address is loopback — the one case where a plaintext
+/// issuer is legitimate, because nothing leaves the machine.
+fn is_loopback(bind_addr: &str) -> bool {
+    let host = bind_addr.rsplit_once(':').map(|(h, _)| h).unwrap_or(bind_addr);
+    matches!(host.trim_matches(['[', ']']), "127.0.0.1" | "::1" | "localhost")
 }

@@ -12,6 +12,9 @@ mod test_provider;
 #[cfg(feature = "router")]
 pub mod router;
 
+#[cfg(feature = "resource-server")]
+pub mod resource;
+
 pub use extract::{require_header_csrf, AuthRejection, AuthSession};
 pub use traits::AuthProvider;
 

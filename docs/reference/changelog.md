@@ -4,6 +4,26 @@ description: Version history, per-release changes, and migration notes.
 
 # Changelog
 
+## Unreleased
+
+### OAuth 2.1 / OIDC authorization server
+
+Surge can now issue audience-scoped OAuth tokens itself, rather than delegating to Ory Hydra. Opt-in via `SURGE_OAUTH_ISSUER`; unset, nothing changes. See [OAuth Authorization Server](/features/oauth-authorization-server).
+
+- **Authorization code flow with mandatory PKCE `S256`** at `/oauth2/authorize` and `/oauth2/token`, plus JWKS, RFC 8414 discovery, RFC 7662 introspection, RFC 7009 revocation, OIDC ID tokens and `userinfo`. No implicit, client-credentials or password grant.
+- **Audience-restricted tokens** (RFC 8707). A `resource` parameter is valid only if it resolves to a registered audience owned by a registered service, and a token minted for one resource does not validate at another.
+- **A real consent screen for third-party clients**, with `/v1/oauth/consent/{flow_id}` for the auth UI and `/v1/account/connections` for "show me every app connected to my account" — including disconnect, which revokes the consent and its refresh tokens together.
+- **Dynamic client registration** (RFC 7591) at `/oauth2/register`, off by default, rate-limited, scope-capped, and unable to produce anything but an untrusted third-party client.
+- **Refresh-token rotation with reuse detection**: replaying a consumed token revokes its whole family.
+- **ES256 signing keys encrypted under the pepper**, rotated by the background sweep, with retired keys published until the tokens they signed expire.
+- **`surge::resource`** (feature `resource-server`) ships the resource-server half: RFC 9728 metadata, the `WWW-Authenticate` challenge MCP clients discover the AS through, and an offline bearer-token guard.
+- **New grant `oauth_admin`** and new CLI group `surge-server oauth {client,resource,key}`.
+- **New token prefixes** `aeg_cid_`, `aeg_cs_`, `aeg_ac_`, `aeg_rt_`.
+
+Behaviour change worth noting: `revoke_all_sessions` now also revokes that identity's OAuth refresh tokens. "Log this person out everywhere" would otherwise leave their connected apps refreshing.
+
+The Hydra bridge still works and both can run at once during a cutover — `sub` is the identity UUID in both. See the [migration steps](/integration/hydra-oauth-bridge).
+
 ## 0.1.0
 
 Initial release of Surge — a standalone authentication server with browser-facing and service-facing APIs.

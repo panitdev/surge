@@ -6,7 +6,7 @@ description: surge-server CLI commands — serve, identity management, and servi
 
 The `surge-server` binary provides commands for running the server and managing identities and service tokens.
 
-The `surge-server` binary is a single entry point with three subcommand groups. Every subcommand connects to the same Postgres database (via `DATABASE_URL`) and shares the same configuration surface.
+The `surge-server` binary is a single entry point with four subcommand groups. Every subcommand connects to the same Postgres database (via `DATABASE_URL`) and shares the same configuration surface.
 
 ## `surge-server serve` — Start the HTTP server
 
@@ -32,6 +32,15 @@ Most configuration is read from environment variables:
 | `SURGE_HYDRA_ADMIN_URL` | (unset) | Ory Hydra admin API base URL (e.g. `http://hydra:4434`); setting this enables the Hydra login/consent bridge |
 | `SURGE_HYDRA_BRIDGE_ORIGIN` | (required if `SURGE_HYDRA_ADMIN_URL` is set) | This server's own public origin for the bridge's `return_to` callback (e.g. `https://auth.example.com`) |
 | `SURGE_HYDRA_ADMIN_TIMEOUT_SECS` | `10` | Timeout in seconds for Hydra admin API requests |
+| `SURGE_OAUTH_ISSUER` | (unset) | This server's public origin; setting it enables the native OAuth 2.1 / OIDC authorization server |
+| `SURGE_OAUTH_ACCESS_TTL_SECS` | `600` | Access-token lifetime — also the offline revocation window |
+| `SURGE_OAUTH_REFRESH_TTL_DAYS` | `30` | Refresh-token lifetime, renewed on each rotation |
+| `SURGE_OAUTH_KEY_ROTATION_DAYS` | `90` | Signing-key rotation cadence |
+| `SURGE_OAUTH_ALLOW_DYNAMIC_REGISTRATION` | `0` | Opens the unauthenticated `POST /oauth2/register` (RFC 7591) |
+| `SURGE_OAUTH_REQUIRE_RESOURCE` | `1` | Reject `authorize` without a resolvable `resource` (RFC 8707) |
+| `SURGE_OAUTH_DEFAULT_RESOURCE` | (unset) | Audience assumed when `REQUIRE_RESOURCE=0` and the client sent none |
+| `SURGE_OAUTH_DCR_TTL_DAYS` | `30` | Sweep dynamically registered clients that never authorized |
+| `SURGE_OAUTH_ENABLE_OIDC` | `1` | ID tokens, `userinfo`, and `/.well-known/openid-configuration` |
 
 ### Minimal start
 
@@ -170,3 +179,60 @@ All `surge-server` subcommands support:
 | `--version`, `-V` | Print the surge-server version |
 
 **Related:** [Configuration](/integration/configuration), [Service Authentication](/features/service-authentication)
+
+## `surge-server oauth` — OAuth authorization server
+
+Manages the [native authorization server](/features/oauth-authorization-server)'s clients, audiences and signing keys. These are CLI actions rather than API ones because `--first-party` skips the consent screen — the privilege that must never be reachable from an unauthenticated endpoint.
+
+### `oauth resource create`
+
+Registers an audience: one resource server, owned by one registered service. **A `resource` parameter is valid only if it resolves to one of these**, so nothing can authorize until at least one exists.
+
+```bash
+surge-server oauth resource create \
+  --uri https://dispatch.example.com/mcp \
+  --service dispatch \
+  --scope mcp:read --scope mcp:write \
+  --describe "mcp:read=Read your Dispatch data" \
+  --describe "mcp:write=Create and change your Dispatch data"
+```
+
+| Flag | Description |
+|---|---|
+| `--uri` | Canonical audience URI. Normalized (trailing slash stripped); no query string or fragment |
+| `--service` | Name of the registered service that owns this resource server |
+| `--scope` | A scope this resource defines. Repeatable. Scopes belong to resources, never to clients |
+| `--describe` | `scope=human sentence`, rendered on the consent screen. Repeatable |
+
+`oauth resource list` and `oauth resource delete <uri>` round out the group.
+
+### `oauth client create`
+
+```bash
+# Public client — the normal case for native and MCP clients, safe because
+# PKCE is mandatory.
+surge-server oauth client create \
+  --name "Dispatch Desktop" \
+  --redirect-uri https://dispatch.example.com/oauth/callback \
+  --scope mcp:read --scope mcp:write
+```
+
+| Flag | Description |
+|---|---|
+| `--name` | Shown on the consent screen |
+| `--redirect-uri` | Exact-matched at authorize. Repeatable. `https`, or `http` on loopback. No wildcards |
+| `--scope` | The maximum this client may ever be granted; narrowed further per resource |
+| `--confidential` | Issue a client secret (`aeg_cs_…`), shown once |
+| `--first-party` | Skip the consent screen. Only for clients you operate |
+| `--client-uri`, `--logo-uri` | Optional, rendered on the consent screen |
+
+`oauth client list` shows every live client with its registration source. `oauth client revoke <client_id>` revokes the client **and its outstanding refresh tokens** in one transaction — a client that could no longer authorize but whose tokens kept working would not be revoked in any sense a user would recognize.
+
+### `oauth key`
+
+```bash
+surge-server oauth key list     # active plus retiring keys
+surge-server oauth key rotate   # generate and activate a new key now
+```
+
+Keys rotate on their own with the background sweep; `rotate` forces it, for instance after a suspected exposure. The previous key stays published in JWKS until its retirement grace closes, so tokens signed a moment earlier keep verifying until they expire.

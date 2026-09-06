@@ -88,8 +88,21 @@ pub struct BrowserRouterConfig {
     /// redirecting to `auth_ui_origin`. Required for served+inline
     /// (architecture.md §6).
     pub allow_inline: Option<bool>,
-    /// Opt-in Hydra login/consent bridge (rfc.md).
+    /// Opt-in Hydra login/consent bridge
+    /// (`docs/integration/hydra-oauth-bridge.md`). Superseded by `oauth_as`
+    /// below, but kept working for the duration of a cutover.
     pub oauth_bridge: Option<super::OauthBridgeConfig>,
+    /// Opt-in native OAuth 2.1 / OIDC authorization server
+    /// (internal/oauth-as.md). Unset means no `/oauth2/*` routes, no signing
+    /// key ever generated, and no behavior change.
+    ///
+    /// **Central only.** An authorization server has exactly one issuer
+    /// identity, so `RemoteProvider` ignores this field with a warning rather
+    /// than proxying it: a service answering `/oauth2/token` on its own
+    /// origin would be minting tokens under central's `iss`, and the
+    /// client-side issuer check would fail in ways that look like clock skew.
+    #[cfg(feature = "oauth-as")]
+    pub oauth_as: Option<super::OauthAsConfig>,
     /// How often to run the background sweep (session GC, flow expiry).
     /// `None` uses `DEFAULT_MAINTENANCE_INTERVAL`: mounting the router
     /// starts the sweep, because a mounted router with no sweep silently
@@ -124,6 +137,8 @@ pub(crate) fn embedded_browser_router(
     config: BrowserRouterConfig,
 ) -> Router {
     let oauth_bridge = config.oauth_bridge.clone();
+    #[cfg(feature = "oauth-as")]
+    let oauth_as = config.oauth_as.clone();
     let state = Arc::new(EmbeddedState {
         auth_ui_origin: config.auth_ui_origin.clone(),
         session_cors_origins: config.session_cors_origins,
@@ -145,6 +160,27 @@ pub(crate) fn embedded_browser_router(
         ));
     }
 
+    // The AS mounts two halves: its own browser API under `/v1`, and the
+    // OAuth wire protocol at the origin root (see `router::oauth_as`).
+    #[cfg(feature = "oauth-as")]
+    let mut oauth_as_root = Router::new();
+    #[cfg(feature = "oauth-as")]
+    if let Some(as_config) = oauth_as {
+        let as_state = Arc::new(super::oauth_as::AsState {
+            engine: Arc::clone(&state.engine),
+            provider: Arc::clone(&provider),
+            rate_limiter: Arc::clone(&state.rate_limiter),
+            config: as_config.clone(),
+        });
+        let session_cors = if state.session_cors_origins.is_empty() {
+            cors::narrow(&state.auth_ui_origin)
+        } else {
+            cors::union(&state.session_cors_origins)
+        };
+        v1 = v1.merge(super::oauth_as::v1_router(Arc::clone(&as_state), session_cors));
+        oauth_as_root = super::oauth_as::root_router(as_state);
+    }
+
     // Outside both CORS zones: it resolves who the caller is on behalf of
     // before any handler reads a rate-limit key.
     let v1 = v1.layer(middleware::from_fn_with_state(
@@ -156,10 +192,27 @@ pub(crate) fn embedded_browser_router(
         .maintenance_interval
         .unwrap_or(DEFAULT_MAINTENANCE_INTERVAL);
     if !interval.is_zero() {
-        spawn_maintenance(provider, interval);
+        spawn_maintenance(Arc::clone(&provider), interval);
+
+        // Key rotation, code/flow expiry and the dynamic-client sweep ride
+        // the same cadence, and start for the same reason: a mounted AS with
+        // no sweep never rotates a signing key and accumulates dead rows
+        // forever.
+        #[cfg(feature = "oauth-as")]
+        if let Some(as_config) = config.oauth_as.as_ref() {
+            super::oauth_as::spawn_oauth_maintenance(
+                Arc::clone(&state.engine),
+                as_config.clone(),
+                interval,
+            );
+        }
     }
 
-    Router::new().nest("/v1", v1)
+    #[cfg(feature = "oauth-as")]
+    let router = Router::new().nest("/v1", v1).merge(oauth_as_root);
+    #[cfg(not(feature = "oauth-as"))]
+    let router = Router::new().nest("/v1", v1);
+    router
 }
 
 /// Spawns the background maintenance sweep (session GC, flow expiry).
@@ -246,7 +299,7 @@ impl V1Router {
 /// absent unless the server was bound via
 /// `into_make_service_with_connect_info`; missing it must not fail the
 /// request.
-struct MaybeClientIp(Option<std::net::IpAddr>);
+pub(crate) struct MaybeClientIp(pub(crate) Option<std::net::IpAddr>);
 
 impl<S: Send + Sync> FromRequestParts<S> for MaybeClientIp {
     type Rejection = std::convert::Infallible;

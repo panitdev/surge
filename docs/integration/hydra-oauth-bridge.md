@@ -151,17 +151,32 @@ Both Hydra admin-API calls and session verification can fail. The bridge disting
 ## Non-goals
 
 - **Not a general-purpose authorization server.** The bridge exists to serve Hydra one specific admin-API contract; it does not implement token issuance, JWKS, introspection, or discovery — Hydra does all of that.
-- **No third-party client support.** `skip_consent` unconditionally grants the requested scope without a real consent screen. This is only safe for first-party clients. Supporting third-party clients requires building an actual consent UI first.
+- **No third-party client support.** `skip_consent` unconditionally grants the requested scope without a real consent screen. This is only safe for first-party clients.
 - **No cookie unification.** Hydra's CSRF cookies and `surge_session` are and remain separate; the bridge does not attempt to merge or bridge their semantics beyond reading both where needed.
 
-## When to revisit internalizing OIDC into Surge
+None of this is a limitation to work around any more. Surge now ships a native authorization server that does all of it — see below.
 
-The current design is deliberately narrow: one bridge endpoint pair rather than a general-purpose authorization server, because there's exactly one consumer (Dispatch MCP) today. Reconsider that decision only if at least one of these becomes true:
+## Superseded: Surge is now an authorization server
 
-- Multiple first-party or third-party MCP integrators need AS capability at real scale.
-- Dynamic client registration becomes a standing operational concern rather than a one-off setup step.
-- Running Hydra (extra Postgres schema, extra deploy target, extra patching surface) demonstrably costs more than maintaining the bridge.
+The section that used to live here argued Surge should not become an OAuth 2.1 authorization server, and listed three conditions for revisiting. **Two of them came true**, and the decision was reversed. Surge now ships a native AS: [OAuth Authorization Server](/features/oauth-authorization-server).
 
-None of these hold today — see `rfc.md` in the repository root for the full design rationale.
+What changed:
 
-**Related:** [Configuration Reference](/integration/configuration), [Deployment: Docker](/deployment/docker), [Environment Templates](/deployment/environment)
+- **Third-party clients at real scale.** The target is arbitrary MCP clients — Claude, editors, agent runtimes — connecting to services registered in Surge. `skip_consent` auto-approves the full requested scope with no screen, which is safe only for first-party clients and categorically wrong for these. Third-party support was never an increment on the bridge; it is the thing the bridge explicitly refuses to do.
+- **Dynamic client registration as a standing concern.** MCP clients discover an AS and register themselves (RFC 7591). That is a per-connection event, not a one-off setup step, so it cannot stay a manual Hydra admin task.
+
+The decisive argument was not Hydra's operational cost, which was the third condition and never the driver. It was **ownership of the resource registry**. What an MCP token must be scoped to is a resource server, and Surge already holds the registry of those: the `service` table. In the Hydra split, Hydra owns clients, scopes and audiences while Surge owns services and identities, and the mapping between them lives in nobody's schema. Consent ("let this client read your Dispatch resources"), revocation ("show me every app connected to my account") and audience validation ("is this `resource` a service I know?") each need both halves in one query. Internalizing the AS is what collapses that seam.
+
+## The bridge is not deleted
+
+Both can run at once, and during a migration they should. They share the one thing that matters: **`sub` is the identity UUID in both**, so a Hydra-issued token and a Surge-issued token name the same subject, and a resource server can accept both by trusting two issuers.
+
+A cutover, in order:
+
+1. Enable the native AS (`SURGE_OAUTH_ISSUER`) alongside the bridge; leave `SURGE_HYDRA_ADMIN_URL` set. Surge warns at startup that both are on — a legitimate migration state, but not a steady one.
+2. Re-register existing Hydra clients as Surge clients with `surge-server oauth client create --first-party`, and register each resource server's audience with `surge-server oauth resource create`.
+3. Move one first-party client (Dispatch MCP) to the native AS and verify tokens end to end.
+4. Resource servers drop the Hydra issuer once no live Hydra refresh token remains — bounded by Hydra's refresh TTL.
+5. Unset `SURGE_HYDRA_ADMIN_URL`. `hydra.rs` and `oauth_bridge.rs` stay in-tree for one release, then go in a coordinated removal.
+
+**Related:** [OAuth Authorization Server](/features/oauth-authorization-server), [Configuration Reference](/integration/configuration), [Deployment: Docker](/deployment/docker), [Environment Templates](/deployment/environment)

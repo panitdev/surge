@@ -30,6 +30,12 @@ pub enum AuthError {
     #[error("forbidden")]
     Forbidden,
 
+    /// A request asked for a scope the grant it is derived from never
+    /// carried. Distinct from `Forbidden` because the OAuth surface owes the
+    /// client `invalid_scope` here, not `access_denied`.
+    #[error("scope not granted")]
+    ScopeNotGranted,
+
     #[error("service unavailable")]
     Unavailable,
 

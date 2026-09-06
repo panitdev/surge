@@ -24,6 +24,7 @@ impl IntoResponse for ApiError {
             AuthError::Validation(_) => (StatusCode::UNPROCESSABLE_ENTITY, "validation_error"),
             AuthError::NotFound => (StatusCode::NOT_FOUND, "not_found"),
             AuthError::Forbidden => (StatusCode::FORBIDDEN, "forbidden"),
+            AuthError::ScopeNotGranted => (StatusCode::FORBIDDEN, "scope_not_granted"),
             AuthError::Unavailable => (StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
             AuthError::Timeout => (StatusCode::GATEWAY_TIMEOUT, "timeout"),
             AuthError::Internal(_) => {

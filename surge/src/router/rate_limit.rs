@@ -32,6 +32,10 @@ pub struct RateLimitConfig {
     pub authenticate: RateLimitPolicy,
     pub register: RateLimitPolicy,
     pub flow_submit: RateLimitPolicy,
+    /// RFC 7591 dynamic client registration. Unauthenticated by
+    /// specification, so this is the only thing between an open endpoint and
+    /// an attacker filling the client table.
+    pub oauth_register: RateLimitPolicy,
 }
 
 impl Default for RateLimitConfig {
@@ -48,6 +52,10 @@ impl Default for RateLimitConfig {
             flow_submit: RateLimitPolicy {
                 window: Duration::from_secs(600),
                 max_attempts: 20,
+            },
+            oauth_register: RateLimitPolicy {
+                window: Duration::from_secs(3600),
+                max_attempts: 10,
             },
         }
     }
@@ -73,6 +81,7 @@ impl PostgresRateLimiter {
             "authenticate" => Some(&self.config.authenticate),
             "register" => Some(&self.config.register),
             "flow_submit" => Some(&self.config.flow_submit),
+            "oauth_register" => Some(&self.config.oauth_register),
             _ => None,
         }
     }

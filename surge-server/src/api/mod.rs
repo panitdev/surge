@@ -22,7 +22,11 @@ pub struct AppState {
 /// otherwise only surface at the worst possible time — a real login unable
 /// to redirect back, or credentialed CORS silently rejecting the auth UI
 /// itself.
-fn check_startup_coherence(config: &ServerConfig, return_origins: &[String]) -> anyhow::Result<()> {
+fn check_startup_coherence(
+    config: &ServerConfig,
+    return_origins: &[String],
+    engine_resource_count: i64,
+) -> anyhow::Result<()> {
     if return_origins.is_empty() {
         warn!(
             "no redirect-mode consumer return_origins are registered (see `surge-server svc create --origin`); \
@@ -52,6 +56,47 @@ fn check_startup_coherence(config: &ServerConfig, return_origins: &[String]) -> 
              service origin is incremental risk, not categorical: every service already holds \
              surge_service_token and can mint or introspect sessions."
         );
+    }
+
+    if let Some(oauth) = &config.oauth_as {
+        // Same trap the Hydra bridge check guards: the authorize handler
+        // bounces through `GET /v1/login?return_to=<self>`, so an issuer that
+        // is not a registered return origin makes every authorization fail
+        // return_to validation — after the user has already signed in.
+        if !return_origins.iter().any(|o| o == &oauth.issuer) {
+            anyhow::bail!(
+                "SURGE_OAUTH_ISSUER ({}) is not among registered return_origins; the \
+                 authorization endpoint re-enters GET /v1/login with a return_to pointing at \
+                 itself, which would be rejected, silently breaking every authorization. \
+                 Register it with `surge-server svc create --origin`.",
+                oauth.issuer
+            );
+        }
+
+        if engine_resource_count == 0 {
+            warn!(
+                "the OAuth authorization server is enabled but no resources are registered; \
+                 every authorize request will fail resource validation until one is (see \
+                 `surge-server oauth resource create`)"
+            );
+        }
+
+        if config.allow_dynamic_registration_warning() {
+            warn!(
+                "SURGE_OAUTH_ALLOW_DYNAMIC_REGISTRATION=1: /oauth2/register is open and \
+                 unauthenticated by specification. It is rate-limited per IP and its clients are \
+                 always untrusted, third-party, and consent-gated — but this is the largest \
+                 abuse surface the server exposes."
+            );
+        }
+
+        if config.hydra_bridge.is_some() {
+            warn!(
+                "both SURGE_HYDRA_ADMIN_URL and SURGE_OAUTH_ISSUER are set. That is a legitimate \
+                 migration state (internal/oauth-as.md §9) but not a steady one: finish the \
+                 cutover and unset SURGE_HYDRA_ADMIN_URL."
+            );
+        }
     }
 
     if let Some(bridge) = &config.hydra_bridge {
@@ -85,7 +130,12 @@ pub async fn router(
     });
 
     let return_origins = engine.all_return_origins().await?;
-    check_startup_coherence(&config, &return_origins)?;
+    let oauth_resource_count = if config.oauth_as.is_some() {
+        engine.count_oauth_resources().await?
+    } else {
+        0
+    };
+    check_startup_coherence(&config, &return_origins, oauth_resource_count)?;
 
     let rate_limiter = Arc::new(PostgresRateLimiter::new(
         Arc::clone(&engine),
@@ -100,6 +150,19 @@ pub async fn router(
         }
     });
 
+    let oauth_as = config.oauth_as.as_ref().map(|oauth| surge::router::OauthAsConfig {
+        issuer: oauth.issuer.clone(),
+        auth_ui_origin: config.auth_ui_origin.clone(),
+        access_ttl: oauth.access_ttl,
+        refresh_ttl: oauth.refresh_ttl,
+        key_rotation: oauth.key_rotation,
+        allow_dynamic_registration: oauth.allow_dynamic_registration,
+        require_resource: oauth.require_resource,
+        default_resource: oauth.default_resource.clone(),
+        dcr_ttl: oauth.dcr_ttl,
+        enable_oidc: oauth.enable_oidc,
+    });
+
     let browser_router = Arc::clone(&embedded).browser_router(BrowserRouterConfig {
         cookie_domain: config.cookie_domain.clone(),
         session_ttl: config.session_ttl(),
@@ -111,6 +174,7 @@ pub async fn router(
         factor_policy: Some(config.factor_policy),
         allow_inline: Some(config.allow_served_inline),
         oauth_bridge,
+        oauth_as,
         // Mounting the router starts the sweep.
         maintenance_interval: None,
     });

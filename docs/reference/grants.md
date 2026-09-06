@@ -16,6 +16,7 @@ Service tokens carry grants that control which API operations the service can pe
 | `browser_proxy` | Front the browser perimeter on behalf of end users |
 | `external_auth` | Sign users in through an external provider (email, OAuth), creating the identity on first sight |
 | `external_link` | Attach an external provider account to an existing identity, or detach one |
+| `oauth_admin` | Register and revoke OAuth clients, and register the audiences tokens can be scoped to |
 
 ## Grant-to-endpoint mapping
 
@@ -31,6 +32,7 @@ Each grant unlocks a specific set of service API endpoints:
 | `browser_proxy` | The browser endpoints (`/v1/login`, `/v1/flows/...`, `/v1/whoami`, ...) — permits stating the end user's address in `X-Surge-Client-Ip` |
 | `external_auth` | `POST /v1/authenticate/link` — resolve a `(provider, subject)` pair to a session, creating the identity if the link is new |
 | `external_link` | `POST /v1/identities/{id}/links` — attach or confirm a link; `DELETE /v1/identities/{id}/links` — detach one |
+| `oauth_admin` | `POST /v1/oauth/clients` — register an OAuth client; `GET /v1/oauth/clients` — list them; `DELETE /v1/oauth/clients/{client_id}` — revoke one; `POST /v1/oauth/resources` — register this service's audience; `GET /v1/oauth/resources` — list audiences |
 
 A request to an endpoint without the required grant returns `403 Forbidden`:
 
@@ -65,6 +67,12 @@ Surge stores links — `("email", "alice@example.com")`, `("google", "117...")` 
 `external_link` is separate because attaching a subject to an *existing* identity is account-binding: a service able to link `google:attacker@example.com` to someone else's identity could then sign in as them. Signing users in through a provider does not require binding new providers to established accounts, so the two capabilities stay apart.
 
 `direct_auth` remains scoped to password authentication and unlocks neither.
+
+### The `oauth_admin` grant registers clients, and `introspect` reads their tokens
+
+`oauth_admin` is deliberately separate from `identity_write`: registering an OAuth client is not an identity operation, and a service that manages users has no business minting clients. The flag that makes it sensitive is `first_party`, which skips the consent screen — a first-party client obtains a user's tokens with no approval step, so the grant that can set it stays narrow. Dynamically registered clients can never be first-party, whatever grant asked.
+
+A service registers its **own** audience: the owning `service_id` on `POST /v1/oauth/resources` is taken from the authenticated token, never from the body. That is what keeps the introspection check meaningful — `POST /oauth2/introspect` is authenticated by a service token with `introspect`, and answers only about tokens whose audience that service owns. Any other service gets `active: false`, not someone else's token contents.
 
 ### Verified and unverified links
 

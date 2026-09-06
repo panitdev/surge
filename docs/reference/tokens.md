@@ -12,6 +12,12 @@ Surge uses prefixed token strings for sessions, service authentication, login fl
 | `aeg_svc_` | Service token | Authenticates a backend service; returned once on `svc create` | `aeg_svc_1a2b3c4d5e6f7g8h9i0j` |
 | `aeg_f_` | Flow ID | Identifies a login flow; not secret, used in URLs | `aeg_f_7h2k9m4p6r8t1w3v5` |
 | `aeg_r_` | Reset token | Authorizes a password reset; **type exists in the engine but is not yet wired to any API endpoint** | `aeg_r_9x2y4z6a8b0c1d2e3f` |
+| `aeg_cid_` | OAuth client ID | Identifies a registered OAuth client; not secret, appears in query strings and logs | `aeg_cid_4f7k2m9p1r5t8v3w6x` |
+| `aeg_cs_` | OAuth client secret | Authenticates a confidential OAuth client; returned once at registration | `aeg_cs_8b3d5f7h9k2m4p6r1t` |
+| `aeg_ac_` | OAuth authorization code | Single-use, 60-second code exchanged for tokens | `aeg_ac_2q4s6u8w1y3a5c7e9g` |
+| `aeg_rt_` | OAuth refresh token | Long-lived, rotated on every use | `aeg_rt_5m7p9r2t4v6x8z1b3d` |
+
+OAuth **access tokens are not in this table** and carry no `aeg_` prefix: they are ES256-signed JWTs, so a resource server can verify them offline against JWKS instead of asking Surge. See [OAuth Authorization Server](/features/oauth-authorization-server).
 
 ## Token generation
 
@@ -52,6 +58,8 @@ The raw token is only shown **once** — when it's generated:
 | Session (`aeg_s_`) | In the `Set-Cookie` header on login/register |
 | Service (`aeg_svc_`) | Printed to stdout on `surge-server svc create` |
 | Reset (`aeg_r_`) | Not applicable — no endpoint currently issues reset tokens |
+| OAuth client secret (`aeg_cs_`) | Printed on `surge-server oauth client create --confidential`, or in the `POST /oauth2/register` response |
+| OAuth refresh token (`aeg_rt_`) | In each `POST /oauth2/token` response — a *new* one every time, since refresh tokens rotate |
 
 After that initial exposure, the raw token cannot be recovered. If lost, the only option is to create a new token and revoke the old one.
 
@@ -88,7 +96,7 @@ Prefixes are not versioned or deprecated while live tokens exist. If a prefix fo
 
 When parsing a token from a request, Surge validates:
 
-1. **Prefix check**: The token must start with a recognized prefix (`aeg_s_`, `aeg_svc_`, `aeg_f_`, `aeg_r_`) and have at least one character after it
+1. **Prefix check**: The token must start with a recognized prefix (`aeg_s_`, `aeg_svc_`, `aeg_f_`, `aeg_r_`, `aeg_cid_`, `aeg_cs_`, `aeg_ac_`, `aeg_rt_`) and have at least one character after it — and the prefixes are mutually exclusive, so an authorization code can never be presented as a refresh token
 2. **Hash lookup** (secret tokens only): The SHA-256 hash of the token body must exist in the database
 3. **State check**: The associated record must be valid (session not revoked/expired, flow not completed/expired, etc.)
 

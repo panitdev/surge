@@ -100,21 +100,38 @@ impl Engine {
         Ok(())
     }
 
+    /// "Log this person out everywhere" — which includes their OAuth grants.
+    ///
+    /// The cascade to refresh tokens is not incidental: an OAuth grant is
+    /// bound to the identity rather than to the session that authorized it
+    /// (internal/oauth-as.md §7), so nothing else here would end it, and a
+    /// revoke-everything that left connected apps refreshing would be a lie.
+    /// Both writes land in one transaction; the returned count is sessions,
+    /// which is what every existing caller reports.
     pub async fn revoke_all_sessions(&self, identity_id: IdentityId) -> Result<u64, AuthError> {
         let mut conn = self.conn().await?;
         let now = Utc::now();
+        let identity_uuid = *identity_id.as_uuid();
 
-        let affected = diesel::update(
-            session::table
-                .filter(session::identity_id.eq(*identity_id.as_uuid()))
-                .filter(session::revoked_at.is_null()),
-        )
-        .set(session::revoked_at.eq(now))
-        .execute(&mut conn)
+        conn.transaction::<_, AuthError, _>(|conn| {
+            async move {
+                let affected = diesel::update(
+                    session::table
+                        .filter(session::identity_id.eq(identity_uuid))
+                        .filter(session::revoked_at.is_null()),
+                )
+                .set(session::revoked_at.eq(now))
+                .execute(conn)
+                .await
+                .map_err(|e| AuthError::Internal(e.into()))?;
+
+                crate::oauth::revoke_identity_tokens(conn, identity_uuid).await?;
+
+                Ok(affected as u64)
+            }
+            .scope_boxed()
+        })
         .await
-        .map_err(|e| AuthError::Internal(e.into()))?;
-
-        Ok(affected as u64)
     }
 
     pub async fn gc_expired_sessions(&self) -> Result<u64, AuthError> {
