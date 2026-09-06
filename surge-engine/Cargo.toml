@@ -32,6 +32,7 @@ unicode-normalization.workspace = true
 url.workspace = true
 uuid.workspace = true
 zeroize.workspace = true
+p256.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }

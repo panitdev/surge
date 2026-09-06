@@ -14,6 +14,8 @@ enum Cli {
     Identity(cli::IdentityCommand),
     #[command(subcommand)]
     Svc(cli::SvcCommand),
+    #[command(subcommand)]
+    Oauth(cli::OauthCommand),
 }
 
 #[tokio::main]
@@ -32,5 +34,6 @@ async fn main() -> anyhow::Result<()> {
         Cli::Serve(args) => cli::serve(args, Arc::clone(&embedded), config).await,
         Cli::Identity(cmd) => cli::identity(cmd, engine).await,
         Cli::Svc(cmd) => cli::svc(cmd, engine).await,
+        Cli::Oauth(cmd) => cli::oauth(cmd, engine).await,
     }
 }

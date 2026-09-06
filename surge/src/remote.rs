@@ -392,6 +392,19 @@ impl AuthProvider for RemoteProvider {
         self: std::sync::Arc<Self>,
         config: crate::router::BrowserRouterConfig,
     ) -> axum::Router {
+        // An authorization server has exactly one issuer identity, so this is
+        // the one browser route a service must never proxy. A service
+        // answering `/oauth2/token` on its own origin would be minting tokens
+        // under central's `iss`; the client-side issuer check would then fail
+        // quietly, in ways that look like clock skew. Warn and ignore.
+        #[cfg(feature = "oauth-as")]
+        if config.oauth_as.is_some() {
+            tracing::warn!(
+                "oauth_as is set on a RemoteProvider and is being ignored: the OAuth \
+                 authorization server is mounted by central only (internal/oauth-as.md §2)"
+            );
+        }
+
         crate::router::proxy_browser_router(crate::router::ProxyConfig {
             upstream_base_url: self.base_url.clone(),
             cookie_domain: config.cookie_domain,

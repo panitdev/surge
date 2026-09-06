@@ -8,6 +8,8 @@ mod cors;
 mod csrf;
 mod error;
 mod oauth_bridge;
+#[cfg(feature = "oauth-as")]
+mod oauth_as;
 mod proxy;
 pub mod rate_limit;
 #[cfg(feature = "test-provider")]
@@ -21,4 +23,6 @@ pub(crate) use proxy::{proxy_browser_router, ProxyConfig};
 #[cfg(feature = "test-provider")]
 pub(crate) use test::test_browser_router;
 pub use oauth_bridge::OauthBridgeConfig;
+#[cfg(feature = "oauth-as")]
+pub use oauth_as::OauthAsConfig;
 pub use rate_limit::{PostgresRateLimiter, RateLimitConfig, RateLimitPolicy, RateLimiter};

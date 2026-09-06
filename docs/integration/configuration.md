@@ -26,6 +26,15 @@ Here is the complete reference:
 | `SURGE_HYDRA_ADMIN_URL` | (unset) | Ory Hydra admin API base URL; setting this enables the Hydra login/consent bridge |
 | `SURGE_HYDRA_BRIDGE_ORIGIN` | (required if `SURGE_HYDRA_ADMIN_URL` is set) | This server's own public origin for the bridge's `return_to` callback |
 | `SURGE_HYDRA_ADMIN_TIMEOUT_SECS` | `10` | Timeout in seconds for Hydra admin API requests |
+| `SURGE_OAUTH_ISSUER` | (unset) | This server's public origin; setting it enables the native OAuth authorization server |
+| `SURGE_OAUTH_ACCESS_TTL_SECS` | `600` | Access-token lifetime — also the offline revocation window |
+| `SURGE_OAUTH_REFRESH_TTL_DAYS` | `30` | Refresh-token lifetime |
+| `SURGE_OAUTH_KEY_ROTATION_DAYS` | `90` | Signing-key rotation cadence |
+| `SURGE_OAUTH_ALLOW_DYNAMIC_REGISTRATION` | `0` | Opens `POST /oauth2/register` (RFC 7591) |
+| `SURGE_OAUTH_REQUIRE_RESOURCE` | `1` | Reject `authorize` without a resolvable `resource` |
+| `SURGE_OAUTH_DEFAULT_RESOURCE` | (unset) | Audience assumed when `REQUIRE_RESOURCE=0` |
+| `SURGE_OAUTH_DCR_TTL_DAYS` | `30` | Sweep unused dynamic clients |
+| `SURGE_OAUTH_ENABLE_OIDC` | `1` | ID tokens, `userinfo`, OpenID discovery |
 
 ## Database connection
 
@@ -170,6 +179,20 @@ export SURGE_ALLOW_SERVED_INLINE=0
 ```
 
 When enabled on a served deployment, credential entry is proxied through the consuming service's origin — Surge sees that service's IP, not the browser's. This coarsens per-IP rate limiting. Embedded consumers can enable this unconditionally (there is no such tradeoff when Surge runs in-process).
+
+## Native OAuth authorization server (`SURGE_OAUTH_ISSUER`, ...)
+
+Setting `SURGE_OAUTH_ISSUER` turns Surge into an OAuth 2.1 / OIDC authorization server — see [OAuth Authorization Server](/features/oauth-authorization-server) for the full picture. Unset, no `/oauth2/*` routes are mounted and no signing key is ever generated.
+
+```bash
+export SURGE_OAUTH_ISSUER="https://auth.example.com"
+export SURGE_OAUTH_ACCESS_TTL_SECS=600
+export SURGE_OAUTH_ALLOW_DYNAMIC_REGISTRATION=0
+```
+
+Startup refuses to proceed unless the issuer is among the registered return origins (the authorize endpoint re-enters `GET /v1/login?return_to=<self>`, which would otherwise be rejected after the user has already signed in), and unless it is `https` on a non-loopback bind. It warns when no audiences are registered, when dynamic registration is open, and when the Hydra bridge is enabled at the same time.
+
+Two of these are security parameters rather than preferences. `SURGE_OAUTH_ACCESS_TTL_SECS` is the revocation window for any resource server that verifies tokens offline. `SURGE_OAUTH_ALLOW_DYNAMIC_REGISTRATION` opens an endpoint that is unauthenticated by specification — never enable it without a working consent screen.
 
 ## Hydra OAuth bridge (`SURGE_HYDRA_ADMIN_URL`, `SURGE_HYDRA_BRIDGE_ORIGIN`, `SURGE_HYDRA_ADMIN_TIMEOUT_SECS`)
 

@@ -7,7 +7,10 @@ mod username;
 pub use error::{AuthError, ValidationError};
 pub use id::{IdentityId, ServiceId, SessionId};
 pub use password::{Password, PasswordError};
-pub use token::{FlowId, ResetToken, ServiceToken, SessionToken};
+pub use token::{
+    AuthorizationCode, ClientId, ClientSecret, FlowId, RefreshToken, ResetToken, ServiceToken,
+    SessionToken,
+};
 pub use username::{Username, UsernameError};
 
 use chrono::{DateTime, Utc};

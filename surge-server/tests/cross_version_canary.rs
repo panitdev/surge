@@ -42,15 +42,31 @@ use surge_server::config::ServerConfig;
 
 const AUTH_UI_ORIGIN: &str = "https://auth.canary.test";
 const RETURN_ORIGIN: &str = "https://app.canary.test";
+/// The AS issuer, which must also be a registered return origin: the
+/// authorize handler bounces through `GET /v1/login?return_to=<self>`.
+const OAUTH_ISSUER: &str = "https://canary.test";
+const OAUTH_CLIENT_REDIRECT: &str = "https://app.canary.test/oauth/callback";
 
 async fn test_app() -> (axum::Router, Arc<surge_engine::Engine>, String) {
+    let (app, engine, token, _resource) = test_app_inner().await;
+    (app, engine, token)
+}
+
+/// The full harness, including the audience this run registered. Lane 4 needs
+/// *its own* resource: the introspection check is scoped to the resources the
+/// asking service owns, so picking any row out of a shared database would
+/// hand the lane someone else's audience.
+async fn test_app_inner() -> (axum::Router, Arc<surge_engine::Engine>, String, String) {
     let database_url = std::env::var("DATABASE_URL")
         .expect("DATABASE_URL must be set to run the cross-version canary");
 
     let embedded = Arc::new(
         EmbeddedProvider::new(EmbeddedConfig {
             database_url: SecretString::from(database_url),
-            pepper: SecretString::from("canary-test-pepper".to_string()),
+            // Shared with the OAuth suites on purpose: signing keys are encrypted
+            // under the pepper and are per-deployment, so two test binaries
+            // pointed at one DATABASE_URL must agree on it.
+            pepper: SecretString::from("surge-oauth-test-pepper".to_string()),
             session_ttl: Duration::from_secs(3600),
         })
         .await
@@ -71,10 +87,31 @@ async fn test_app() -> (axum::Router, Arc<surge_engine::Engine>, String) {
                 "introspect".to_string(),
                 "revoke".to_string(),
             ],
-            vec![RETURN_ORIGIN.to_string()],
+            vec![RETURN_ORIGIN.to_string(), OAUTH_ISSUER.to_string()],
         )
         .await
         .expect("create_service");
+
+    // Lane 4 needs an audience to scope its token to; the other lanes are
+    // indifferent to it.
+    let service_id = engine
+        .list_services()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|s| s.name == svc_name)
+        .unwrap()
+        .id;
+    let resource_uri = format!("https://rs.canary.test/mcp-{suffix}");
+    engine
+        .create_oauth_resource(
+            &resource_uri,
+            service_id,
+            vec!["mcp:read".to_string()],
+            serde_json::json!({}),
+        )
+        .await
+        .expect("create_oauth_resource");
 
     let config = Arc::new(ServerConfig {
         database_url: SecretString::from(String::new()),
@@ -88,13 +125,24 @@ async fn test_app() -> (axum::Router, Arc<surge_engine::Engine>, String) {
         session_cors_origins: vec![],
         allow_served_inline: true,
         hydra_bridge: None,
+        oauth_as: Some(surge_server::config::OauthAsSettings {
+            issuer: OAUTH_ISSUER.to_string(),
+            access_ttl: Duration::from_secs(600),
+            refresh_ttl: Duration::from_secs(30 * 86_400),
+            key_rotation: Duration::from_secs(90 * 86_400),
+            allow_dynamic_registration: false,
+            require_resource: true,
+            default_resource: None,
+            dcr_ttl: Duration::from_secs(30 * 86_400),
+            enable_oidc: true,
+        }),
     });
 
     let app = surge_server::api::router(embedded, config)
         .await
         .expect("router assembly");
 
-    (app, engine, token.expose_secret().to_string())
+    (app, engine, token.expose_secret().to_string(), resource_uri)
 }
 
 fn rand_suffix() -> u32 {
@@ -320,5 +368,129 @@ async fn lane3_mint_one_surface_introspect_the_other() {
         resp_b.status(),
         StatusCode::OK,
         "service-minted session must resolve via browser-facing whoami"
+    );
+}
+
+/// Lane 4: an OAuth access token is a credential in the same substrate as a
+/// session, so it has to answer to the same revocation. Mint one through the
+/// authorization server, revoke the identity's sessions, and introspection
+/// must report `active: false`.
+///
+/// The grant is bound to the identity rather than to the browser session that
+/// authorized it (internal/oauth-as.md §7), so what ends it is the explicit
+/// "log this person out everywhere" — not the natural expiry of the session
+/// it happened to be born from.
+#[tokio::test]
+#[ignore = "requires DATABASE_URL against a disposable Postgres"]
+async fn lane4_revoking_every_session_deactivates_the_oauth_grant() {
+    let (app, engine, token, resource_uri) = test_app_inner().await;
+
+    let username = format!("lane4-{}", rand_suffix());
+    let password = register_identity(&app, &token, &username).await;
+    let session = mint_browser(&app, "v1", &username, &password).await;
+
+    let (client, _) = engine
+        .create_oauth_client(surge_engine::oauth::NewOauthClient {
+            client_name: "Canary client".to_string(),
+            client_uri: None,
+            logo_uri: None,
+            redirect_uris: vec![OAUTH_CLIENT_REDIRECT.to_string()],
+            grant_types: vec!["authorization_code".to_string(), "refresh_token".to_string()],
+            scopes: vec!["mcp:read".to_string()],
+            confidential: false,
+            first_party: true,
+            registration_source: surge_engine::oauth::RegistrationSource::Admin,
+        })
+        .await
+        .expect("create_oauth_client");
+
+    // A fixed verifier/challenge pair; the PKCE mechanics are covered in
+    // `oauth_token.rs`, this lane only needs a token in hand.
+    let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+    let challenge = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
+
+    let authorize = format!(
+        "/oauth2/authorize?response_type=code&client_id={}&redirect_uri={}&code_challenge={challenge}&code_challenge_method=S256&resource={}&scope=mcp:read",
+        percent_encode(&client.client_id),
+        percent_encode(OAUTH_CLIENT_REDIRECT),
+        percent_encode(&resource_uri),
+    );
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(&authorize)
+                .header("cookie", format!("surge_session={session}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER, "authorize must issue a code");
+    let redirect = resp
+        .headers()
+        .get(axum::http::header::LOCATION)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    let code = url::Url::parse(&redirect)
+        .unwrap()
+        .query_pairs()
+        .find(|(k, _)| k == "code")
+        .map(|(_, v)| v.into_owned())
+        .expect("no code in the redirect");
+
+    let form = format!(
+        "grant_type=authorization_code&code={}&redirect_uri={}&client_id={}&code_verifier={verifier}",
+        percent_encode(&code),
+        percent_encode(OAUTH_CLIENT_REDIRECT),
+        percent_encode(&client.client_id),
+    );
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/oauth2/token")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(form))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let token_body = body_json(resp).await;
+    assert_eq!(status, StatusCode::OK, "token exchange failed: {token_body}");
+    let access = token_body["access_token"].as_str().unwrap().to_string();
+
+    let introspect = |access: String, token: String, app: axum::Router| async move {
+        app.oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/oauth2/introspect")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(format!("token={}", percent_encode(&access))))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+    };
+
+    let body = body_json(introspect(access.clone(), token.clone(), app.clone()).await).await;
+    assert_eq!(body["active"], true, "a freshly minted token must introspect live");
+    assert_eq!(body["aud"], resource_uri);
+
+    let identity_id = surge_engine::types::IdentityId::from_uuid(
+        body["sub"].as_str().unwrap().parse().unwrap(),
+    );
+    engine.revoke_all_sessions(identity_id).await.unwrap();
+
+    let body = body_json(introspect(access, token, app).await).await;
+    assert_eq!(
+        body["active"], false,
+        "revoking every session must deactivate the OAuth grant it authorized"
     );
 }

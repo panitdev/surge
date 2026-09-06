@@ -1,8 +1,12 @@
 //! Login/consent bridge between Hydra (the OAuth 2.1 authorization server,
-//! per rfc.md) and Surge's session/flow substrate. Mounted only when the
-//! embedder opts in (`BrowserRouterConfig`'s `oauth_bridge` field is
-//! `Some`) — absent that, this module's routes simply aren't mounted and
-//! Hydra is never required for Surge to run.
+//! see `docs/integration/hydra-oauth-bridge.md`) and Surge's session/flow
+//! substrate. Mounted only when the embedder opts in
+//! (`BrowserRouterConfig`'s `oauth_bridge` field is `Some`) — absent that,
+//! this module's routes simply aren't mounted and Hydra is never required
+//! for Surge to run.
+//!
+//! Superseded by `router::oauth_as`, the native authorization server, and
+//! kept working so a deployment can move to it one client at a time.
 //!
 //! This module knows about `surge_session` and the flow round-trip; it
 //! treats Hydra as an opaque "accept this challenge, hand back a redirect

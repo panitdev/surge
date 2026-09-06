@@ -1,6 +1,6 @@
 //! Ory Hydra admin-API client. The only module in this crate aware of
 //! Hydra's wire format — see `router::oauth_bridge`, which depends on this
-//! module but never the reverse. Per rfc.md, Hydra remains the OAuth 2.1
+//! module but never the reverse. In the Hydra split, Hydra remains the OAuth 2.1
 //! authorization server; this is the thin admin-API seam the login/consent
 //! bridge calls into.
 
@@ -105,7 +105,7 @@ impl HydraAdmin {
     }
 
     /// Accepts a consent challenge without rendering a screen (first-party
-    /// clients only — see rfc.md's non-goals). Hydra requires the granted
+    /// clients only — see `docs/integration/hydra-oauth-bridge.md`). Hydra requires the granted
     /// scope/audience to be echoed back even when consent UI is skipped, so
     /// this first fetches the requested scope before accepting.
     pub async fn skip_consent(&self, challenge: &str) -> Result<String, HydraError> {
