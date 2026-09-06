@@ -74,6 +74,7 @@ impl RemoteProvider {
             "username_taken" => AuthError::UsernameTaken,
             "not_found" => AuthError::NotFound,
             "forbidden" => AuthError::Forbidden,
+            "scope_not_granted" => AuthError::ScopeNotGranted,
             "rate_limited" => AuthError::RateLimited {
                 retry_after: Duration::from_secs(
                     body.get("retry_after")

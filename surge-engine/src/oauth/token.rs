@@ -50,15 +50,26 @@ impl Engine {
     /// thief and the legitimate client cannot both be holding the newest
     /// token, so a second use of an old one means one of them is replaying,
     /// and the safe move is to end the grant and make the user re-authorize.
+    ///
+    /// `requested_scopes`, when given, must be a subset of what the grant
+    /// carries (RFC 6749 §6: a refresh may narrow but never widen). It is
+    /// checked here, inside the transaction and *before* `consumed_at` is
+    /// set, so a client that asks for a scope it never held is refused with
+    /// its token intact — rejecting it after rotation would burn a valid
+    /// token and strand the grant over what is only ever a client-side bug.
+    /// The returned grant still carries the full scope set: narrowing shapes
+    /// the access token, never the lineage.
     pub async fn rotate_refresh_token(
         &self,
         token: &RefreshToken,
         client_id: &str,
         ttl: std::time::Duration,
+        requested_scopes: Option<&[String]>,
     ) -> Result<RotatedRefresh, AuthError> {
         let token_hash = token.hash();
         let client_id = client_id.to_string();
         let owner = client_id.clone();
+        let requested_scopes = requested_scopes.map(<[String]>::to_vec);
         let mut conn = self.conn().await?;
 
         // Reuse is reported as `Ok(Err(family))` rather than as an error,
@@ -91,6 +102,13 @@ impl Engine {
                         || row.expires_at < Utc::now()
                     {
                         return Err(AuthError::InvalidToken);
+                    }
+
+                    // Before the token is spent, not after.
+                    if let Some(requested) = &requested_scopes
+                        && !requested.iter().all(|s| row.scopes.contains(s))
+                    {
+                        return Err(AuthError::ScopeNotGranted);
                     }
 
                     diesel::update(oauth_refresh_token::table.find(&token_hash))

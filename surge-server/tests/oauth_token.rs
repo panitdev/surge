@@ -235,6 +235,43 @@ async fn a_refresh_may_narrow_scope_but_never_widen_it() {
         .await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     assert_eq!(body_json(resp).await["error"], "invalid_scope");
+
+    // The refusal must not have spent the token. Asking for too much is a
+    // client-side bug, and burning the grant over it would strand a session
+    // that nothing was wrong with.
+    let resp = h
+        .post_form(
+            "/oauth2/token",
+            &[
+                ("grant_type", "refresh_token"),
+                ("refresh_token", &refresh),
+                ("client_id", &client_id),
+                ("scope", "mcp:read"),
+            ],
+        )
+        .await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "a rejected widen must leave the presented refresh token spendable"
+    );
+    let narrowed = body_json(resp).await;
+    assert_eq!(narrowed["scope"], "mcp:read");
+
+    // Narrowing shapes the access token, not the lineage: the successor still
+    // carries the grant, so the next refresh can ask for everything again.
+    let resp = h
+        .post_form(
+            "/oauth2/token",
+            &[
+                ("grant_type", "refresh_token"),
+                ("refresh_token", narrowed["refresh_token"].as_str().unwrap()),
+                ("client_id", &client_id),
+            ],
+        )
+        .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(body_json(resp).await["scope"], "mcp:read");
 }
 
 #[tokio::test]

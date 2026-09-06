@@ -204,15 +204,36 @@ async fn refresh_token_grant(
         .and_then(RefreshToken::from_raw)
         .ok_or_else(|| OauthError::new(OauthErrorCode::InvalidGrant, "invalid refresh token"))?;
 
+    // Parsed before the rotation, because the rotation is what decides
+    // whether the scope is grantable — and it must decide that while the
+    // presented token is still spendable.
+    let requested_scopes: Option<Vec<String>> = form
+        .scope
+        .as_deref()
+        .map(|s| s.split_whitespace().map(str::to_string).collect::<Vec<_>>())
+        .filter(|s| !s.is_empty());
+
     let rotated = state
         .engine
-        .rotate_refresh_token(&token, &client.client_id, state.config.refresh_ttl)
+        .rotate_refresh_token(
+            &token,
+            &client.client_id,
+            state.config.refresh_ttl,
+            requested_scopes.as_deref(),
+        )
         .await
-        .map_err(|_| {
-            OauthError::new(
+        .map_err(|e| match e {
+            // A refresh may narrow the granted scope but never widen it
+            // (RFC 6749 §6). Refused before rotation, so the client's token
+            // survives a request it only got wrong.
+            surge_engine::AuthError::ScopeNotGranted => OauthError::new(
+                OauthErrorCode::InvalidScope,
+                "a refresh may narrow the granted scope but never widen it",
+            ),
+            _ => OauthError::new(
                 OauthErrorCode::InvalidGrant,
                 "the refresh token is unknown, expired, revoked, or has already been used",
-            )
+            ),
         })?;
 
     // The grant is bound to the identity, so this is the check that matters:
@@ -232,19 +253,13 @@ async fn refresh_token_grant(
         ));
     }
 
-    // A refresh may narrow scope but never widen it (RFC 6749 §6).
+    // The narrowing itself, already validated against the grant above. It
+    // shapes this access token only; the successor refresh token carries the
+    // grant's full scope set, so a client that narrows once is not narrowed
+    // forever.
     let mut grant = rotated.grant;
-    if let Some(requested) = form.scope.as_deref() {
-        let requested: Vec<String> = requested.split_whitespace().map(str::to_string).collect();
-        if !requested.iter().all(|s| grant.scopes.contains(s)) {
-            return Err(OauthError::new(
-                OauthErrorCode::InvalidScope,
-                "a refresh may narrow the granted scope but never widen it",
-            ));
-        }
-        if !requested.is_empty() {
-            grant.scopes = requested;
-        }
+    if let Some(requested) = requested_scopes {
+        grant.scopes = requested;
     }
 
     let response = build_token_body(state, &client, &grant, None, false).await?;

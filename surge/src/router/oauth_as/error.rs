@@ -137,6 +137,10 @@ impl From<AuthError> for OauthError {
                 Self::new(OauthErrorCode::AccessDenied, "the account is disabled")
             }
             AuthError::Forbidden => Self::new(OauthErrorCode::AccessDenied, "forbidden"),
+            AuthError::ScopeNotGranted => Self::new(
+                OauthErrorCode::InvalidScope,
+                "the request asked for a scope this grant does not carry",
+            ),
             AuthError::RateLimited { retry_after } => Self::new(
                 OauthErrorCode::TemporarilyUnavailable,
                 format!("rate limited; retry in {}s", retry_after.as_secs()),
