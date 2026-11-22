@@ -1155,7 +1155,7 @@ async fn logout(
         return Err(AuthError::InvalidToken.into());
     }
     if let Some(token) = legacy_cookie(&parts.headers) {
-        let _ = state.provider.revoke_session(&token).await;
+        state.engine.logout_legacy_browser(&token).await?;
     }
     let jar = CookieJar::new().add(removal_cookie(&state.cookie_domain));
     Ok((jar, StatusCode::NO_CONTENT).into_response())

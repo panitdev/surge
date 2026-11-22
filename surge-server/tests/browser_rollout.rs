@@ -163,12 +163,46 @@ async fn rollout(remote: bool) {
             .status(),
         StatusCode::UNAUTHORIZED
     );
+    let retired = call(&app, Method::POST, "/v1/logout", &legacy, None, None).await;
+    assert_eq!(retired.status(), StatusCode::UNAUTHORIZED);
+    assert!(!retired.headers().contains_key("set-cookie"));
+    let separate = h
+        .engine
+        .mint_session(old.identity_id().await, surge::AuthMethod::Password)
+        .await
+        .unwrap();
+    let separate = format!("surge_session={}", separate.token.expose_secret());
+    for credential in [separate.as_str(), separate.as_str(), ""] {
+        assert_eq!(
+            call(&app, Method::POST, "/v1/logout", credential, None, None)
+                .await
+                .status(),
+            StatusCode::NO_CONTENT
+        );
+    }
     let default = call(&app, Method::GET, "/v1/whoami", &cookie, None, None).await;
     let work = default.headers()["x-surge-account"]
         .to_str()
         .unwrap()
         .to_owned();
     assert_eq!(body_json(default).await["id"], old_work["id"]);
+    let write = "/v1/account/password";
+    let adopted_work_password = "updated adopted Work password";
+    assert_eq!(
+        call(
+            &app,
+            Method::POST,
+            write,
+            &cookie,
+            None,
+            Some(json!({
+                "step_up":first_password, "new_password":adopted_work_password
+            }))
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
     let accounts =
         body_json(call(&app, Method::GET, "/v1/accounts", &cookie, None, None).await).await;
     let personal = accounts["accounts"]
@@ -216,10 +250,13 @@ async fn rollout(remote: bool) {
         .status()
         .is_success()
     );
-    let write = "/v1/account/password";
-    for (pin, new_password) in [
-        (Some(work.as_str()), "changed Work password"),
-        (None, "changed Personal password"),
+    for (pin, current_password, new_password) in [
+        (
+            Some(work.as_str()),
+            adopted_work_password,
+            "changed Work password",
+        ),
+        (None, first_password, "changed Personal password"),
     ] {
         let response = call(
             &app,
@@ -227,7 +264,7 @@ async fn rollout(remote: bool) {
             write,
             &cookie,
             pin,
-            Some(json!({"step_up":first_password,"new_password":new_password})),
+            Some(json!({"step_up":current_password,"new_password":new_password})),
         )
         .await;
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
