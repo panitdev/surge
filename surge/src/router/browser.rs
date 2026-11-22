@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use axum::extract::{ConnectInfo, FromRequestParts, Path, Query, State};
 use axum::http::request::Parts;
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::middleware;
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{delete, get, post};
@@ -22,7 +22,7 @@ use super::csrf::check_flow_csrf;
 use super::error::ApiError;
 use super::rate_limit::RateLimiter;
 use super::trusted_proxy::{trusted_proxy, TrustedClientIp, TrustedProxyState};
-use crate::extract::require_header_csrf;
+use crate::extract::{require_header_csrf, resolve_request, ACCOUNT_HEADER, BROWSER_COOKIE};
 use crate::traits::AuthProvider;
 use crate::*;
 
@@ -270,7 +270,14 @@ impl V1Router {
             )
             .route("/factors/passphrase/confirm", post(confirm_passphrase).layer(csrf()))
             .route("/account/password", post(change_password).layer(csrf()))
-            .layer(session_cors)
+            .layer(middleware::map_response(|mut response: Response| async move {
+                response.headers_mut().insert(http::header::CACHE_CONTROL, http::HeaderValue::from_static("no-store"));
+                response
+            }))
+            .layer(session_cors.allow_headers([
+                http::header::CONTENT_TYPE, http::header::COOKIE,
+                http::HeaderName::from_static("x-surge-csrf"), http::HeaderName::from_static(ACCOUNT_HEADER),
+            ]).expose_headers([http::HeaderName::from_static(ACCOUNT_HEADER)]))
             .with_state(self.state);
 
         Router::new()
@@ -726,14 +733,6 @@ async fn submit_recover(
     }
 }
 
-/// Resolve the logged-in identity from the `surge_session` cookie (mirrors
-/// `whoami`). Used by the authenticated factor-management endpoints.
-async fn require_session(state: &EmbeddedState, jar: &CookieJar) -> Result<Session, ApiError> {
-    let cookie = jar.get("surge_session").ok_or(AuthError::InvalidToken)?;
-    let token = SessionToken::from_raw(cookie.value()).ok_or(AuthError::InvalidToken)?;
-    Ok(state.provider.verify_session(Some(token)).await?)
-}
-
 /// Per-identity throttle for step-up-guarded mutations. A valid session is
 /// required to reach these, but the `step_up` secret still shouldn't be
 /// brute-forceable from a stolen session.
@@ -763,9 +762,9 @@ struct ChangePassword {
 
 async fn get_factors(
     State(state): State<Arc<EmbeddedState>>,
-    jar: CookieJar,
+    headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let session = require_session(&state, &jar).await?;
+    let session = resolve_request(state.provider.as_ref(), &headers, false).await?.session;
     let policy = policy_block(&state, session.identity.id).await?;
     Ok(Json(json!({ "policy": policy })).into_response())
 }
@@ -773,10 +772,10 @@ async fn get_factors(
 async fn enroll_totp(
     State(state): State<Arc<EmbeddedState>>,
     MaybeClientIp(ip): MaybeClientIp,
-    jar: CookieJar,
+    headers: HeaderMap,
     Json(body): Json<StepUp>,
 ) -> Result<Response, ApiError> {
-    let session = require_session(&state, &jar).await?;
+    let session = resolve_request(state.provider.as_ref(), &headers, false).await?.session;
     let id = session.identity.id;
     rate_limit_step_up(&state, ip, id).await?;
     state.engine.verify_step_up(id, &body.step_up).await?;
@@ -797,10 +796,10 @@ struct ConfirmTotp {
 async fn confirm_totp(
     State(state): State<Arc<EmbeddedState>>,
     MaybeClientIp(ip): MaybeClientIp,
-    jar: CookieJar,
+    headers: HeaderMap,
     Json(body): Json<ConfirmTotp>,
 ) -> Result<Response, ApiError> {
-    let session = require_session(&state, &jar).await?;
+    let session = resolve_request(state.provider.as_ref(), &headers, false).await?.session;
     let id = session.identity.id;
     rate_limit_step_up(&state, ip, id).await?;
     state.engine.confirm_totp(id, &body.code).await?;
@@ -820,10 +819,10 @@ async fn confirm_totp(
 async fn remove_totp(
     State(state): State<Arc<EmbeddedState>>,
     MaybeClientIp(ip): MaybeClientIp,
-    jar: CookieJar,
+    headers: HeaderMap,
     Json(body): Json<StepUp>,
 ) -> Result<Response, ApiError> {
-    let session = require_session(&state, &jar).await?;
+    let session = resolve_request(state.provider.as_ref(), &headers, false).await?.session;
     let id = session.identity.id;
     rate_limit_step_up(&state, ip, id).await?;
     state.engine.verify_step_up(id, &body.step_up).await?;
@@ -835,10 +834,10 @@ async fn remove_totp(
 async fn enroll_passphrase(
     State(state): State<Arc<EmbeddedState>>,
     MaybeClientIp(ip): MaybeClientIp,
-    jar: CookieJar,
+    headers: HeaderMap,
     Json(body): Json<StepUp>,
 ) -> Result<Response, ApiError> {
-    let session = require_session(&state, &jar).await?;
+    let session = resolve_request(state.provider.as_ref(), &headers, false).await?.session;
     let id = session.identity.id;
     rate_limit_step_up(&state, ip, id).await?;
     state.engine.verify_step_up(id, &body.step_up).await?;
@@ -854,10 +853,10 @@ struct ConfirmPassphrase {
 async fn confirm_passphrase(
     State(state): State<Arc<EmbeddedState>>,
     MaybeClientIp(ip): MaybeClientIp,
-    jar: CookieJar,
+    headers: HeaderMap,
     Json(body): Json<ConfirmPassphrase>,
 ) -> Result<Response, ApiError> {
-    let session = require_session(&state, &jar).await?;
+    let session = resolve_request(state.provider.as_ref(), &headers, false).await?.session;
     let id = session.identity.id;
     rate_limit_step_up(&state, ip, id).await?;
     state.engine.confirm_passphrase(id, &body.passphrase).await?;
@@ -868,10 +867,10 @@ async fn confirm_passphrase(
 async fn remove_passphrase(
     State(state): State<Arc<EmbeddedState>>,
     MaybeClientIp(ip): MaybeClientIp,
-    jar: CookieJar,
+    headers: HeaderMap,
     Json(body): Json<StepUp>,
 ) -> Result<Response, ApiError> {
-    let session = require_session(&state, &jar).await?;
+    let session = resolve_request(state.provider.as_ref(), &headers, false).await?.session;
     let id = session.identity.id;
     rate_limit_step_up(&state, ip, id).await?;
     state.engine.verify_step_up(id, &body.step_up).await?;
@@ -883,10 +882,10 @@ async fn remove_passphrase(
 async fn change_password(
     State(state): State<Arc<EmbeddedState>>,
     MaybeClientIp(ip): MaybeClientIp,
-    jar: CookieJar,
+    headers: HeaderMap,
     Json(body): Json<ChangePassword>,
 ) -> Result<Response, ApiError> {
-    let session = require_session(&state, &jar).await?;
+    let session = resolve_request(state.provider.as_ref(), &headers, false).await?.session;
     let id = session.identity.id;
     rate_limit_step_up(&state, ip, id).await?;
     state.engine.verify_step_up(id, &body.step_up).await?;
@@ -976,17 +975,25 @@ async fn submit_register(
 /// who am I?" call. Read-only, so no CSRF gate — it only inspects the
 /// session cookie. Cross-origin callers need `session_cors_origins`
 /// (§8.2b); same-origin frontends work with it empty.
-async fn whoami(State(state): State<Arc<EmbeddedState>>, jar: CookieJar) -> Result<impl IntoResponse, ApiError> {
-    let cookie = jar.get("surge_session").ok_or(AuthError::InvalidToken)?;
-    let token = SessionToken::from_raw(cookie.value()).ok_or(AuthError::InvalidToken)?;
-    let session = state.provider.verify_session(Some(token)).await?;
+async fn whoami(State(state): State<Arc<EmbeddedState>>, headers: HeaderMap) -> Result<impl IntoResponse, ApiError> {
+    let resolved = resolve_request(state.provider.as_ref(), &headers, false).await?;
+    let session = resolved.session;
     let policy = policy_block(&state, session.identity.id).await?;
     let mut body = serde_json::to_value(&session).unwrap();
     body["policy"] = policy;
-    Ok(Json(body))
+    let mut response = Json(body).into_response();
+    if let Some(id) = resolved.account_id {
+        response.headers_mut().insert(ACCOUNT_HEADER, id.to_string().parse().unwrap());
+    }
+    Ok(response)
 }
 
-async fn logout(State(state): State<Arc<EmbeddedState>>, jar: CookieJar) -> Result<Response, ApiError> {
+async fn logout(State(state): State<Arc<EmbeddedState>>, headers: HeaderMap) -> Result<Response, ApiError> {
+    let jar = CookieJar::from_headers(&headers);
+    // Only legacy cookie logout is available until membership removal is enabled.
+    if jar.get(BROWSER_COOKIE).is_some() || headers.contains_key(ACCOUNT_HEADER) {
+        return Err(AuthError::InvalidToken.into());
+    }
     if let Some(cookie) = jar.get("surge_session") {
         if let Some(token) = SessionToken::from_raw(cookie.value()) {
             let _ = state.provider.revoke_session(&token).await;

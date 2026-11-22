@@ -18,6 +18,15 @@ pub trait AuthProvider: Send + Sync {
         token: Option<SessionToken>,
     ) -> Result<Session, AuthError>;
 
+    /// Resolve a browser credential and optional browser-local membership.
+    async fn resolve_browser_session(
+        &self,
+        _token: &BrowserSessionToken,
+        _selector: Option<uuid::Uuid>,
+    ) -> Result<(uuid::Uuid, Session), AuthError> {
+        Err(AuthError::InvalidToken)
+    }
+
     async fn revoke_session(&self, token: &SessionToken) -> Result<(), AuthError>;
 
     async fn revoke_all_sessions(&self, id: IdentityId) -> Result<u64, AuthError>;

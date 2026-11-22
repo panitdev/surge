@@ -59,6 +59,14 @@ impl AuthProvider for EmbeddedProvider {
         self.engine.verify_session(&token).await
     }
 
+    async fn resolve_browser_session(
+        &self,
+        token: &BrowserSessionToken,
+        selector: Option<uuid::Uuid>,
+    ) -> Result<(uuid::Uuid, Session), AuthError> {
+        self.engine.resolve_browser_session(token, selector).await
+    }
+
     async fn revoke_session(&self, token: &SessionToken) -> Result<(), AuthError> {
         self.engine.revoke_session(token).await
     }

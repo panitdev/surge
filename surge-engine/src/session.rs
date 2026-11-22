@@ -67,23 +67,7 @@ impl Engine {
                 other => AuthError::Internal(other.into()),
             })?;
 
-        let ident = row_to_identity(identity_row)?;
-
-        if ident.state == IdentityState::Disabled {
-            return Err(AuthError::IdentityDisabled);
-        }
-
-        let method: AuthMethod =
-            serde_json::from_value(session_row.authenticated_via.clone())
-                .map_err(|e| AuthError::Internal(e.into()))?;
-
-        Ok(Session {
-            id: SessionId::from_uuid(session_row.id),
-            identity: ident,
-            issued_at: session_row.issued_at,
-            expires_at: session_row.expires_at,
-            authenticated_via: method,
-        })
+        session_from_rows(session_row, identity_row)
     }
 
     pub async fn revoke_session(&self, token: &SessionToken) -> Result<(), AuthError> {
@@ -213,4 +197,24 @@ pub(crate) async fn mint_session_conn(
         },
         token,
     ))
+}
+
+pub(crate) fn session_from_rows(session_row: SessionRow, identity_row: IdentityRow) -> Result<Session, AuthError> {
+    let ident = row_to_identity(identity_row)?;
+
+    if ident.state == IdentityState::Disabled {
+        return Err(AuthError::IdentityDisabled);
+    }
+
+    let method: AuthMethod =
+        serde_json::from_value(session_row.authenticated_via.clone())
+            .map_err(|e| AuthError::Internal(e.into()))?;
+
+    Ok(Session {
+        id: SessionId::from_uuid(session_row.id),
+        identity: ident,
+        issued_at: session_row.issued_at,
+        expires_at: session_row.expires_at,
+        authenticated_via: method,
+    })
 }

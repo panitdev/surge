@@ -26,7 +26,7 @@ pub use test_provider::{TestConfig, TestProvider};
 pub use remote::{RemoteConfig, RemoteProvider};
 
 pub use surge_engine::types::{
-    AuthError, AuthMethod, Identity, IdentityId, IdentityLink, IdentityState, IssuedSession,
+    AuthError, AuthMethod, BrowserSessionToken, Identity, IdentityId, IdentityLink, IdentityState, IssuedSession,
     LinkAuth, LinkSeed, Password, ProfilePatch, RegisterRequest, Session, SessionId, SessionToken,
     Username, ValidationError,
 };

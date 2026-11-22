@@ -22,9 +22,7 @@ impl IntoResponse for AuthRejection {
     fn into_response(self) -> Response {
         match self {
             Self::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, msg).into_response(),
-            Self::ServiceUnavailable(msg) => {
-                (StatusCode::SERVICE_UNAVAILABLE, msg).into_response()
-            }
+            Self::ServiceUnavailable(msg) => (StatusCode::SERVICE_UNAVAILABLE, msg).into_response(),
         }
     }
 }
@@ -38,11 +36,18 @@ where
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let provider: &Arc<dyn AuthProvider> = state.as_ref();
 
-        match provider.verify_session(extract_token(parts)).await {
-            Ok(session) => Ok(AuthSession(session)),
-            Err(AuthError::InvalidToken | AuthError::SessionExpired) => {
-                Err(AuthRejection::Unauthorized("invalid or expired session".into()))
+        if let Some(resolved) = parts.extensions.get::<ResolvedSession>() {
+            return Ok(AuthSession(resolved.session.clone()));
+        }
+        match resolve_request(provider.as_ref(), &parts.headers, true).await {
+            Ok(resolved) => {
+                let session = resolved.session.clone();
+                parts.extensions.insert(resolved);
+                Ok(AuthSession(session))
             }
+            Err(AuthError::InvalidToken | AuthError::SessionExpired) => Err(
+                AuthRejection::Unauthorized("invalid or expired session".into()),
+            ),
             Err(AuthError::IdentityDisabled) => {
                 Err(AuthRejection::Unauthorized("identity disabled".into()))
             }
@@ -56,15 +61,63 @@ where
     }
 }
 
-fn extract_token(parts: &Parts) -> Option<SessionToken> {
-    let jar = CookieJar::from_headers(&parts.headers);
-    if let Some(cookie) = jar.get("surge_session") {
-        return SessionToken::from_raw(cookie.value());
+pub(crate) const ACCOUNT_HEADER: &str = "x-surge-account";
+pub(crate) const BROWSER_COOKIE: &str = "surge_browser";
+
+#[derive(Clone)]
+pub(crate) struct ResolvedSession {
+    pub session: Session,
+    pub account_id: Option<uuid::Uuid>,
+}
+
+pub(crate) async fn resolve_request(
+    provider: &dyn AuthProvider,
+    headers: &http::HeaderMap,
+    allow_bearer: bool,
+) -> Result<ResolvedSession, AuthError> {
+    let jar = CookieJar::from_headers(headers);
+    let mut selectors = headers.get_all(ACCOUNT_HEADER).iter();
+    let selector = selectors
+        .next()
+        .map(|value| {
+            value
+                .to_str()
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .ok_or(AuthError::InvalidToken)
+        })
+        .transpose()?;
+    if selectors.next().is_some() {
+        return Err(AuthError::InvalidToken);
+    }
+    if let Some(cookie) = jar.get(BROWSER_COOKIE) {
+        let token = BrowserSessionToken::from_raw(cookie.value()).ok_or(AuthError::InvalidToken)?;
+        let (account_id, session) = provider.resolve_browser_session(&token, selector).await?;
+        return Ok(ResolvedSession {
+            session,
+            account_id: Some(account_id),
+        });
+    }
+    if selector.is_some() {
+        return Err(AuthError::InvalidToken);
     }
 
-    let auth = parts.headers.get("authorization")?.to_str().ok()?;
-    let token = auth.strip_prefix("Bearer ")?;
-    SessionToken::from_raw(token)
+    let token = if let Some(cookie) = jar.get("surge_session") {
+        Some(SessionToken::from_raw(cookie.value()).ok_or(AuthError::InvalidToken)?)
+    } else if allow_bearer {
+        headers
+            .get("authorization")
+            .and_then(|h| h.to_str().ok())
+            .and_then(|s| s.strip_prefix("Bearer "))
+            .and_then(SessionToken::from_raw)
+    } else {
+        return Err(AuthError::InvalidToken);
+    };
+    let session = provider.verify_session(token).await?;
+    Ok(ResolvedSession {
+        session,
+        account_id: None,
+    })
 }
 
 /// Cheap anti-CSRF gate for cookie-authenticated, state-changing endpoints:
@@ -82,8 +135,45 @@ pub async fn require_header_csrf(
         .is_some_and(|v| v == "1");
 
     if !ok {
-        return Err(AuthRejection::Unauthorized("missing X-Surge-CSRF header".into()));
+        return Err(AuthRejection::Unauthorized(
+            "missing X-Surge-CSRF header".into(),
+        ));
     }
     Ok(next.run(req).await)
 }
 
+#[cfg(all(test, feature = "test-provider"))]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn invalid_browser_credentials_and_selectors_fail_closed() {
+        let provider = TestProvider::new(TestConfig::default()).unwrap();
+        let mut headers = http::HeaderMap::new();
+        let legacy = SessionToken::generate();
+        let cookie = format!("surge_session={}", legacy.expose_secret());
+        headers.insert(http::header::COOKIE, cookie.parse().unwrap());
+        assert!(resolve_request(&provider, &headers, false).await.is_ok());
+        for browser in ["invalid", ""] {
+            headers.insert(
+                http::header::COOKIE,
+                format!("{cookie}; {BROWSER_COOKIE}={browser}")
+                    .parse()
+                    .unwrap(),
+            );
+            assert!(matches!(
+                resolve_request(&provider, &headers, false).await,
+                Err(AuthError::InvalidToken)
+            ));
+        }
+        headers.insert(http::header::COOKIE, cookie.parse().unwrap());
+        headers.insert(
+            ACCOUNT_HEADER,
+            uuid::Uuid::nil().to_string().parse().unwrap(),
+        );
+        assert!(matches!(
+            resolve_request(&provider, &headers, false).await,
+            Err(AuthError::InvalidToken)
+        ));
+    }
+}

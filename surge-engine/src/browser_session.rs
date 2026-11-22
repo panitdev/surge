@@ -14,6 +14,47 @@ pub struct IssuedBrowserSession {
 }
 
 impl Engine {
+    pub async fn resolve_browser_session(
+        &self,
+        token: &BrowserSessionToken,
+        selector: Option<Uuid>,
+    ) -> Result<(Uuid, crate::Session), AuthError> {
+        use crate::models::{IdentityRow, SessionRow};
+        use crate::schema::{browser_session_account as member, identity, session};
+
+        let mut conn = self.conn().await?;
+        let now = Utc::now();
+        let mut query = member::table
+            .inner_join(browser_session::table)
+            .inner_join(session::table.inner_join(identity::table))
+            .filter(browser_session::token_hash.eq(token.hash()))
+            .filter(browser_session::revoked_at.is_null())
+            .filter(browser_session::expires_at.gt(now))
+            .filter(session::revoked_at.is_null())
+            .filter(session::expires_at.gt(now))
+            .filter(identity::state.eq("active"))
+            .select((
+                member::account_id,
+                SessionRow::as_select(),
+                IdentityRow::as_select(),
+            ))
+            .into_boxed();
+        query = match selector {
+            Some(id) => query.filter(member::account_id.eq(id)),
+            None => query.filter(
+                member::account_id
+                    .nullable()
+                    .eq(browser_session::default_account_id),
+            ),
+        };
+        let (id, session, identity) = query
+            .first(&mut conn)
+            .await
+            .optional()?
+            .ok_or(AuthError::InvalidToken)?;
+        Ok((id, crate::session::session_from_rows(session, identity)?))
+    }
+
     /// Create an empty browser session with its own bounded lifetime.
     pub async fn create_browser_session(&self) -> Result<IssuedBrowserSession, AuthError> {
         let mut conn = self.conn().await?;
@@ -36,4 +77,95 @@ pub(crate) async fn create_browser_session_conn(
         token,
         expires_at,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::schema::browser_session_account as member;
+    use crate::{AuthMethod, EngineConfig, PepperConfig, Username};
+    use std::time::Duration;
+
+    #[tokio::test]
+    #[ignore = "requires a disposable PostgreSQL DATABASE_URL"]
+    async fn resolves_selected_and_default_members_independently() {
+        let engine = Engine::new(EngineConfig {
+            database_url: std::env::var("DATABASE_URL").unwrap().into(),
+            pepper: PepperConfig {
+                current_version: 1,
+                peppers: [(1, "test-pepper".to_owned().into())].into(),
+            },
+            session_ttl: Duration::from_secs(3600),
+        })
+        .await
+        .unwrap();
+        engine.run_migrations().await.unwrap();
+        let browser = engine.create_browser_session().await.unwrap();
+        let mut accounts = Vec::new();
+        for label in ["work", "personal"] {
+            let username = Username::new(&Uuid::now_v7().simple().to_string()).unwrap();
+            let identity = engine.create_identity(&username, label).await.unwrap();
+            let issued = engine
+                .mint_session(identity.id, AuthMethod::Password)
+                .await
+                .unwrap();
+            let account: Uuid = diesel::insert_into(member::table)
+                .values((
+                    member::browser_session_id.eq(browser.id),
+                    member::identity_id.eq(*identity.id.as_uuid()),
+                    member::session_id.eq(*issued.session.id.as_uuid()),
+                ))
+                .returning(member::account_id)
+                .get_result(&mut engine.conn().await.unwrap())
+                .await
+                .unwrap();
+            accounts.push((account, issued));
+        }
+        let [(work, work_session), (personal, personal_session)] = accounts.as_slice() else {
+            unreachable!()
+        };
+        assert!(matches!(
+            engine.resolve_browser_session(&browser.token, None).await,
+            Err(AuthError::InvalidToken)
+        ));
+        diesel::update(browser_session::table.find(browser.id))
+            .set(browser_session::default_account_id.eq(*personal))
+            .execute(&mut engine.conn().await.unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            engine
+                .resolve_browser_session(&browser.token, None)
+                .await
+                .unwrap()
+                .1
+                .id,
+            personal_session.session.id
+        );
+        assert_eq!(
+            engine
+                .resolve_browser_session(&browser.token, Some(*work))
+                .await
+                .unwrap()
+                .1
+                .id,
+            work_session.session.id
+        );
+        engine
+            .revoke_session(&personal_session.token)
+            .await
+            .unwrap();
+        assert!(matches!(
+            engine.resolve_browser_session(&browser.token, None).await,
+            Err(AuthError::InvalidToken)
+        ));
+        assert_eq!(
+            engine
+                .resolve_browser_session(&browser.token, Some(*work))
+                .await
+                .unwrap()
+                .0,
+            *work
+        );
+    }
 }
