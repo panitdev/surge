@@ -24,3 +24,11 @@ pub(crate) use test::test_browser_router;
 #[cfg(feature = "oauth-as")]
 pub use oauth_as::OauthAsConfig;
 pub use rate_limit::{PostgresRateLimiter, RateLimitConfig, RateLimitPolicy, RateLimiter};
+
+async fn no_store(mut response: axum::response::Response) -> axum::response::Response {
+    response.headers_mut().insert(
+        http::header::CACHE_CONTROL,
+        http::HeaderValue::from_static("no-store"),
+    );
+    response
+}

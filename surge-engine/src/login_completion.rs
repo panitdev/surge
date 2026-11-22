@@ -20,6 +20,7 @@ pub enum VerifiedLogin {
 }
 
 pub struct CompletedLogin {
+    pub factor_status: FactorStatus,
     pub adopted_legacy: bool,
     pub issued: IssuedSession,
     pub account_id: Option<Uuid>,
@@ -35,6 +36,8 @@ impl Engine {
         legacy: Option<&SessionToken>,
         multi_account: bool,
         verified: VerifiedLogin,
+        audit_action: &str,
+        audit_detail: Option<serde_json::Value>,
     ) -> Result<CompletedLogin, AuthError> {
         let password_hash = match &verified {
             VerifiedLogin::Register(req) => Some(self.hash_password(&req.password)?),
@@ -178,6 +181,7 @@ impl Engine {
                         .filter(member::browser_session_id.eq(browser_id))
                         .filter(member::identity_id.eq(identity_id))
                         .select((member::account_id, member::session_id))
+                        .for_update()
                         .first::<(Uuid, Uuid)>(conn)
                         .await
                         .optional()?;
@@ -214,7 +218,20 @@ impl Engine {
                     .set(login_flow::state.eq("completed"))
                     .execute(conn)
                     .await?;
+                let factor_status =
+                    crate::factor::factor_status_conn(conn, issued.session.identity.id).await?;
+                crate::audit::audit_conn(
+                    conn,
+                    crate::audit::AuditActor::Identity {
+                        id: identity_id.to_string(),
+                    },
+                    audit_action,
+                    serde_json::json!({ "session_id": issued.session.id.to_string() }),
+                    audit_detail,
+                )
+                .await?;
                 Ok(CompletedLogin {
+                    factor_status,
                     adopted_legacy: flow.bound_legacy_id.is_some(),
                     issued,
                     account_id,

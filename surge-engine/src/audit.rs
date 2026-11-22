@@ -24,21 +24,30 @@ impl Engine {
     ) -> Result<(), AuthError> {
         let mut conn = self.conn().await?;
 
-        let entry = NewAuditEntry {
-            at: Utc::now(),
-            actor: serde_json::to_value(&actor)
-                .map_err(|e| AuthError::Internal(e.into()))?,
-            action: action.to_string(),
-            subject,
-            detail,
-        };
-
-        diesel::insert_into(audit_log::table)
-            .values(&entry)
-            .execute(&mut conn)
-            .await
-            .map_err(|e| AuthError::Internal(e.into()))?;
-
-        Ok(())
+        audit_conn(&mut conn, actor, action, subject, detail).await
     }
+}
+
+pub(crate) async fn audit_conn(
+    conn: &mut diesel_async::AsyncPgConnection,
+    actor: AuditActor,
+    action: &str,
+    subject: serde_json::Value,
+    detail: Option<serde_json::Value>,
+) -> Result<(), AuthError> {
+    let entry = NewAuditEntry {
+        at: Utc::now(),
+        actor: serde_json::to_value(&actor).map_err(|e| AuthError::Internal(e.into()))?,
+        action: action.to_string(),
+        subject,
+        detail,
+    };
+
+    diesel::insert_into(audit_log::table)
+        .values(&entry)
+        .execute(conn)
+        .await
+        .map_err(|e| AuthError::Internal(e.into()))?;
+
+    Ok(())
 }

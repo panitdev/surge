@@ -279,16 +279,13 @@ impl V1Router {
             )
             .route("/factors/passphrase/confirm", post(confirm_passphrase).layer(csrf()))
             .route("/account/password", post(change_password).layer(csrf()))
-            .layer(middleware::map_response(|mut response: Response| async move {
-                response.headers_mut().insert(http::header::CACHE_CONTROL, http::HeaderValue::from_static("no-store"));
-                response
-            }))
             .layer(cors::account_scoped(session_cors))
             .with_state(self.state);
 
         Router::new()
             .merge(credential_entry)
             .merge(session_management)
+            .layer(middleware::map_response(super::no_store))
     }
 }
 
@@ -541,37 +538,40 @@ async fn finish_login(
     audit_action: &str,
     audit_detail: Option<serde_json::Value>,
 ) -> Result<Response, ApiError> {
-    let completed = state.engine
-        .finish_login_flow(flow_id, csrf, browser_cookie(headers)?.as_ref(), legacy_cookie(headers).as_ref(), state.multi_account, verified)
-        .await?;
-    let issued = completed.issued;
-    let identity_id = issued.session.identity.id;
-
-    state
+    let completed = state
         .engine
-        .audit(
-            surge_engine::audit::AuditActor::Identity {
-                id: identity_id.to_string(),
-            },
+        .finish_login_flow(
+            flow_id,
+            csrf,
+            browser_cookie(headers)?.as_ref(),
+            legacy_cookie(headers).as_ref(),
+            state.multi_account,
+            verified,
             audit_action,
-            json!({ "session_id": issued.session.id.to_string() }),
             audit_detail,
         )
         .await?;
-
+    let issued = completed.issued;
     let mut jar = CookieJar::new();
     if completed.adopted_legacy {
         jar = jar.add(removal_cookie(&state.cookie_domain));
     }
     if let Some(browser) = completed.browser_cookie {
-        let mut cookie = session_cookie(browser.token.expose_secret(), &state.cookie_domain,
-            (browser.expires_at - chrono::Utc::now()).num_seconds());
+        let mut cookie = session_cookie(
+            browser.token.expose_secret(),
+            &state.cookie_domain,
+            (browser.expires_at - chrono::Utc::now()).num_seconds(),
+        );
         cookie.set_name(crate::extract::BROWSER_COOKIE);
         jar = jar.add(cookie);
     } else if completed.account_id.is_none() {
-        jar = jar.add(session_cookie(issued.token.expose_secret(), &state.cookie_domain, state.session_ttl.as_secs() as i64));
+        jar = jar.add(session_cookie(
+            issued.token.expose_secret(),
+            &state.cookie_domain,
+            state.session_ttl.as_secs() as i64,
+        ));
     }
-    let policy = policy_block(state, identity_id).await?;
+    let policy = policy_from_status(state.factor_policy, completed.factor_status);
     let mut body = json!({ "return_to": return_to, "session": issued.session, "policy": policy });
     if let Some(account) = completed.account_id {
         body["account_id"] = json!(account);
@@ -585,15 +585,19 @@ async fn policy_block(
     identity_id: IdentityId,
 ) -> Result<serde_json::Value, AuthError> {
     let status = state.engine.factor_status(identity_id).await?;
-    let (totp_required, passphrase_required) = state.factor_policy.requires();
+    Ok(policy_from_status(state.factor_policy, status))
+}
+
+fn policy_from_status(policy: FactorPolicy, status: surge_engine::FactorStatus) -> serde_json::Value {
+    let (totp_required, passphrase_required) = policy.requires();
     let compliant =
         (!totp_required || status.has_totp) && (!passphrase_required || status.has_passphrase);
 
-    Ok(json!({
+    json!({
         "required": { "totp": totp_required, "passphrase": passphrase_required },
         "has": { "totp": status.has_totp, "passphrase": status.has_passphrase },
         "compliant": compliant,
-    }))
+    })
 }
 
 #[derive(Deserialize)]

@@ -118,6 +118,7 @@ pub(crate) fn proxy_browser_router(config: ProxyConfig) -> Router {
     Router::new()
         .merge(credential_entry)
         .merge(session_management)
+        .layer(axum::middleware::map_response(super::no_store))
 }
 
 async fn proxy_handler(
@@ -397,6 +398,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(response.headers()[http::header::CACHE_CONTROL], "no-store");
         assert_eq!(
             captured.lock().unwrap().path,
             "/v1/login?return_to=https://app.example.com/"

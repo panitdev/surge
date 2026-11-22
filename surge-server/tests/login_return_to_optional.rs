@@ -252,6 +252,7 @@ async fn concurrent_legacy_add_adopts_original_session_once() {
             .unwrap();
         let response = app.clone().oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["cache-control"], "no-store");
         body_json(response).await
     }
     fn submit(flow: &Value, cookie: &str, username: &str, password: &str) -> Request<Body> {
@@ -312,6 +313,7 @@ async fn concurrent_legacy_add_adopts_original_session_once() {
         (b, a)
     };
     assert_eq!(winner.status(), StatusCode::OK);
+    assert_eq!(winner.headers()["cache-control"], "no-store");
     assert_eq!(retired.status(), StatusCode::UNAUTHORIZED);
     let cookies = || {
         winner

@@ -443,11 +443,34 @@ impl Engine {
     }
 
     pub async fn factor_status(&self, identity_id: IdentityId) -> Result<FactorStatus, AuthError> {
-        Ok(FactorStatus {
-            has_totp: self.has_totp(identity_id).await?,
-            has_passphrase: self.has_passphrase(identity_id).await?,
-        })
+        let mut conn = self.conn().await?;
+        factor_status_conn(&mut conn, identity_id).await
     }
+}
+
+pub(crate) async fn factor_status_conn(
+    conn: &mut diesel_async::AsyncPgConnection,
+    identity_id: IdentityId,
+) -> Result<FactorStatus, AuthError> {
+    use diesel::dsl::exists;
+    let (has_totp, has_passphrase) = diesel::select((
+        exists(
+            credential_totp::table
+                .find(*identity_id.as_uuid())
+                .filter(credential_totp::confirmed_at.is_not_null()),
+        ),
+        exists(
+            credential_passphrase::table
+                .find(*identity_id.as_uuid())
+                .filter(credential_passphrase::confirmed_at.is_not_null()),
+        ),
+    ))
+    .get_result(conn)
+    .await?;
+    Ok(FactorStatus {
+        has_totp,
+        has_passphrase,
+    })
 }
 
 #[cfg(test)]
