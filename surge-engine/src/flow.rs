@@ -24,7 +24,8 @@ pub struct FlowInfo {
 
 impl Engine {
     pub async fn create_login_flow(&self, return_to: Option<&str>) -> Result<FlowInfo, AuthError> {
-        self.insert_login_flow(return_to, "legacy", None).await
+        self.insert_login_flow(return_to, "legacy", None, None)
+            .await
     }
 
     pub async fn create_browser_login_flow(
@@ -32,6 +33,7 @@ impl Engine {
         return_to: Option<&str>,
         add_account: bool,
         token: Option<&BrowserSessionToken>,
+        legacy: Option<&SessionToken>,
     ) -> Result<FlowInfo, AuthError> {
         use crate::schema::browser_session as browser;
         let bound = match token {
@@ -46,8 +48,15 @@ impl Engine {
                     .optional()?
                     .ok_or(AuthError::InvalidToken)?,
             ),
-            None if add_account => return Err(AuthError::InvalidToken),
             None => None,
+        };
+        let legacy_id = if add_account && bound.is_none() {
+            let session = self
+                .verify_session(legacy.ok_or(AuthError::InvalidToken)?)
+                .await?;
+            Some(*session.id.as_uuid())
+        } else {
+            None
         };
         self.insert_login_flow(
             return_to,
@@ -57,6 +66,7 @@ impl Engine {
                 "sign_in"
             },
             bound,
+            legacy_id,
         )
         .await
     }
@@ -66,6 +76,7 @@ impl Engine {
         return_to: Option<&str>,
         login_intent: &str,
         bound_browser_id: Option<uuid::Uuid>,
+        bound_legacy_id: Option<uuid::Uuid>,
     ) -> Result<FlowInfo, AuthError> {
         let mut conn = self.conn().await?;
         let flow_id = FlowId::generate();
@@ -76,6 +87,7 @@ impl Engine {
         let new = NewLoginFlow {
             login_intent,
             bound_browser_id,
+            bound_legacy_id,
             id: flow_id.as_str(),
             return_to,
             csrf_token: csrf.as_str(),
@@ -104,13 +116,14 @@ impl Engine {
     }
 
     pub async fn get_login_flow(&self, id: &str) -> Result<FlowInfo, AuthError> {
-        self.get_browser_login_flow(id, None).await
+        self.get_browser_login_flow(id, None, None).await
     }
 
     pub async fn get_browser_login_flow(
         &self,
         id: &str,
         token: Option<&BrowserSessionToken>,
+        legacy: Option<&SessionToken>,
     ) -> Result<FlowInfo, AuthError> {
         use crate::schema::browser_session as browser;
         let mut conn = self.conn().await?;
@@ -138,6 +151,16 @@ impl Engine {
                     .await
                     .optional()?
                     .ok_or(AuthError::InvalidToken)?;
+            }
+            (None, None) if row.bound_legacy_id.is_some() => {
+                let session = crate::session::verify_session_conn(
+                    &mut conn,
+                    legacy.ok_or(AuthError::InvalidToken)?,
+                )
+                .await?;
+                if row.bound_legacy_id != Some(*session.id.as_uuid()) {
+                    return Err(AuthError::InvalidToken);
+                }
             }
             (None, None) => {}
             _ => return Err(AuthError::InvalidToken),

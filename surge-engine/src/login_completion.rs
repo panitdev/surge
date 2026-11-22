@@ -20,6 +20,7 @@ pub enum VerifiedLogin {
 }
 
 pub struct CompletedLogin {
+    pub adopted_legacy: bool,
     pub issued: IssuedSession,
     pub account_id: Option<Uuid>,
     pub browser_cookie: Option<IssuedBrowserSession>,
@@ -31,6 +32,7 @@ impl Engine {
         id: &str,
         csrf: &str,
         token: Option<&BrowserSessionToken>,
+        legacy: Option<&SessionToken>,
         multi_account: bool,
         verified: VerifiedLogin,
     ) -> Result<CompletedLogin, AuthError> {
@@ -83,6 +85,44 @@ impl Engine {
                             .await
                             .optional()?;
                         Some(locked.ok_or(AuthError::InvalidToken)?)
+                    }
+                    ("add_account", None, None) if multi_account => {
+                        let bound = flow.bound_legacy_id.ok_or(AuthError::InvalidToken)?;
+                        let token = legacy.ok_or(AuthError::InvalidToken)?;
+                        let owner = session::table
+                            .inner_join(identity::table)
+                            .filter(session::id.eq(bound))
+                            .filter(session::token_hash.eq(token.hash()))
+                            .filter(session::revoked_at.is_null())
+                            .filter(session::expires_at.gt(Utc::now()))
+                            .filter(identity::state.eq("active"))
+                            .select(session::identity_id)
+                            .for_update()
+                            .first::<Uuid>(conn)
+                            .await
+                            .optional()?
+                            .ok_or(AuthError::InvalidToken)?;
+                        let new = crate::browser_session::create_browser_session_conn(conn).await?;
+                        let account = diesel::insert_into(member::table)
+                            .values((
+                                member::browser_session_id.eq(new.id),
+                                member::identity_id.eq(owner),
+                                member::session_id.eq(bound),
+                            ))
+                            .returning(member::account_id)
+                            .get_result::<Uuid>(conn)
+                            .await?;
+                        diesel::update(browser::table.find(new.id))
+                            .set(browser::default_account_id.eq(account))
+                            .execute(conn)
+                            .await?;
+                        diesel::update(session::table.find(bound))
+                            .set(session::token_hash.eq(SessionToken::generate().hash()))
+                            .execute(conn)
+                            .await?;
+                        let id = new.id;
+                        browser_cookie = Some(new);
+                        Some(id)
                     }
                     ("sign_in", None, None) if multi_account => {
                         let new = crate::browser_session::create_browser_session_conn(conn).await?;
@@ -163,7 +203,7 @@ impl Engine {
                             .get_result(conn)
                             .await?
                     });
-                    if browser_cookie.is_some() {
+                    if browser_cookie.is_some() && flow.bound_legacy_id.is_none() {
                         diesel::update(browser::table.find(browser_id))
                             .set(browser::default_account_id.eq(account_id))
                             .execute(conn)
@@ -175,6 +215,7 @@ impl Engine {
                     .execute(conn)
                     .await?;
                 Ok(CompletedLogin {
+                    adopted_legacy: flow.bound_legacy_id.is_some(),
                     issued,
                     account_id,
                     browser_cookie,

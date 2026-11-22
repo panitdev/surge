@@ -26,6 +26,11 @@ use crate::extract::{browser_cookie, require_header_csrf, resolve_request_parts,
 use crate::traits::AuthProvider;
 use crate::*;
 
+fn legacy_cookie(headers: &HeaderMap) -> Option<SessionToken> {
+    CookieJar::from_headers(headers).get("surge_session")
+        .and_then(|cookie| SessionToken::from_raw(cookie.value()))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RegistrationMode {
     Open,
@@ -395,7 +400,7 @@ async fn start_login(
     let token = browser_cookie(&headers)?;
     let flow = if state.multi_account {
         state.engine
-            .create_browser_login_flow(return_to, query.intent.is_some(), token.as_ref())
+            .create_browser_login_flow(return_to, query.intent.is_some(), token.as_ref(), legacy_cookie(&headers).as_ref())
             .await?
     } else {
         if query.intent.is_some() || token.is_some() {
@@ -427,7 +432,7 @@ async fn get_flow(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, ApiError> {
     let flow = state.engine
-        .get_browser_login_flow(&id, browser_cookie(&headers)?.as_ref())
+        .get_browser_login_flow(&id, browser_cookie(&headers)?.as_ref(), legacy_cookie(&headers).as_ref())
         .await?;
 
     Ok(Json(json!({
@@ -454,7 +459,7 @@ async fn submit_password(
     Json(body): Json<PasswordSubmit>,
 ) -> Result<Response, ApiError> {
     let flow = state.engine
-        .get_browser_login_flow(&id, browser_cookie(&headers)?.as_ref())
+        .get_browser_login_flow(&id, browser_cookie(&headers)?.as_ref(), legacy_cookie(&headers).as_ref())
         .await?;
 
     if flow.state != "created" {
@@ -537,7 +542,7 @@ async fn finish_login(
     audit_detail: Option<serde_json::Value>,
 ) -> Result<Response, ApiError> {
     let completed = state.engine
-        .finish_login_flow(flow_id, csrf, browser_cookie(headers)?.as_ref(), state.multi_account, verified)
+        .finish_login_flow(flow_id, csrf, browser_cookie(headers)?.as_ref(), legacy_cookie(headers).as_ref(), state.multi_account, verified)
         .await?;
     let issued = completed.issued;
     let identity_id = issued.session.identity.id;
@@ -555,6 +560,9 @@ async fn finish_login(
         .await?;
 
     let mut jar = CookieJar::new();
+    if completed.adopted_legacy {
+        jar = jar.add(removal_cookie(&state.cookie_domain));
+    }
     if let Some(browser) = completed.browser_cookie {
         let mut cookie = session_cookie(browser.token.expose_secret(), &state.cookie_domain,
             (browser.expires_at - chrono::Utc::now()).num_seconds());
@@ -603,7 +611,7 @@ async fn submit_totp(
     Json(body): Json<TotpSubmit>,
 ) -> Result<Response, ApiError> {
     let flow = state.engine
-        .get_browser_login_flow(&id, browser_cookie(&headers)?.as_ref())
+        .get_browser_login_flow(&id, browser_cookie(&headers)?.as_ref(), legacy_cookie(&headers).as_ref())
         .await?;
     if flow.state != "awaiting_totp" {
         return Err(AuthError::InvalidToken.into());
@@ -657,7 +665,7 @@ async fn submit_passphrase(
     Json(body): Json<PassphraseLogin>,
 ) -> Result<Response, ApiError> {
     let flow = state.engine
-        .get_browser_login_flow(&id, browser_cookie(&headers)?.as_ref())
+        .get_browser_login_flow(&id, browser_cookie(&headers)?.as_ref(), legacy_cookie(&headers).as_ref())
         .await?;
     if flow.state != "created" {
         return Err(AuthError::InvalidToken.into());
@@ -721,7 +729,7 @@ async fn submit_recover(
     Json(body): Json<RecoverSubmit>,
 ) -> Result<Response, ApiError> {
     let flow = state.engine
-        .get_browser_login_flow(&id, browser_cookie(&headers)?.as_ref())
+        .get_browser_login_flow(&id, browser_cookie(&headers)?.as_ref(), legacy_cookie(&headers).as_ref())
         .await?;
     if flow.state != "created" {
         return Err(AuthError::InvalidToken.into());
@@ -970,7 +978,7 @@ async fn submit_register(
     }
 
     let flow = state.engine
-        .get_browser_login_flow(&id, browser_cookie(&headers)?.as_ref())
+        .get_browser_login_flow(&id, browser_cookie(&headers)?.as_ref(), legacy_cookie(&headers).as_ref())
         .await?;
     if flow.state != "created" {
         return Err(AuthError::InvalidToken.into());

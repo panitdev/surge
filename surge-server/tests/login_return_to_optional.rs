@@ -233,3 +233,108 @@ async fn browser_sign_in_add_and_reauthenticate_preserve_default() {
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(response.headers()["x-surge-account"], accounts[0]);
 }
+
+#[tokio::test]
+#[ignore = "requires DATABASE_URL against a disposable Postgres"]
+async fn concurrent_legacy_add_adopts_original_session_once() {
+    let (old_app, service) = test_app(false).await;
+    let (app, _) = test_app(true).await;
+    let work = format!("work-{}", rand_suffix());
+    let personal = format!("personal-{}", rand_suffix());
+    let password = register_identity(&old_app, &service, &work).await;
+    register_identity(&old_app, &service, &personal).await;
+
+    async fn start(app: &axum::Router, uri: &str, cookie: &str) -> Value {
+        let request = Request::get(uri)
+            .header("accept", "application/json")
+            .header("cookie", cookie)
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        body_json(response).await
+    }
+    fn submit(flow: &Value, cookie: &str, username: &str, password: &str) -> Request<Body> {
+        Request::post(format!(
+            "/v1/flows/{}/password",
+            flow["flow_id"].as_str().unwrap()
+        ))
+        .header("cookie", cookie)
+        .header("origin", AUTH_UI_ORIGIN)
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "username": username, "password": password, "csrf_token": flow["csrf_token"]
+            })
+            .to_string(),
+        ))
+        .unwrap()
+    }
+    let flow = start(&old_app, "/v1/login", "").await;
+    let response = old_app
+        .oneshot(submit(&flow, "", &work, &password))
+        .await
+        .unwrap();
+    let legacy = response.headers()["set-cookie"]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+    let first = start(&app, "/v1/login?intent=add_account", &legacy).await;
+    let second = start(&app, "/v1/login?intent=add_account", &legacy).await;
+    let response = app
+        .clone()
+        .oneshot(submit(&first, &legacy, &personal, "incorrect password"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let whoami = |cookie: &str| {
+        Request::get("/v1/whoami")
+            .header("cookie", cookie)
+            .body(Body::empty())
+            .unwrap()
+    };
+    let response = app.clone().oneshot(whoami(&legacy)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let old = body_json(response).await;
+    let (a, b) = tokio::join!(
+        app.clone()
+            .oneshot(submit(&first, &legacy, &personal, &password)),
+        app.clone()
+            .oneshot(submit(&second, &legacy, &personal, &password)),
+    );
+    let (a, b) = (a.unwrap(), b.unwrap());
+    let (winner, retired) = if a.status().is_success() {
+        (a, b)
+    } else {
+        (b, a)
+    };
+    assert_eq!(winner.status(), StatusCode::OK);
+    assert_eq!(retired.status(), StatusCode::UNAUTHORIZED);
+    let cookies = || {
+        winner
+            .headers()
+            .get_all("set-cookie")
+            .iter()
+            .map(|v| v.to_str().unwrap())
+    };
+    assert!(cookies().any(|c| c.starts_with("surge_session=") && c.contains("Max-Age=0")));
+    let browser = cookies()
+        .find(|c| c.starts_with("surge_browser="))
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap();
+    let response = app.clone().oneshot(whoami(browser)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let adopted = body_json(response).await;
+    for field in ["id", "identity", "issued_at", "expires_at"] {
+        assert_eq!(adopted[field], old[field]);
+    }
+    assert_eq!(
+        app.oneshot(whoami(&legacy)).await.unwrap().status(),
+        StatusCode::UNAUTHORIZED
+    );
+}

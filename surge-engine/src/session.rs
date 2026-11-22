@@ -51,23 +51,7 @@ impl Engine {
 
     pub async fn verify_session(&self, token: &SessionToken) -> Result<Session, AuthError> {
         let mut conn = self.conn().await?;
-        let hash = token.hash();
-        let now = Utc::now();
-
-        let (session_row, identity_row): (SessionRow, IdentityRow) = session::table
-            .inner_join(identity::table)
-            .filter(session::token_hash.eq(&hash))
-            .filter(session::revoked_at.is_null())
-            .filter(session::expires_at.gt(now))
-            .select((SessionRow::as_select(), IdentityRow::as_select()))
-            .first(&mut conn)
-            .await
-            .map_err(|e| match e {
-                diesel::result::Error::NotFound => AuthError::InvalidToken,
-                other => AuthError::Internal(other.into()),
-            })?;
-
-        session_from_rows(session_row, identity_row)
+        verify_session_conn(&mut conn, token).await
     }
 
     pub async fn revoke_session(&self, token: &SessionToken) -> Result<(), AuthError> {
@@ -197,6 +181,29 @@ pub(crate) async fn mint_session_conn(
         },
         token,
     ))
+}
+
+pub(crate) async fn verify_session_conn(
+    conn: &mut AsyncPgConnection,
+    token: &SessionToken,
+) -> Result<Session, AuthError> {
+    let hash = token.hash();
+    let now = Utc::now();
+
+    let (session_row, identity_row): (SessionRow, IdentityRow) = session::table
+        .inner_join(identity::table)
+        .filter(session::token_hash.eq(&hash))
+        .filter(session::revoked_at.is_null())
+        .filter(session::expires_at.gt(now))
+        .select((SessionRow::as_select(), IdentityRow::as_select()))
+        .first(conn)
+        .await
+        .map_err(|e| match e {
+            diesel::result::Error::NotFound => AuthError::InvalidToken,
+            other => AuthError::Internal(other.into()),
+        })?;
+
+    session_from_rows(session_row, identity_row)
 }
 
 pub(crate) fn session_from_rows(session_row: SessionRow, identity_row: IdentityRow) -> Result<Session, AuthError> {
