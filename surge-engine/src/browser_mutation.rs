@@ -104,6 +104,19 @@ impl Engine {
             .await
     }
 
+    /// Adoption rotates this hash under the session row lock. PostgreSQL rechecks
+    /// the predicate after waiting, so only one of logout and adoption can win.
+    pub async fn logout_legacy_browser(&self, token: &crate::SessionToken) -> Result<(), AuthError> {
+        let affected = diesel::update(session::table.filter(session::token_hash.eq(token.hash())))
+            .set(session::revoked_at.eq(Utc::now()))
+            .execute(&mut self.conn().await?)
+            .await?;
+        if affected == 0 {
+            return Err(AuthError::InvalidToken);
+        }
+        Ok(())
+    }
+
     pub async fn logout_browser(&self, token: &BrowserSessionToken) -> Result<(), AuthError> {
         self.conn()
             .await?
@@ -277,6 +290,20 @@ mod tests {
             .create_browser_login_flow(None, true, Some(&browser.token), None)
             .await
             .is_err());
-        engine.verify_session(&other_device.token).await.unwrap();
+        let flow = engine
+            .create_browser_login_flow(None, true, None, Some(&other_device.token))
+            .await
+            .unwrap();
+        let adoption = engine.finish_login_flow(
+            &flow.id, &flow.csrf_token, None, Some(&other_device.token),
+            true, registration(), "register", None,
+        );
+        let (adopted, logout) = tokio::join!(adoption, engine.logout_legacy_browser(&other_device.token));
+        match adopted {
+            Ok(_) => assert!(matches!(logout, Err(AuthError::InvalidToken))),
+            Err(AuthError::InvalidToken) => logout.unwrap(),
+            Err(error) => panic!("unexpected adoption error: {error}"),
+        }
+        assert!(engine.verify_session(&other_device.token).await.is_err());
     }
 }

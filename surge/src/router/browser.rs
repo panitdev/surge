@@ -1066,7 +1066,7 @@ async fn logout_all(
     if let Some(token) = browser_cookie(&headers)? {
         state.engine.logout_browser(&token).await?;
     } else if let Some(token) = legacy_cookie(&headers) {
-        state.provider.revoke_session(&token).await?;
+        state.engine.logout_legacy_browser(&token).await?;
     }
     let mut browser = removal_cookie(&state.cookie_domain);
     browser.set_name(crate::extract::BROWSER_COOKIE);
