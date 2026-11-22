@@ -4,6 +4,7 @@ pub mod types;
 
 pub mod audit;
 pub mod oauth;
+mod browser_mutation;
 mod browser_session;
 pub use browser_session::IssuedBrowserSession;
 

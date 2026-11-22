@@ -265,6 +265,9 @@ impl V1Router {
         let csrf = || middleware::from_fn(require_header_csrf);
         let session_management = Router::new()
             .route("/whoami", get(whoami))
+            .route("/accounts/default", axum::routing::put(set_default_account).layer(csrf()))
+            .route("/accounts/{account_id}", delete(remove_browser_account).layer(csrf()))
+            .route("/logout-all", post(logout_all).layer(csrf()))
             .route(
                 "/logout",
                 post(logout).layer(csrf()),
@@ -1025,19 +1028,74 @@ async fn whoami(State(state): State<Arc<EmbeddedState>>, resolved: ResolvedSessi
     Ok(response)
 }
 
-async fn logout(State(state): State<Arc<EmbeddedState>>, headers: HeaderMap) -> Result<Response, ApiError> {
-    let jar = CookieJar::from_headers(&headers);
-    // Only legacy cookie logout is available until membership removal is enabled.
-    if browser_cookie(&headers)?.is_some() || headers.contains_key(ACCOUNT_HEADER) {
+#[derive(Deserialize)]
+struct DefaultAccountBody {
+    account_id: uuid::Uuid,
+}
+
+async fn set_default_account(
+    State(state): State<Arc<EmbeddedState>>,
+    headers: HeaderMap,
+    Json(body): Json<DefaultAccountBody>,
+) -> Result<StatusCode, ApiError> {
+    let token = browser_cookie(&headers)?.ok_or(AuthError::InvalidToken)?;
+    state
+        .engine
+        .set_default_account(&token, body.account_id)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn remove_browser_account(
+    State(state): State<Arc<EmbeddedState>>,
+    headers: HeaderMap,
+    Path(account): Path<uuid::Uuid>,
+) -> Result<StatusCode, ApiError> {
+    let token = browser_cookie(&headers)?.ok_or(AuthError::InvalidToken)?;
+    state
+        .engine
+        .remove_browser_account(&token, account, None)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn logout_all(
+    State(state): State<Arc<EmbeddedState>>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    if let Some(token) = browser_cookie(&headers)? {
+        state.engine.logout_browser(&token).await?;
+    } else if let Some(token) = legacy_cookie(&headers) {
+        state.provider.revoke_session(&token).await?;
+    }
+    let mut browser = removal_cookie(&state.cookie_domain);
+    browser.set_name(crate::extract::BROWSER_COOKIE);
+    let jar = CookieJar::new()
+        .add(browser)
+        .add(removal_cookie(&state.cookie_domain));
+    Ok((jar, StatusCode::NO_CONTENT).into_response())
+}
+
+async fn logout(
+    State(state): State<Arc<EmbeddedState>>,
+    request: axum::extract::Request,
+) -> Result<Response, ApiError> {
+    let (mut parts, _) = request.into_parts();
+    if let Some(token) = browser_cookie(&parts.headers)? {
+        let resolved = resolve_request_parts(&state.provider, &mut parts, false).await?;
+        let account = resolved.account_id.ok_or(AuthError::InvalidToken)?;
+        state
+            .engine
+            .remove_browser_account(&token, account, Some(resolved.session.id))
+            .await?;
+        return Ok(StatusCode::NO_CONTENT.into_response());
+    }
+    if parts.headers.contains_key(ACCOUNT_HEADER) {
         return Err(AuthError::InvalidToken.into());
     }
-    if let Some(cookie) = jar.get("surge_session") {
-        if let Some(token) = SessionToken::from_raw(cookie.value()) {
-            let _ = state.provider.revoke_session(&token).await;
-        }
+    if let Some(token) = legacy_cookie(&parts.headers) {
+        let _ = state.provider.revoke_session(&token).await;
     }
-
-    let removal = removal_cookie(&state.cookie_domain);
-    let jar = CookieJar::new().add(removal);
+    let jar = CookieJar::new().add(removal_cookie(&state.cookie_domain));
     Ok((jar, StatusCode::NO_CONTENT).into_response())
 }
