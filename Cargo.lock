@@ -2805,6 +2805,8 @@ dependencies = [
  "base64",
  "chrono",
  "clap",
+ "diesel",
+ "diesel-async",
  "futures-util",
  "http",
  "jsonwebtoken",

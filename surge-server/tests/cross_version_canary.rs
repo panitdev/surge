@@ -493,3 +493,84 @@ async fn lane4_revoking_every_session_deactivates_the_oauth_grant() {
         "revoking every session must deactivate the OAuth grant it authorized"
     );
 }
+
+#[tokio::test]
+#[ignore = "requires a disposable PostgreSQL DATABASE_URL"]
+async fn remote_browser_resolution_matches_the_embedded_provider() {
+    use diesel::prelude::*;
+    use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
+    use surge::{AuthProvider, RemoteConfig, RemoteProvider};
+    use surge_engine::schema::{browser_session, browser_session_account as member};
+
+    let (app, engine, service) = test_app().await;
+    let browser = engine.create_browser_session().await.unwrap();
+    let mut conn = AsyncPgConnection::establish(&std::env::var("DATABASE_URL").unwrap())
+        .await
+        .unwrap();
+    let mut accounts = Vec::new();
+    for _ in 0..2 {
+        let username = surge::Username::new(&uuid::Uuid::now_v7().simple().to_string()).unwrap();
+        let identity = engine.create_identity(&username, "Member").await.unwrap();
+        let issued = engine
+            .mint_session(identity.id, surge::AuthMethod::Password)
+            .await
+            .unwrap();
+        let account: uuid::Uuid = diesel::insert_into(member::table)
+            .values((
+                member::browser_session_id.eq(browser.id),
+                member::identity_id.eq(*identity.id.as_uuid()),
+                member::session_id.eq(*issued.session.id.as_uuid()),
+            ))
+            .returning(member::account_id)
+            .get_result(&mut conn)
+            .await
+            .unwrap();
+        accounts.push((account, issued));
+    }
+    diesel::update(browser_session::table.find(browser.id))
+        .set(browser_session::default_account_id.eq(accounts[0].0))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let remote = RemoteProvider::new(RemoteConfig {
+        base_url: format!("http://{addr}").parse().unwrap(),
+        service_token: service.into(),
+        cache_ttl: Duration::from_secs(30),
+        cache_max_entries: 10,
+        timeout: Duration::from_secs(5),
+    })
+    .unwrap();
+    for selector in [None, Some(accounts[1].0)] {
+        let embedded = engine
+            .resolve_browser_session(&browser.token, selector)
+            .await
+            .unwrap();
+        let actual = remote
+            .resolve_browser_session(&browser.token, selector)
+            .await
+            .unwrap();
+        assert_eq!((actual.0, actual.1.id), (embedded.0, embedded.1.id));
+    }
+    let (account, issued) = accounts.pop().unwrap();
+    assert_eq!(
+        remote
+            .verify_session(Some(issued.token.clone()))
+            .await
+            .unwrap()
+            .id,
+        issued.session.id
+    );
+    engine.revoke_session(&issued.token).await.unwrap();
+    assert!(matches!(
+        remote
+            .resolve_browser_session(&browser.token, Some(account))
+            .await,
+        Err(surge::AuthError::InvalidToken)
+    ));
+    assert!(remote.verify_browser_cookie(issued.token).await.is_err());
+    server.abort();
+}

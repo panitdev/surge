@@ -274,10 +274,7 @@ impl V1Router {
                 response.headers_mut().insert(http::header::CACHE_CONTROL, http::HeaderValue::from_static("no-store"));
                 response
             }))
-            .layer(session_cors.allow_headers([
-                http::header::CONTENT_TYPE, http::header::COOKIE,
-                http::HeaderName::from_static("x-surge-csrf"), http::HeaderName::from_static(ACCOUNT_HEADER),
-            ]).expose_headers([http::HeaderName::from_static(ACCOUNT_HEADER)]))
+            .layer(cors::account_scoped(session_cors))
             .with_state(self.state);
 
         Router::new()

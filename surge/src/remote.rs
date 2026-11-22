@@ -165,16 +165,40 @@ impl AuthProvider for RemoteProvider {
             return Ok(session);
         }
 
+        let session = self.verify_browser_cookie(token).await?;
+        self.cache.insert(cache_key, session.clone()).await;
+        Ok(session)
+    }
+
+    async fn verify_browser_cookie(&self, token: SessionToken) -> Result<Session, AuthError> {
         let resp = self
             .authed(reqwest::Method::POST, "/v1/sessions/verify")
             .json(&serde_json::json!({ "token": token.expose_secret() }))
             .send()
             .await
             .map_err(Self::map_reqwest_err)?;
+        Self::parse_or_error(resp).await
+    }
 
-        let session: Session = Self::parse_or_error(resp).await?;
-        self.cache.insert(cache_key, session.clone()).await;
-        Ok(session)
+    async fn resolve_browser_session(
+        &self,
+        token: &BrowserSessionToken,
+        selector: Option<uuid::Uuid>,
+    ) -> Result<(uuid::Uuid, Session), AuthError> {
+        #[derive(serde::Deserialize)]
+        struct Resolution {
+            account_id: uuid::Uuid,
+            session: Session,
+        }
+
+        let resp = self
+            .authed(reqwest::Method::POST, "/v1/sessions/resolve-browser")
+            .json(&serde_json::json!({ "token": token.expose_secret(), "account_id": selector }))
+            .send()
+            .await
+            .map_err(Self::map_reqwest_err)?;
+        let resolved: Resolution = Self::parse_or_error(resp).await?;
+        Ok((resolved.account_id, resolved.session))
     }
 
     async fn revoke_session(&self, token: &SessionToken) -> Result<(), AuthError> {

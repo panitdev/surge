@@ -102,18 +102,19 @@ pub(crate) async fn resolve_request(
         return Err(AuthError::InvalidToken);
     }
 
-    let token = if let Some(cookie) = jar.get("surge_session") {
-        Some(SessionToken::from_raw(cookie.value()).ok_or(AuthError::InvalidToken)?)
+    let session = if let Some(cookie) = jar.get("surge_session") {
+        let token = SessionToken::from_raw(cookie.value()).ok_or(AuthError::InvalidToken)?;
+        provider.verify_browser_cookie(token).await?
     } else if allow_bearer {
-        headers
+        let token = headers
             .get("authorization")
             .and_then(|h| h.to_str().ok())
             .and_then(|s| s.strip_prefix("Bearer "))
-            .and_then(SessionToken::from_raw)
+            .and_then(SessionToken::from_raw);
+        provider.verify_session(token).await?
     } else {
         return Err(AuthError::InvalidToken);
     };
-    let session = provider.verify_session(token).await?;
     Ok(ResolvedSession {
         session,
         account_id: None,

@@ -37,6 +37,8 @@ url.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+diesel.workspace = true
+diesel-async.workspace = true
 base64.workspace = true
 # The resource-server half, exercised end to end by `oauth_resource_server.rs`
 # against a real listening authorization server.

@@ -28,12 +28,12 @@ use super::trusted_proxy::{CLIENT_IP_HEADER, SERVICE_TOKEN_HEADER};
 /// Request headers passed through to upstream. An allowlist rather than a
 /// denylist: anything the embedding application adds for its own purposes
 /// is not upstream's business.
-const FORWARDED_REQUEST_HEADERS: &[&str] = &["content-type", "accept", "x-surge-csrf"];
+const FORWARDED_REQUEST_HEADERS: &[&str] = &["content-type", "accept", "origin", "x-surge-csrf", crate::extract::ACCOUNT_HEADER];
 
 /// Only Surge's own cookies cross the boundary — the embedding
 /// application's session, analytics, and consent cookies are none of
 /// upstream's business, and the browser sends the whole jar regardless.
-const FORWARDED_COOKIE_PREFIX: &str = "surge_";
+const FORWARDED_COOKIES: &[&str] = &["surge_session", crate::extract::BROWSER_COOKIE];
 
 /// Response headers dropped on the way back: hop-by-hop metadata that
 /// described the upstream connection, not this one. `content-length` is
@@ -99,6 +99,9 @@ pub(crate) fn proxy_browser_router(config: ProxyConfig) -> Router {
     let session_management = Router::new()
         .route("/v1/whoami", get(proxy_handler))
         .route("/v1/logout", post(proxy_handler))
+        .route("/v1/logout-all", post(proxy_handler))
+        .route("/v1/accounts/default", axum::routing::put(proxy_handler))
+        .route("/v1/accounts/{account_id}", delete(proxy_handler))
         .route("/v1/factors", get(proxy_handler))
         .route("/v1/factors/totp/enroll", post(proxy_handler))
         .route("/v1/factors/totp/confirm", post(proxy_handler))
@@ -109,7 +112,7 @@ pub(crate) fn proxy_browser_router(config: ProxyConfig) -> Router {
         )
         .route("/v1/factors/passphrase/confirm", post(proxy_handler))
         .route("/v1/account/password", post(proxy_handler))
-        .layer(session_cors)
+        .layer(cors::account_scoped(session_cors))
         .with_state(state);
 
     Router::new()
@@ -143,19 +146,16 @@ async fn proxy_handler(
     let mut upstream_req = config.client.request(upstream_method, &upstream_url);
 
     for name in FORWARDED_REQUEST_HEADERS {
-        if let Some(value) = headers.get(*name) {
-            if let Ok(s) = value.to_str() {
-                upstream_req = upstream_req.header(*name, s);
-            }
+        for value in headers.get_all(*name) {
+            upstream_req = upstream_req.header(*name, value);
         }
     }
 
-    if let Some(cookies) = headers
-        .get(axum::http::header::COOKIE)
-        .and_then(|v| v.to_str().ok())
-        .and_then(surge_cookies)
-    {
-        upstream_req = upstream_req.header(axum::http::header::COOKIE, cookies);
+    for cookie in headers.get_all(axum::http::header::COOKIE) {
+        let Ok(value) = cookie.to_str() else { return StatusCode::BAD_REQUEST.into_response() };
+        if let Some(cookies) = surge_cookies(value) {
+            upstream_req = upstream_req.header(axum::http::header::COOKIE, cookies);
+        }
     }
 
     // Proves to upstream that the `X-Surge-Client-Ip` below is a
@@ -264,7 +264,7 @@ fn surge_cookies(cookie_header: &str) -> Option<String> {
     let kept: Vec<&str> = cookie_header
         .split(';')
         .map(str::trim)
-        .filter(|pair| pair.starts_with(FORWARDED_COOKIE_PREFIX))
+        .filter(|pair| pair.split_once('=').is_some_and(|(name, _)| FORWARDED_COOKIES.contains(&name)))
         .collect();
 
     if kept.is_empty() {
@@ -346,7 +346,7 @@ mod tests {
                     path: uri.path_and_query().map(|p| p.to_string()).unwrap_or_default(),
                     headers,
                 };
-                StatusCode::NO_CONTENT
+                (StatusCode::NO_CONTENT, [(crate::extract::ACCOUNT_HEADER, "selected")])
             }
         });
 
@@ -406,17 +406,25 @@ mod tests {
 
         let (upstream, captured) = spawn_upstream().await;
 
-        test_router(upstream)
+        let response = test_router(upstream)
             .oneshot(
                 axum::http::Request::builder()
                     .uri("/v1/whoami")
+                    .header("origin", "https://app.example.com")
+                    .header(crate::extract::ACCOUNT_HEADER, "selected")
+                    .header("cookie", "surge_browser=browser; surge_private=local")
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
 
-        assert_eq!(captured.lock().unwrap().path, "/v1/whoami");
+        assert_eq!(response.headers()[crate::extract::ACCOUNT_HEADER], "selected");
+        assert_eq!(response.headers()[http::header::ACCESS_CONTROL_EXPOSE_HEADERS], crate::extract::ACCOUNT_HEADER);
+        let received = captured.lock().unwrap();
+        assert_eq!(received.path, "/v1/whoami");
+        assert_eq!(received.headers[crate::extract::ACCOUNT_HEADER], "selected");
+        assert_eq!(received.headers[http::header::COOKIE], "surge_browser=browser");
     }
 
     /// Upstream keys rate limits on the address this header states, so a

@@ -18,6 +18,11 @@ pub trait AuthProvider: Send + Sync {
         token: Option<SessionToken>,
     ) -> Result<Session, AuthError>;
 
+    /// Validate a legacy browser cookie against current session state.
+    async fn verify_browser_cookie(&self, token: SessionToken) -> Result<Session, AuthError> {
+        self.verify_session(Some(token)).await
+    }
+
     /// Resolve a browser credential and optional browser-local membership.
     async fn resolve_browser_session(
         &self,

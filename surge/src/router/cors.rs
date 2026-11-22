@@ -29,3 +29,11 @@ pub(crate) fn union(origins: &[String]) -> CorsLayer {
     let parsed = origins.iter().filter_map(|o| o.parse().ok()).collect::<Vec<_>>();
     base().allow_origin(AllowOrigin::list(parsed))
 }
+
+pub(crate) fn account_scoped(layer: CorsLayer) -> CorsLayer {
+    let selector = HeaderName::from_static(crate::extract::ACCOUNT_HEADER);
+    layer
+        .allow_methods([http::Method::GET, http::Method::POST, http::Method::PUT, http::Method::DELETE])
+        .allow_headers([http::header::CONTENT_TYPE, http::header::COOKIE, CSRF_HEADER.clone(), selector.clone()])
+        .expose_headers([selector])
+}

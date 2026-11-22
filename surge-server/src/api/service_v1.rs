@@ -17,6 +17,7 @@ use super::AppState;
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/sessions/verify", post(verify_session))
+        .route("/sessions/resolve-browser", post(resolve_browser))
         .route("/sessions/revoke", post(revoke_session))
         .route(
             "/identities/{id}/revoke-sessions",
@@ -49,6 +50,26 @@ pub fn router(state: Arc<AppState>) -> Router {
 #[derive(Deserialize)]
 pub(crate) struct TokenBody {
     token: String,
+}
+
+#[derive(Deserialize)]
+struct BrowserResolutionBody {
+    token: String,
+    account_id: Option<uuid::Uuid>,
+}
+
+async fn resolve_browser(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<ServiceAuth>,
+    Json(body): Json<BrowserResolutionBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    require_grant(&auth, "introspect").map_err(|_| AuthError::Forbidden)?;
+    let token = BrowserSessionToken::from_raw(&body.token).ok_or(AuthError::InvalidToken)?;
+    let (account_id, session) = state.provider.resolve_browser_session(&token, body.account_id).await?;
+    Ok((
+        [(axum::http::header::CACHE_CONTROL, "no-store")],
+        Json(json!({ "account_id": account_id, "session": session })),
+    ))
 }
 
 pub(crate) async fn verify_session(
