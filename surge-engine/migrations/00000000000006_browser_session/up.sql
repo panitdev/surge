@@ -26,5 +26,18 @@ CREATE TABLE surge.browser_session_account (
 
 ALTER TABLE surge.browser_session ADD CONSTRAINT browser_session_default_fk
     FOREIGN KEY (id, default_account_id)
-    REFERENCES surge.browser_session_account(browser_session_id, account_id)
-    ON DELETE SET NULL (default_account_id);
+    REFERENCES surge.browser_session_account(browser_session_id, account_id);
+
+-- PostgreSQL 14 cannot clear only one column of a composite foreign key.
+CREATE FUNCTION surge.clear_removed_browser_default() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    UPDATE surge.browser_session SET default_account_id = NULL
+    WHERE id = OLD.browser_session_id AND default_account_id = OLD.account_id;
+    RETURN OLD;
+END;
+$$;
+
+CREATE TRIGGER clear_removed_browser_default
+BEFORE DELETE ON surge.browser_session_account
+FOR EACH ROW EXECUTE FUNCTION surge.clear_removed_browser_default();
