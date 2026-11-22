@@ -48,6 +48,32 @@ impl std::fmt::Debug for SessionToken {
     }
 }
 
+/// An opaque browser credential. Only its SHA-256 digest is persisted.
+#[derive(Clone)]
+pub struct BrowserSessionToken(SecretString);
+
+impl BrowserSessionToken {
+    const PREFIX: &'static str = "aeg_b_";
+
+    pub fn generate() -> Self {
+        Self(SessionToken::generate_with_prefix(Self::PREFIX).0)
+    }
+
+    pub fn from_raw(raw: &str) -> Option<Self> {
+        let suffix = raw.strip_prefix(Self::PREFIX)?;
+        (suffix.len() == 22 && suffix.bytes().all(|c| c.is_ascii_alphanumeric()))
+            .then(|| Self(SecretString::from(raw.to_owned())))
+    }
+
+    pub fn hash(&self) -> Vec<u8> {
+        Sha256::digest(self.expose_secret().as_bytes()).to_vec()
+    }
+
+    pub fn expose_secret(&self) -> &str {
+        self.0.expose_secret()
+    }
+}
+
 pub struct ServiceToken(SecretString);
 
 impl ServiceToken {
@@ -265,6 +291,18 @@ fn sha256(bytes: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn browser_credential_round_trips_only_as_a_browser_token() {
+        let token = BrowserSessionToken::generate();
+        let raw = token.expose_secret();
+        let parsed = BrowserSessionToken::from_raw(raw).unwrap();
+        assert_eq!(parsed.hash(), token.hash());
+        assert_eq!(parsed.hash().len(), 32);
+        assert!(SessionToken::from_raw(raw).is_none());
+        assert!(BrowserSessionToken::from_raw(SessionToken::generate().expose_secret()).is_none());
+        assert!(BrowserSessionToken::from_raw("aeg_b_").is_none());
+    }
 
     #[test]
     fn session_token_format() {

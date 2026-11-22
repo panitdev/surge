@@ -8,7 +8,7 @@ pub use error::{AuthError, ValidationError};
 pub use id::{IdentityId, ServiceId, SessionId};
 pub use password::{Password, PasswordError};
 pub use token::{
-    AuthorizationCode, ClientId, ClientSecret, FlowId, RefreshToken, ResetToken, ServiceToken,
+    AuthorizationCode, BrowserSessionToken, ClientId, ClientSecret, FlowId, RefreshToken, ResetToken, ServiceToken,
     SessionToken,
 };
 pub use username::{Username, UsernameError};

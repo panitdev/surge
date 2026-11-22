@@ -138,16 +138,39 @@ impl Engine {
         let mut conn = self.conn().await?;
         let now = Utc::now();
 
-        let deleted = diesel::delete(
-            session::table
-                .filter(session::expires_at.lt(now))
-                .or_filter(session::revoked_at.is_not_null()),
-        )
-        .execute(&mut conn)
-        .await
-        .map_err(|e| AuthError::Internal(e.into()))?;
+        conn.transaction::<_, AuthError, _>(|conn| {
+            async move {
+                use crate::schema::browser_session;
 
-        Ok(deleted as u64)
+                diesel::delete(
+                    browser_session::table
+                        .filter(browser_session::expires_at.le(now))
+                        .or_filter(browser_session::revoked_at.is_not_null()),
+                )
+                .execute(conn)
+                .await?;
+
+                // The session and browser foreign keys prune their memberships.
+                // Disabled identities retain their session rows for existing callers.
+                diesel::sql_query(
+                    "DELETE FROM surge.browser_session_account a USING surge.identity i
+                     WHERE a.identity_id = i.id AND i.state = 'disabled'",
+                )
+                .execute(conn)
+                .await?;
+
+                let deleted = diesel::delete(
+                    session::table
+                        .filter(session::expires_at.le(now))
+                        .or_filter(session::revoked_at.is_not_null()),
+                )
+                .execute(conn)
+                .await?;
+                Ok(deleted as u64)
+            }
+            .scope_boxed()
+        })
+        .await
     }
 }
 

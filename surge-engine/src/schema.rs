@@ -226,6 +226,28 @@ diesel::joinable!(credential_password -> identity (identity_id));
 diesel::joinable!(credential_totp -> identity (identity_id));
 diesel::joinable!(credential_passphrase -> identity (identity_id));
 diesel::joinable!(identity_link -> identity (identity_id));
+diesel::table! {
+    surge.browser_session (id) {
+        id -> Uuid,
+        token_hash -> Bytea,
+        issued_at -> Timestamptz,
+        expires_at -> Timestamptz,
+        revoked_at -> Nullable<Timestamptz>,
+        default_account_id -> Nullable<Uuid>,
+    }
+}
+
+diesel::table! {
+    surge.browser_session_account (browser_session_id, account_id) {
+        browser_session_id -> Uuid,
+        account_id -> Uuid,
+        identity_id -> Uuid,
+        session_id -> Uuid,
+    }
+}
+
+diesel::joinable!(browser_session_account -> browser_session (browser_session_id));
+diesel::joinable!(browser_session_account -> session (session_id));
 diesel::joinable!(session -> identity (identity_id));
 diesel::joinable!(oauth_resource -> service (service_id));
 diesel::joinable!(oauth_consent -> identity (identity_id));
@@ -238,6 +260,8 @@ diesel::allow_tables_to_appear_in_same_query!(
     credential_passphrase,
     identity_link,
     session,
+    browser_session,
+    browser_session_account,
     service,
     oauth_client,
     oauth_resource,
