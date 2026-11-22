@@ -20,7 +20,7 @@ import { SurgeClient, SurgeError } from "@panit/surge-client";
 const surge = new SurgeClient({ baseUrl: "https://auth.example.com" });
 ```
 
-All requests use `credentials: "include"` so the browser sends and stores the `surge_session` cookie. For cross-origin calls, your frontend's origin must be in the server's `SURGE_SESSION_CORS_ORIGINS`.
+All requests use `credentials: "include"` so the browser sends and stores the deployment’s session cookie. For cross-origin calls, your frontend's origin must be in the server's `SURGE_SESSION_CORS_ORIGINS`.
 
 ### Check authentication state
 
@@ -80,7 +80,15 @@ if (flow.registration_mode === "open") {
 ### Logout
 
 ```ts
-await surge.logout(); // revokes the session, clears the cookie; idempotent
+await surge.logout(); // Sign out of the default account.
+```
+
+In multi-account mode, `logout()` signs out the client’s pinned account or the browser default. Other accounts stay signed in. An unavailable selection or default returns HTTP 401. Signing out the default leaves the browser without a default until one is selected.
+
+```ts
+const work = new SurgeClient({ baseUrl: surge.baseUrl, accountId: workAccountId });
+await work.logout();     // Sign out of this account.
+await surge.logoutAll(); // Sign out of all accounts.
 ```
 
 ### Second factors and password changes
