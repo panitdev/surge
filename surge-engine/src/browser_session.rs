@@ -34,12 +34,21 @@ pub struct BrowserAccountIdentity {
 
 impl Engine {
     /// Recover the selector for a legacy consent that predates browser adoption.
-    pub async fn account_for_session(&self, token: &BrowserSessionToken, session_id: Uuid) -> Result<Uuid, AuthError> {
+    pub async fn account_for_session(
+        &self,
+        token: &BrowserSessionToken,
+        session_id: Uuid,
+    ) -> Result<Uuid, AuthError> {
         use crate::schema::browser_session_account as member;
-        member::table.inner_join(browser_session::table)
+        member::table
+            .inner_join(browser_session::table)
             .filter(browser_session::token_hash.eq(token.hash()))
             .filter(member::session_id.eq(session_id))
-            .select(member::account_id).first(&mut self.conn().await?).await.optional()?.ok_or(AuthError::InvalidToken)
+            .select(member::account_id)
+            .first(&mut self.conn().await?)
+            .await
+            .optional()?
+            .ok_or(AuthError::InvalidToken)
     }
 
     pub async fn resolve_browser_session(

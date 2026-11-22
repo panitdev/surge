@@ -9,18 +9,18 @@
 
 use std::sync::Arc;
 
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use serde::Deserialize;
 use serde_json::json;
-use surge_engine::oauth::{AuthorizationGrant, RegistrationSource};
 use surge_engine::AuthError;
+use surge_engine::oauth::{AuthorizationGrant, RegistrationSource};
 
-use super::authorize::{issue_code_redirect, resolve_authorization_session};
-use super::error::{build_redirect, OauthErrorCode};
 use super::AsState;
+use super::authorize::{issue_code_redirect, resolve_authorization_session};
+use super::error::{OauthErrorCode, build_redirect};
 use crate::router::error::ApiError;
 
 pub(crate) async fn get_consent_flow(
@@ -164,7 +164,12 @@ async fn verify_flow_session(
     flow: &surge_engine::oauth::ConsentFlow,
 ) -> Result<surge_engine::oauth::AuthorizationSession, ApiError> {
     let selector = match (flow.account_id, crate::extract::browser_cookie(headers)?) {
-        (None, Some(token)) => Some(state.engine.account_for_session(&token, flow.session_id).await?),
+        (None, Some(token)) => Some(
+            state
+                .engine
+                .account_for_session(&token, flow.session_id)
+                .await?,
+        ),
         (selector, _) => selector,
     };
     let (session, binding) = resolve_authorization_session(state, headers, selector).await?;

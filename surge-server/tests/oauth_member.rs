@@ -6,7 +6,7 @@ use axum::response::Response;
 use diesel::prelude::*;
 use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
 use oauth_support::*;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use surge_engine::{
     AuthorizationCode, BrowserSessionToken, CompletedLogin, Password, RegisterRequest, Username,
     VerifiedLogin,
@@ -216,11 +216,128 @@ async fn invalidated_members_cannot_finish_consent() {
                 response.status()
             );
         }
-        assert!(h
-            .engine
-            .find_consent(&client, work.issued.session.identity.id, &h.resource_uri)
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            h.engine
+                .find_consent(&client, work.issued.session.identity.id, &h.resource_uri)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires a live Postgres via DATABASE_URL"]
+async fn adopted_legacy_consent_uses_the_original_session_after_default_switch() {
+    let h = harness().await;
+    let legacy = h.sign_in().await;
+    let token = surge_engine::SessionToken::from_raw(&legacy).unwrap();
+    let original = h.engine.verify_session(&token).await.unwrap();
+    let client = h.client(false).await;
+    let uri = h.authorize_uri(
+        &client,
+        &Pkce::generate(),
+        Some(&h.resource_uri),
+        Some("mcp:read"),
+    );
+    let flow = query_param(&location(&h.get(&uri, Some(&legacy)).await), "consent_flow").unwrap();
+    let add = h
+        .engine
+        .create_browser_login_flow(None, true, None, Some(&token))
+        .await
+        .unwrap();
+    let added = h
+        .engine
+        .finish_login_flow(
+            &add.id,
+            &add.csrf_token,
+            None,
+            Some(&token),
+            true,
+            registration(),
+            "test_login",
+            None,
+        )
+        .await
+        .unwrap();
+    let browser = added.browser_cookie.unwrap().token;
+    h.engine
+        .set_default_account(&browser, added.account_id.unwrap())
+        .await
+        .unwrap();
+    let path = format!("/v1/oauth/consent/{flow}");
+    let screen = body_json(request(&h, &browser, &path, None).await).await;
+    let decision = body_json(
+        request(
+            &h,
+            &browser,
+            &path,
+            Some(json!({"approve":true,"csrf_token":screen["csrf_token"]})),
+        )
+        .await,
+    )
+    .await;
+    let code = query_param(decision["redirect_to"].as_str().unwrap(), "code").unwrap();
+    let grant = h
+        .engine
+        .consume_authorization_code(&AuthorizationCode::from_raw(&code).unwrap(), &client)
+        .await
+        .unwrap();
+    assert_eq!(grant.session_id, *original.id.as_uuid());
+}
+
+#[tokio::test]
+#[ignore = "requires a live Postgres via DATABASE_URL"]
+async fn consent_expiring_while_decision_waits_for_row_lock_is_rejected() {
+    use surge_engine::schema::oauth_consent_flow as flow;
+    let h = harness().await;
+    let work = member(&h, None, registration()).await;
+    let token = &work.browser_cookie.unwrap().token;
+    let client = h.client(false).await;
+    let uri = h.authorize_uri(
+        &client,
+        &Pkce::generate(),
+        Some(&h.resource_uri),
+        Some("mcp:read"),
+    );
+    let mut lock = AsyncPgConnection::establish(&std::env::var("DATABASE_URL").unwrap())
+        .await
+        .unwrap();
+    for approve in [true, false] {
+        let id = query_param(
+            &location(&request(&h, token, &uri, None).await),
+            "consent_flow",
+        )
+        .unwrap();
+        let path = format!("/v1/oauth/consent/{id}");
+        let screen = body_json(request(&h, token, &path, None).await).await;
+        // Readers still see the original expiry while this update holds the row.
+        // The decision transaction starts before the replacement expiry elapses.
+        let deadline = chrono::Utc::now() + chrono::Duration::seconds(1);
+        let decision = request(
+            &h,
+            token,
+            &path,
+            Some(json!({"approve":approve,"csrf_token":screen["csrf_token"]})),
+        );
+        let mut decision = Box::pin(decision);
+        lock.transaction::<_, diesel::result::Error,_>(|conn| Box::pin(async {
+            diesel::update(flow::table.find(&id)).set(flow::expires_at.eq(deadline)).execute(conn).await?;
+            tokio::select! {
+                response = &mut decision => panic!("decision bypassed row lock: {}",response.status()),
+                _ = tokio::time::sleep(std::time::Duration::from_millis(1200)) => {}
+            }
+            Ok(())
+        })).await.unwrap();
+        assert_eq!(decision.await.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            flow::table
+                .find(&id)
+                .select(flow::decided_at)
+                .first::<Option<chrono::DateTime<chrono::Utc>>>(&mut lock)
+                .await
+                .unwrap(),
+            None
+        );
     }
 }

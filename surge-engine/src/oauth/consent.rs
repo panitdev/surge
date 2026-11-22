@@ -13,13 +13,13 @@ use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_async::{AsyncConnection, RunQueryDsl};
 
 use super::client::row_to_client;
-use super::{now, Connection, ConsentFlow, ConsentGrant};
+use super::{Connection, ConsentFlow, ConsentGrant, now};
+use crate::Engine;
 use crate::models::{
     NewOauthConsent, NewOauthConsentFlow, OauthClientRow, OauthConsentFlowRow, OauthConsentRow,
 };
 use crate::schema::{oauth_client, oauth_consent, oauth_consent_flow, oauth_refresh_token};
 use crate::types::*;
-use crate::Engine;
 
 /// A consent screen is a person reading a sentence and deciding. Ten minutes
 /// matches `login_flow`; longer would leave a decidable grant lying around
@@ -74,10 +74,14 @@ pub(super) async fn consume_flow(
     conn: &mut diesel_async::AsyncPgConnection,
     id: &str,
 ) -> Result<(), AuthError> {
-    oauth_consent_flow::table.find(id)
+    oauth_consent_flow::table
+        .find(id)
         .select(oauth_consent_flow::id)
         .for_update()
-        .first::<String>(conn).await.optional()?.ok_or(AuthError::SessionExpired)?;
+        .first::<String>(conn)
+        .await
+        .optional()?
+        .ok_or(AuthError::SessionExpired)?;
     let decided = Utc::now();
     let changed = diesel::update(
         oauth_consent_flow::table
@@ -288,7 +292,9 @@ impl Engine {
                     .validate(conn, flow.session_id, flow.identity_id)
                     .await?;
                 consume_flow(conn, &flow.id).await?;
-                if expiry <= Utc::now() { return Err(AuthError::InvalidToken); }
+                if expiry <= Utc::now() {
+                    return Err(AuthError::InvalidToken);
+                }
                 Ok(())
             }
             .scope_boxed()
