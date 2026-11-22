@@ -187,13 +187,24 @@ impl Engine {
         identity_id: IdentityId,
         code: &str,
     ) -> Result<(), AuthError> {
+        use diesel_async::{scoped_futures::ScopedFutureExt, AsyncConnection};
         let mut conn = self.conn().await?;
+        conn.transaction(|conn| self.verify_totp_conn(conn, identity_id, code).scope_boxed()).await
+    }
+
+    pub(crate) async fn verify_totp_conn(
+        &self,
+        conn: &mut diesel_async::AsyncPgConnection,
+        identity_id: IdentityId,
+        code: &str,
+    ) -> Result<(), AuthError> {
 
         let row: CredentialTotpRow = credential_totp::table
             .find(*identity_id.as_uuid())
             .filter(credential_totp::confirmed_at.is_not_null())
             .select(CredentialTotpRow::as_select())
-            .first(&mut conn)
+            .for_update()
+            .first(conn)
             .await
             .map_err(|e| match e {
                 diesel::result::Error::NotFound => AuthError::InvalidCredentials,
@@ -217,7 +228,7 @@ impl Engine {
                 credential_totp::last_used_step.eq(step as i64),
                 credential_totp::updated_at.eq(now),
             ))
-            .execute(&mut conn)
+            .execute(conn)
             .await
             .map_err(|e| AuthError::Internal(e.into()))?;
 
@@ -369,8 +380,13 @@ impl Engine {
         username: &Username,
         passphrase: &str,
     ) -> Result<Identity, AuthError> {
-        let mut conn = self.conn().await?;
+        self.verify_login_passphrase(username, passphrase).await.map(|(identity, _)| identity)
+    }
 
+    pub async fn verify_login_passphrase(
+        &self, username: &Username, passphrase: &str,
+    ) -> Result<(Identity, crate::PassphraseProof), AuthError> {
+        let mut conn = self.conn().await?;
         let result: Result<(crate::models::IdentityRow, CredentialPassphraseRow), _> =
             crate::schema::identity::table
                 .inner_join(credential_passphrase::table)
@@ -390,7 +406,8 @@ impl Engine {
                 if identity.state == IdentityState::Disabled {
                     return Err(AuthError::IdentityDisabled);
                 }
-                Ok(identity)
+                let proof = crate::PassphraseProof { id: identity.id, version: crate::login_completion::credential_version(&cred_row.hash) };
+                Ok((identity, proof))
             }
             Err(diesel::result::Error::NotFound) => {
                 // Burn comparable time against a dummy hash so presence of a

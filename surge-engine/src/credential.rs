@@ -32,6 +32,16 @@ impl Engine {
         username: &Username,
         password: &Password,
     ) -> Result<Identity, AuthError> {
+        self.verify_login_password(username, password)
+            .await
+            .map(|(identity, _)| identity)
+    }
+
+    pub async fn verify_login_password(
+        &self,
+        username: &Username,
+        password: &Password,
+    ) -> Result<(Identity, crate::PasswordProof), AuthError> {
         let mut conn = self.conn().await?;
 
         let result: Result<(crate::models::IdentityRow, CredentialPasswordRow), _> =
@@ -53,7 +63,11 @@ impl Engine {
                 if identity.state == IdentityState::Disabled {
                     return Err(AuthError::IdentityDisabled);
                 }
-                Ok(identity)
+                let proof = crate::PasswordProof {
+                    id: identity.id,
+                    version: crate::login_completion::credential_version(&cred_row.hash),
+                };
+                Ok((identity, proof))
             }
             Err(diesel::result::Error::NotFound) => {
                 let _ = self.verify_hash(&self.dummy_hash(), password);
@@ -146,16 +160,11 @@ impl Engine {
             .and_then(|v| v.parse().ok())
             .ok_or(AuthError::InvalidCredentials)?;
 
-        let pepper = self
-            .pepper
-            .peppers
-            .get(&version)
-            .ok_or_else(|| {
-                AuthError::Internal(anyhow::anyhow!("pepper version {version} not found"))
-            })?;
+        let pepper = self.pepper.peppers.get(&version).ok_or_else(|| {
+            AuthError::Internal(anyhow::anyhow!("pepper version {version} not found"))
+        })?;
 
-        let parsed = PasswordHash::new(hash_str)
-            .map_err(|_| AuthError::InvalidCredentials)?;
+        let parsed = PasswordHash::new(hash_str).map_err(|_| AuthError::InvalidCredentials)?;
 
         let params = Params::try_from(&parsed)
             .map_err(|e| AuthError::Internal(anyhow::anyhow!("argon2 params from hash: {e}")))?;

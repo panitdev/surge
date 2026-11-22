@@ -12,7 +12,7 @@ mod crypto;
 mod factor;
 mod flow;
 mod login_completion;
-pub use login_completion::{CompletedLogin, VerifiedLogin};
+pub use login_completion::{CompletedLogin, PassphraseProof, PasswordProof, VerifiedLogin};
 mod identity;
 mod link;
 mod models;

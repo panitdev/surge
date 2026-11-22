@@ -491,7 +491,7 @@ async fn submit_password(
     // Split verify from mint (unlike `provider.authenticate_password`, which
     // bundles verify+mint+audit): a user with a confirmed TOTP must clear the
     // second step before any session is minted.
-    let identity = match state.engine.verify_credential(&username, &password).await {
+    let (identity, proof) = match state.engine.verify_login_password(&username, &password).await {
         Ok(identity) => identity,
         Err(e) => {
             state.engine.record_flow_error(&id, "invalid_credentials").await?;
@@ -502,7 +502,7 @@ async fn submit_password(
     if state.engine.has_totp(identity.id).await? {
         state
             .engine
-            .set_flow_awaiting_totp(&id, identity.id)
+            .set_flow_awaiting_totp(&id, proof)
             .await?;
         return Ok(Json(json!({
             "status": "totp_required",
@@ -517,7 +517,7 @@ async fn submit_password(
         &body.csrf_token,
         &headers,
         flow.return_to,
-        VerifiedLogin::Password(identity.id),
+        VerifiedLogin::Password(proof),
         "authenticate",
         Some(json!({ "factors": ["password"] })),
     )
@@ -632,25 +632,21 @@ async fn submit_totp(
         .check("flow", "authenticate", ip, Some(&identity_id.to_string()))
         .await?;
 
-    match state.engine.verify_totp(identity_id, &body.code).await {
-        Ok(()) => {
-            finish_login(
-                &state,
-                &id,
-                &body.csrf_token,
-                &headers,
-                flow.return_to,
-                VerifiedLogin::Totp(identity_id),
-                "authenticate",
-                Some(json!({ "factors": ["password", "totp"] })),
-            )
-            .await
-        }
-        Err(e) => {
-            state.engine.record_flow_error(&id, "invalid_totp").await?;
-            Err(e.into())
-        }
+    let result = finish_login(
+        &state,
+        &id,
+        &body.csrf_token,
+        &headers,
+        flow.return_to,
+        VerifiedLogin::Totp(identity_id, body.code),
+        "authenticate",
+        Some(json!({ "factors": ["password", "totp"] })),
+    )
+    .await;
+    if matches!(result, Err(ApiError(AuthError::InvalidCredentials))) {
+        state.engine.record_flow_error(&id, "invalid_totp").await?;
     }
+    result
 }
 
 #[derive(Deserialize)]
@@ -693,17 +689,17 @@ async fn submit_passphrase(
 
     match state
         .engine
-        .verify_passphrase_by_username(&username, &body.passphrase)
+        .verify_login_passphrase(&username, &body.passphrase)
         .await
     {
-        Ok(identity) => {
+        Ok((_, proof)) => {
             finish_login(
                 &state,
                 &id,
                 &body.csrf_token,
                 &headers,
                 flow.return_to,
-                VerifiedLogin::Passphrase(identity.id),
+                VerifiedLogin::Passphrase(proof),
                 "passphrase_login",
                 Some(json!({ "factors": ["passphrase"] })),
             )
@@ -761,17 +757,17 @@ async fn submit_recover(
 
     match state
         .engine
-        .verify_passphrase_by_username(&username, &body.passphrase)
+        .verify_login_passphrase(&username, &body.passphrase)
         .await
     {
-        Ok(identity) => {
+        Ok((_, proof)) => {
             finish_login(
                 &state,
                 &id,
                 &body.csrf_token,
                 &headers,
                 flow.return_to,
-                VerifiedLogin::Recover(identity.id, new_password),
+                VerifiedLogin::Recover(proof, new_password),
                 "password_reset",
                 Some(json!({ "factors": ["passphrase"] })),
             )

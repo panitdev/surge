@@ -64,6 +64,7 @@ diesel::table! {
         login_intent -> Text,
         bound_browser_id -> Nullable<Uuid>,
         bound_legacy_id -> Nullable<Uuid>,
+        password_version -> Nullable<Bytea>,
     }
 }
 

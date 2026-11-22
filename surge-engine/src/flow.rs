@@ -193,7 +193,7 @@ impl Engine {
     pub async fn set_flow_awaiting_totp(
         &self,
         id: &str,
-        identity_id: IdentityId,
+        proof: crate::PasswordProof,
     ) -> Result<(), AuthError> {
         let mut conn = self.conn().await?;
 
@@ -204,7 +204,8 @@ impl Engine {
         )
         .set((
             login_flow::state.eq("awaiting_totp"),
-            login_flow::identity_id.eq(*identity_id.as_uuid()),
+            login_flow::identity_id.eq(*proof.id.as_uuid()),
+            login_flow::password_version.eq(proof.version),
         ))
         .execute(&mut conn)
         .await

@@ -1,6 +1,7 @@
 use chrono::Utc;
 use diesel::prelude::*;
 use diesel_async::{scoped_futures::ScopedFutureExt, AsyncConnection, RunQueryDsl};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::models::{IdentityRow, LoginFlowRow};
@@ -10,12 +11,26 @@ use crate::schema::{
 };
 use crate::*;
 
+pub(crate) fn credential_version(hash: &str) -> Vec<u8> {
+    Sha256::digest(hash.as_bytes()).to_vec()
+}
+
+pub struct PasswordProof {
+    pub(crate) id: IdentityId,
+    pub(crate) version: Vec<u8>,
+}
+
+pub struct PassphraseProof {
+    pub(crate) id: IdentityId,
+    pub(crate) version: Vec<u8>,
+}
+
 /// Evidence verified by the credential-entry handler before finishing this flow.
 pub enum VerifiedLogin {
-    Password(IdentityId),
-    Totp(IdentityId),
-    Passphrase(IdentityId),
-    Recover(IdentityId, Password),
+    Password(PasswordProof),
+    Totp(IdentityId, String),
+    Passphrase(PassphraseProof),
+    Recover(PassphraseProof, Password),
     Register(RegisterRequest),
 }
 
@@ -64,7 +79,7 @@ impl Engine {
                     return Err(AuthError::SessionExpired);
                 }
                 let correct_step = match &verified {
-                    VerifiedLogin::Totp(identity) => {
+                    VerifiedLogin::Totp(identity, _) => {
                         flow.state == "awaiting_totp"
                             && flow.identity_id.as_ref() == Some(identity.as_uuid())
                     }
@@ -135,15 +150,20 @@ impl Engine {
                     }
                     _ => return Err(AuthError::InvalidToken),
                 };
-                let identity = match verified {
+                let identity = match &verified {
                     VerifiedLogin::Register(req) => {
                         crate::identity::insert_identity(conn, &req.username, &req.display_name)
                             .await?
                     }
-                    VerifiedLogin::Password(id)
-                    | VerifiedLogin::Totp(id)
-                    | VerifiedLogin::Passphrase(id)
-                    | VerifiedLogin::Recover(id, _) => {
+                    _ => {
+                        let id = match &verified {
+                            VerifiedLogin::Password(proof) => proof.id,
+                            VerifiedLogin::Totp(id, _) => *id,
+                            VerifiedLogin::Passphrase(proof) | VerifiedLogin::Recover(proof, _) => {
+                                proof.id
+                            }
+                            VerifiedLogin::Register(_) => unreachable!(),
+                        };
                         let row = identity::table
                             .find(*id.as_uuid())
                             .select(IdentityRow::as_select())
@@ -154,14 +174,54 @@ impl Engine {
                         if identity.state != IdentityState::Active {
                             return Err(AuthError::IdentityDisabled);
                         }
+                        use crate::schema::{
+                            credential_passphrase as phrase, credential_password as pw,
+                        };
+                        let (hash, version) = match &verified {
+                            VerifiedLogin::Password(_) | VerifiedLogin::Totp(_, _) => {
+                                let hash = pw::table
+                                    .find(*id.as_uuid())
+                                    .select(pw::hash)
+                                    .for_share()
+                                    .first::<String>(conn)
+                                    .await
+                                    .optional()?;
+                                let version = match &verified {
+                                    VerifiedLogin::Password(proof) => Some(&proof.version),
+                                    _ => flow.password_version.as_ref(),
+                                };
+                                (hash, version)
+                            }
+                            VerifiedLogin::Passphrase(proof) | VerifiedLogin::Recover(proof, _) => {
+                                let hash = phrase::table
+                                    .find(*id.as_uuid())
+                                    .filter(phrase::confirmed_at.is_not_null())
+                                    .select(phrase::hash)
+                                    .for_share()
+                                    .first::<String>(conn)
+                                    .await
+                                    .optional()?;
+                                (hash, Some(&proof.version))
+                            }
+                            VerifiedLogin::Register(_) => unreachable!(),
+                        };
+                        let hash = hash.ok_or(AuthError::InvalidCredentials)?;
+                        if Some(&credential_version(&hash)) != version {
+                            return Err(AuthError::InvalidCredentials);
+                        }
+                        if let VerifiedLogin::Totp(_, code) = &verified {
+                            self.verify_totp_conn(conn, id, code).await?;
+                        }
                         if matches!(verified, VerifiedLogin::Password(_))
                             && credential_totp::table
                                 .find(*id.as_uuid())
-                                .filter(credential_totp::confirmed_at.is_not_null())
-                                .count()
-                                .get_result::<i64>(conn)
-                                .await?
-                                > 0
+                                .select(credential_totp::confirmed_at)
+                                .for_share()
+                                .first::<Option<chrono::DateTime<Utc>>>(conn)
+                                .await
+                                .optional()?
+                                .flatten()
+                                .is_some()
                         {
                             return Err(AuthError::InvalidCredentials);
                         }
@@ -241,5 +301,130 @@ impl Engine {
             .scope_boxed()
         })
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires a disposable PostgreSQL DATABASE_URL"]
+    async fn changed_credentials_invalidate_pending_login_proofs() {
+        let engine = Engine::new(EngineConfig {
+            database_url: std::env::var("DATABASE_URL").unwrap().into(),
+            pepper: PepperConfig {
+                current_version: 1,
+                peppers: [(1, "test-pepper".to_owned().into())].into(),
+            },
+            session_ttl: std::time::Duration::from_secs(3600),
+        })
+        .await
+        .unwrap();
+        engine.run_migrations().await.unwrap();
+        let username = Username::new(&Uuid::now_v7().simple().to_string()).unwrap();
+        let identity = engine.create_identity(&username, "test").await.unwrap();
+        let password = Password::new("original test password".to_owned().into()).unwrap();
+        engine.set_password(identity.id, &password).await.unwrap();
+        let single = engine.create_login_flow(None).await.unwrap();
+        let multi = engine.create_login_flow(None).await.unwrap();
+        let (_, first) = engine
+            .verify_login_password(&username, &password)
+            .await
+            .unwrap();
+        let (_, second) = engine
+            .verify_login_password(&username, &password)
+            .await
+            .unwrap();
+        engine
+            .set_flow_awaiting_totp(&multi.id, second)
+            .await
+            .unwrap();
+        engine
+            .set_password(
+                identity.id,
+                &Password::new("replacement test password".to_owned().into()).unwrap(),
+            )
+            .await
+            .unwrap();
+
+        async fn assert_stale(
+            engine: &Engine,
+            flow: crate::flow::FlowInfo,
+            attempt: VerifiedLogin,
+        ) {
+            assert!(matches!(
+                engine
+                    .finish_login_flow(
+                        &flow.id,
+                        &flow.csrf_token,
+                        None,
+                        None,
+                        false,
+                        attempt,
+                        "authenticate",
+                        None
+                    )
+                    .await,
+                Err(AuthError::InvalidCredentials)
+            ));
+        }
+        assert_stale(&engine, single, VerifiedLogin::Password(first)).await;
+
+        let enrolled = engine.begin_totp_enrollment(identity.id).await.unwrap();
+        let secret = totp_rs::Secret::Encoded(enrolled.secret_base32)
+            .to_bytes()
+            .unwrap();
+        let totp = totp_rs::TOTP::new_unchecked(
+            totp_rs::Algorithm::SHA1,
+            6,
+            1,
+            30,
+            secret,
+            None,
+            "test".into(),
+        );
+        let now = Utc::now().timestamp() as u64;
+        engine
+            .confirm_totp(identity.id, &totp.generate(now))
+            .await
+            .unwrap();
+        let code = totp.generate(now + 30);
+        assert_stale(
+            &engine,
+            multi,
+            VerifiedLogin::Totp(identity.id, code.clone()),
+        )
+        .await;
+        engine.verify_totp(identity.id, &code).await.unwrap();
+
+        let phrase = engine
+            .begin_passphrase_enrollment(identity.id)
+            .await
+            .unwrap();
+        engine
+            .confirm_passphrase(identity.id, &phrase)
+            .await
+            .unwrap();
+        let (_, login) = engine
+            .verify_login_passphrase(&username, &phrase)
+            .await
+            .unwrap();
+        let (_, recovery) = engine
+            .verify_login_passphrase(&username, &phrase)
+            .await
+            .unwrap();
+        engine.remove_passphrase(identity.id).await.unwrap();
+        for attempt in [
+            VerifiedLogin::Passphrase(login),
+            VerifiedLogin::Recover(recovery, password),
+        ] {
+            assert_stale(
+                &engine,
+                engine.create_login_flow(None).await.unwrap(),
+                attempt,
+            )
+            .await;
+        }
     }
 }

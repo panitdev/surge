@@ -127,6 +127,7 @@ pub struct LoginFlowRow {
     pub login_intent: String,
     pub bound_browser_id: Option<Uuid>,
     pub bound_legacy_id: Option<Uuid>,
+    pub password_version: Option<Vec<u8>>,
 }
 
 #[derive(Insertable)]
