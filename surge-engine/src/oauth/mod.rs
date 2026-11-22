@@ -12,6 +12,7 @@
 //! ("is this `resource` a service I know?") each need the client half and the
 //! identity/service half in a single query.
 
+mod chooser;
 mod client;
 mod code;
 mod consent;
@@ -19,6 +20,7 @@ mod key;
 mod resource;
 mod token;
 
+pub use chooser::ChooserCredential;
 pub use client::validate_redirect_uri;
 pub use code::{AuthorizationSession, verify_pkce, AUTHORIZATION_CODE_TTL_SECS};
 pub use consent::ConsentFlowRequest;
@@ -241,6 +243,7 @@ impl crate::Engine {
     ) -> Result<(), crate::AuthError> {
         self.gc_expired_authorization_codes().await?;
         self.gc_expired_consent_flows().await?;
+        self.gc_expired_chooser_requests().await?;
         self.gc_expired_refresh_tokens().await?;
         self.gc_unused_dynamic_clients(dcr_ttl).await?;
         self.rotate_oauth_signing_keys(key_rotation, access_ttl * 2)

@@ -7,22 +7,24 @@
 
 use std::sync::Arc;
 
+use super::chooser::start_request;
 use axum::extract::{Query, State};
+use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Redirect, Response};
 use axum_extra::extract::CookieJar;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use surge_engine::oauth::{
-    canonicalize_resource_uri, AuthorizationGrant, AuthorizationSession, ConsentFlowRequest,
-    OauthClient, OauthResource,
+    AuthorizationGrant, AuthorizationSession, ConsentFlowRequest, OauthClient, OauthResource,
+    canonicalize_resource_uri,
 };
 use surge_engine::{AuthError, Session, SessionToken};
 
-use super::error::{
-    authorize_error_page, authorize_error_redirect, build_redirect, OauthErrorCode,
-};
 use super::AsState;
+use super::error::{
+    OauthErrorCode, authorize_error_page, authorize_error_redirect, build_redirect,
+};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub(crate) struct AuthorizeQuery {
     pub response_type: Option<String>,
     pub client_id: Option<String>,
@@ -43,6 +45,16 @@ pub(crate) async fn authorize(
     Query(query): Query<AuthorizeQuery>,
     headers: axum::http::HeaderMap,
     uri: axum::http::Uri,
+) -> Response {
+    authorize_query(&state, query, &headers, Some(uri), None).await
+}
+
+pub(super) async fn authorize_query(
+    state: &AsState,
+    query: AuthorizeQuery,
+    headers: &HeaderMap,
+    original: Option<axum::http::Uri>,
+    selected: Option<(Session, AuthorizationSession)>,
 ) -> Response {
     // --- Phase 1: nothing may be redirected anywhere yet. ---
     let Some(client_id) = query.client_id.as_deref() else {
@@ -101,7 +113,7 @@ pub(crate) async fn authorize(
         );
     }
 
-    let resource = match resolve_resource(&state, query.resource.as_deref()).await {
+    let resource = match resolve_resource(state, query.resource.as_deref()).await {
         Ok(resource) => resource,
         Err((code, message)) => return fail(code, &message),
     };
@@ -111,7 +123,21 @@ pub(crate) async fn authorize(
         Err(message) => return fail(OauthErrorCode::InvalidScope, &message),
     };
 
-    if query.account_id.is_some() && query.prompt.as_deref() == Some("select_account") {
+    let prompts: Vec<_> = query
+        .prompt
+        .as_deref()
+        .unwrap_or_default()
+        .split_ascii_whitespace()
+        .collect();
+    let picker = prompts.contains(&"select_account");
+    let silent = prompts.contains(&"none");
+    if silent && prompts.len() != 1 {
+        return fail(
+            OauthErrorCode::InvalidRequest,
+            "prompt=none cannot be combined with another prompt",
+        );
+    }
+    if query.account_id.is_some() && picker {
         return fail(
             OauthErrorCode::InvalidRequest,
             "account_id conflicts with prompt=select_account",
@@ -123,18 +149,55 @@ pub(crate) async fn authorize(
             return fail(
                 OauthErrorCode::LoginRequired,
                 "requested account is unavailable",
-            )
+            );
         }
     };
-    let (session, binding) = match resolve_authorization_session(&state, &headers, selector).await {
+    if original.is_some() && picker {
+        if !state.multi_account {
+            return fail(
+                OauthErrorCode::InvalidRequest,
+                "account selection is unavailable",
+            );
+        }
+        return start_request(
+            state,
+            headers,
+            &query,
+            &resource.resource_uri,
+            &scopes,
+            true,
+        )
+        .await
+        .unwrap_or_else(IntoResponse::into_response);
+    }
+    let resolved = match selected {
+        Some(selected) => Ok(selected),
+        None => resolve_authorization_session(state, headers, selector).await,
+    };
+    let (session, binding) = match resolved {
         Ok(selected) => selected,
         Err(AuthError::InvalidToken | AuthError::SessionExpired | AuthError::IdentityDisabled) => {
-            if query.account_id.is_some() || query.prompt.as_deref() == Some("none") {
+            if query.account_id.is_some() || silent {
                 return fail(
                     OauthErrorCode::LoginRequired,
                     "requested account is unavailable",
                 );
             }
+            if state.multi_account {
+                return start_request(
+                    state,
+                    headers,
+                    &query,
+                    &resource.resource_uri,
+                    &scopes,
+                    false,
+                )
+                .await
+                .unwrap_or_else(IntoResponse::into_response);
+            }
+            let Some(uri) = original else {
+                return fail(OauthErrorCode::LoginRequired, "session expired");
+            };
             let self_url = format!("{}{}", state.issuer(), uri);
             let login = format!(
                 "{}/v1/login?return_to={}",
@@ -166,7 +229,7 @@ pub(crate) async fn authorize(
     };
 
     if needs_consent {
-        if query.prompt.as_deref() == Some("none") {
+        if silent {
             return fail(
                 OauthErrorCode::ConsentRequired,
                 "this client needs the user's approval and prompt=none was requested",
@@ -215,7 +278,7 @@ pub(crate) async fn authorize(
         nonce: query.nonce.clone(),
     };
 
-    match issue_code_redirect(&state, &grant, &binding, None, query.state.as_deref()).await {
+    match issue_code_redirect(state, &grant, &binding, None, query.state.as_deref()).await {
         Ok(response) => response,
         Err(AuthError::InvalidToken) => fail(
             OauthErrorCode::LoginRequired,

@@ -24,6 +24,7 @@
 //! client-side issuer check would fail in ways that look like clock skew.
 
 mod authorize;
+mod chooser;
 mod connections;
 mod consent;
 mod discovery;
@@ -89,6 +90,8 @@ pub(crate) struct AsState {
     pub provider: Arc<dyn AuthProvider>,
     pub rate_limiter: Arc<dyn RateLimiter>,
     pub config: OauthAsConfig,
+    pub multi_account: bool,
+    pub cookie_domain: String,
 }
 
 impl AsState {
@@ -115,7 +118,10 @@ pub(crate) fn root_router(state: Arc<AsState>) -> Router {
         .allow_headers(Any);
 
     let mut oauth2 = Router::new()
-        .route("/oauth2/authorize", get(authorize::authorize))
+        .route(
+            "/oauth2/authorize",
+            get(authorize::authorize).layer(axum::middleware::map_response(super::no_store)),
+        )
         .route("/oauth2/token", post(token::token))
         .route("/oauth2/jwks.json", get(discovery::jwks))
         .route("/oauth2/introspect", post(introspect::introspect))
@@ -144,11 +150,23 @@ pub(crate) fn root_router(state: Arc<AsState>) -> Router {
 /// the OAuth wire protocol — no third-party client ever calls them — so they
 /// version with the browser surface like everything else it contains.
 pub(crate) fn v1_router(state: Arc<AsState>, session_cors: CorsLayer) -> Router {
-    let credential_entry = Router::new()
+    let mut credential_entry = Router::new()
         .route(
             "/oauth/consent/{flow_id}",
             get(consent::get_consent_flow).post(consent::decide_consent_flow),
-        )
+        );
+    if state.multi_account {
+        credential_entry = credential_entry
+            .route(
+                "/oauth/authorization-requests/{id}/account",
+                post(chooser::choose_account).layer(axum::middleware::from_fn(crate::extract::require_header_csrf)),
+            )
+            .route(
+                "/oauth/authorization-requests/{id}/resume",
+                get(chooser::resume_login),
+            );
+    }
+    let credential_entry = credential_entry
         .layer(super::cors::narrow(&state.config.auth_ui_origin))
         .with_state(Arc::clone(&state));
 

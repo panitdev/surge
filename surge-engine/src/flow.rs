@@ -79,6 +79,18 @@ impl Engine {
         bound_legacy_id: Option<uuid::Uuid>,
     ) -> Result<FlowInfo, AuthError> {
         let mut conn = self.conn().await?;
+        Self::insert_login_flow_conn(
+            &mut conn, return_to, login_intent, bound_browser_id, bound_legacy_id,
+        ).await
+    }
+
+    pub(crate) async fn insert_login_flow_conn(
+        conn: &mut diesel_async::AsyncPgConnection,
+        return_to: Option<&str>,
+        login_intent: &str,
+        bound_browser_id: Option<uuid::Uuid>,
+        bound_legacy_id: Option<uuid::Uuid>,
+    ) -> Result<FlowInfo, AuthError> {
         let flow_id = FlowId::generate();
         let csrf = FlowId::generate();
         let now = Utc::now();
@@ -100,7 +112,7 @@ impl Engine {
 
         diesel::insert_into(login_flow::table)
             .values(&new)
-            .execute(&mut conn)
+            .execute(conn)
             .await
             .map_err(|e| AuthError::Internal(e.into()))?;
 

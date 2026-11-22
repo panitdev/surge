@@ -239,6 +239,7 @@ diesel::table! {
         expires_at -> Timestamptz,
         revoked_at -> Nullable<Timestamptz>,
         default_account_id -> Nullable<Uuid>,
+        provisional -> Bool,
     }
 }
 
@@ -275,3 +276,15 @@ diesel::allow_tables_to_appear_in_same_query!(
     oauth_authorization_code,
     oauth_refresh_token,
 );
+
+diesel::table! {
+    surge.oauth_authorization_request (id) {
+        id -> Text,
+        browser_id -> Nullable<Uuid>,
+        legacy_id -> Nullable<Uuid>,
+        request -> Jsonb,
+        expires_at -> Timestamptz,
+        login_id -> Nullable<Text>,
+        session_id -> Nullable<Uuid>,
+    }
+}

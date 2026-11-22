@@ -52,6 +52,10 @@ pub async fn harness() -> Harness {
 /// The same harness with the AS settings adjusted — for the tests that are
 /// specifically about a configuration knob (dynamic registration, say).
 pub async fn harness_with(tune: impl FnOnce(OauthAsSettings) -> OauthAsSettings) -> Harness {
+    harness_mode(false, tune).await
+}
+
+pub async fn harness_mode(multi_account: bool, tune: impl FnOnce(OauthAsSettings) -> OauthAsSettings) -> Harness {
     let database_url = std::env::var("DATABASE_URL")
         .expect("DATABASE_URL must be set to run the OAuth authorization-server tests");
 
@@ -134,7 +138,7 @@ pub async fn harness_with(tune: impl FnOnce(OauthAsSettings) -> OauthAsSettings)
         browser_public_origin: None,
         session_cors_origins: vec![],
         allow_served_inline: true,
-        multi_account: false,
+        multi_account,
         oauth_as: Some(settings),
     });
 

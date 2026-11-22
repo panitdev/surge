@@ -171,6 +171,8 @@ pub(crate) fn embedded_browser_router(
             provider: Arc::clone(&provider),
             rate_limiter: Arc::clone(&state.rate_limiter),
             config: as_config.clone(),
+            multi_account: state.multi_account,
+            cookie_domain: state.cookie_domain.clone(),
         });
         let session_cors = if state.session_cors_origins.is_empty() {
             cors::narrow(&state.auth_ui_origin)

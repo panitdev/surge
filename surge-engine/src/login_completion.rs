@@ -1,6 +1,6 @@
 use chrono::Utc;
 use diesel::prelude::*;
-use diesel_async::{scoped_futures::ScopedFutureExt, AsyncConnection, RunQueryDsl};
+use diesel_async::{AsyncConnection, RunQueryDsl, scoped_futures::ScopedFutureExt};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
@@ -108,12 +108,41 @@ impl Engine {
                             .filter(browser::token_hash.eq(token.hash()))
                             .filter(browser::revoked_at.is_null())
                             .filter(browser::expires_at.gt(Utc::now()))
-                            .select(browser::id)
+                            .select((
+                                browser::id,
+                                browser::provisional,
+                                browser::expires_at,
+                                browser::issued_at,
+                            ))
                             .for_update()
-                            .first::<Uuid>(conn)
+                            .first::<(Uuid, bool, chrono::DateTime<Utc>, chrono::DateTime<Utc>)>(
+                                conn,
+                            )
                             .await
-                            .optional()?;
-                        Some(locked.ok_or(AuthError::InvalidToken)?)
+                            .optional()?
+                            .ok_or(AuthError::InvalidToken)?;
+                        let (id, provisional, expiry, issued_at) = locked;
+                        if expiry <= Utc::now() {
+                            return Err(AuthError::InvalidToken);
+                        }
+                        if provisional {
+                            let token = BrowserSessionToken::generate();
+                            let expires_at = issued_at + chrono::Duration::hours(720);
+                            diesel::update(browser::table.find(id))
+                                .set((
+                                    browser::token_hash.eq(token.hash()),
+                                    browser::expires_at.eq(expires_at),
+                                    browser::provisional.eq(false),
+                                ))
+                                .execute(conn)
+                                .await?;
+                            browser_cookie = Some(IssuedBrowserSession {
+                                id,
+                                token,
+                                expires_at,
+                            });
+                        }
+                        Some(id)
                     }
                     ("add_account", None, None) if multi_account => {
                         let bound = flow.bound_legacy_id.ok_or(AuthError::InvalidToken)?;
@@ -293,6 +322,17 @@ impl Engine {
                             .execute(conn)
                             .await?;
                     }
+                }
+                use crate::schema::oauth_authorization_request as chooser;
+                if let Some(browser_id) = browser_id {
+                    diesel::update(chooser::table.filter(chooser::login_id.eq(id)))
+                        .set((
+                            chooser::session_id.eq(*issued.session.id.as_uuid()),
+                            chooser::browser_id.eq(browser_id),
+                            chooser::legacy_id.eq(None::<Uuid>),
+                        ))
+                        .execute(conn)
+                        .await?;
                 }
                 diesel::update(login_flow::table.find(id))
                     .set(login_flow::state.eq("completed"))
