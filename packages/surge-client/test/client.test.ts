@@ -362,3 +362,58 @@ describe("logout", () => {
     expect(err.status).toBe(401);
   });
 });
+
+describe("browser accounts", () => {
+  test("concurrent clients pin reads, writes and logout independently", async () => {
+    await Promise.all(["work", "personal", undefined].map(async (accountId) => {
+      const client = new SurgeClient({
+        baseUrl: "https://auth.example.com",
+        accountId,
+        fetch: (async (url, init) => {
+          const headers = new Headers(init?.headers);
+          expect(headers.get("X-Surge-Account")).toBe(accountId ?? null);
+          if (String(url).endsWith("/whoami")) {
+            const response = json(session);
+            if (accountId) response.headers.set("X-Surge-Account", accountId);
+            return response;
+          }
+          if (String(url).endsWith("/factors")) return json({ policy });
+          expect(headers.get("X-Surge-CSRF")).toBe("1");
+          return new Response(null, { status: 204 });
+        }) as typeof fetch,
+      });
+      expect(await client.whoamiWithAccount()).toEqual({ session, accountId: accountId ?? null });
+      await client.getFactors();
+      await client.changePassword("current", "replacement");
+      await client.logout();
+    }));
+  });
+
+  test("management requests address the browser and use CSRF on mutations", async () => {
+    const list = { accounts: [], default_account_id: null };
+    const empty = () => new Response(null, { status: 204 });
+    const { client, requests } = mockClient(json(list), empty(), empty(), empty());
+    expect(await client.listAccounts()).toEqual(list);
+    await client.setDefaultAccount("work");
+    await client.removeAccount("work/test");
+    await client.logoutAll();
+    expect(requests.map(({url, init}) => [new URL(url).pathname, init?.method])).toEqual([
+      ["/v1/accounts", "GET"], ["/v1/accounts/default", "PUT"],
+      ["/v1/accounts/work%2Ftest", "DELETE"], ["/v1/logout-all", "POST"],
+    ]);
+    expect(JSON.parse(requests[1]!.init!.body as string)).toEqual({ account_id: "work" });
+    for (const { init } of requests.slice(1)) {
+      expect(new Headers(init?.headers).get("X-Surge-CSRF")).toBe("1");
+      expect(init?.credentials).toBe("include");
+    }
+  });
+
+  test("starts redirect and inline add-account flows", async () => {
+    const { client, requests } = mockClient(json({ flow_id: "flow" }));
+    const redirect = new URL(client.loginUrl("https://app.example/", { intent: "add_account" }));
+    expect(redirect.searchParams.get("intent")).toBe("add_account");
+    expect(redirect.searchParams.get("return_to")).toBe("https://app.example/");
+    await client.initLoginFlow(undefined, { intent: "add_account" });
+    expect(requests[0]!.url).toEndWith("/v1/login?intent=add_account");
+  });
+});

@@ -2,6 +2,10 @@ export { SurgeClient, type SurgeClientOptions } from "./client.js";
 export { SurgeError, type SurgeErrorCode } from "./errors.js";
 export type {
   AuthenticatedVia,
+  BrowserAccount,
+  BrowserAccountList,
+  LoginOptions,
+  WhoamiResult,
   FactorPolicyName,
   FactorsResult,
   Flow,

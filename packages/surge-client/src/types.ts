@@ -83,6 +83,8 @@ export interface Flow {
 
 /** Response of a successful flow completion (password login or registration). */
 export interface FlowResult {
+  /** Browser-local selector issued on multi-account login. */
+  account_id?: string;
   /**
    * The URL to navigate to after authentication (the flow's `return_to`).
    * `null` if the flow was started without a `return_to` (only possible in
@@ -171,4 +173,25 @@ export interface RecoverSubmit {
   /** 8-256 chars, not a common password. */
   new_password: string;
   csrf_token: string;
+}
+
+export interface BrowserAccount {
+  account_id: string;
+  identity: Pick<Identity, "id" | "username">;
+  expires_at: string;
+}
+
+export interface BrowserAccountList {
+  accounts: BrowserAccount[];
+  default_account_id: string | null;
+}
+
+export interface LoginOptions {
+  intent?: "add_account";
+}
+
+export interface WhoamiResult {
+  session: Session;
+  /** Absent from legacy whoami responses. */
+  accountId: string | null;
 }

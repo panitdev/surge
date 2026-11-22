@@ -1,9 +1,12 @@
 import { errorFromResponse, SurgeError } from "./errors.js";
 import type {
+  BrowserAccountList,
   FactorsResult,
   Flow,
   FlowInit,
   FlowResult,
+  LoginOptions,
+  WhoamiResult,
   PassphraseLogin,
   PassphraseResult,
   PasswordSubmit,
@@ -21,6 +24,8 @@ export interface SurgeClientOptions {
    * A trailing slash is tolerated.
    */
   baseUrl: string;
+  /** Browser-local selector for account-scoped requests. */
+  accountId?: string;
   /**
    * Custom `fetch` implementation. Defaults to the global `fetch`, bound to
    * `globalThis`. Useful for tests or non-browser runtimes.
@@ -39,10 +44,12 @@ export interface SurgeClientOptions {
  */
 export class SurgeClient {
   readonly baseUrl: string;
+  private readonly accountId?: string;
   private readonly fetch: typeof fetch;
 
   constructor(options: SurgeClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, "");
+    this.accountId = options.accountId;
     this.fetch = options.fetch ?? globalThis.fetch.bind(globalThis);
   }
 
@@ -54,8 +61,15 @@ export class SurgeClient {
    * @param returnTo Absolute URL to redirect to after successful login. Its
    *   origin must be registered on the server (`svc create --origin`).
    */
-  loginUrl(returnTo: string): string {
-    return `${this.baseUrl}/v1/login?return_to=${encodeURIComponent(returnTo)}`;
+  loginUrl(returnTo: string, options?: LoginOptions): string {
+    return this.loginEndpoint(returnTo, options);
+  }
+
+  private loginEndpoint(returnTo?: string, options?: LoginOptions): string {
+    const params = new URLSearchParams();
+    if (returnTo !== undefined) params.set("return_to", returnTo);
+    if (options?.intent) params.set("intent", options.intent);
+    return `${this.baseUrl}/v1/login${params.size ? `?${params}` : ""}`;
   }
 
   /**
@@ -69,11 +83,8 @@ export class SurgeClient {
    *   post-login navigation; the flow's completion response will then
    *   carry `return_to: null`.
    */
-  async initLoginFlow(returnTo?: string): Promise<FlowInit> {
-    const url =
-      returnTo === undefined
-        ? `${this.baseUrl}/v1/login`
-        : this.loginUrl(returnTo);
+  async initLoginFlow(returnTo?: string, options?: LoginOptions): Promise<FlowInit> {
+    const url = this.loginEndpoint(returnTo, options);
     const response = await this.fetch(url, {
       headers: { Accept: "application/json" },
       credentials: "include",
@@ -165,10 +176,7 @@ export class SurgeClient {
    * (`GET /v1/factors`).
    */
   async getFactors(): Promise<FactorsResult> {
-    const response = await this.fetch(`${this.baseUrl}/v1/factors`, {
-      credentials: "include",
-    });
-    if (!response.ok) throw await errorFromResponse(response);
+    const response = await this.authed("/v1/factors", "GET");
     return (await response.json()) as FactorsResult;
   }
 
@@ -269,26 +277,44 @@ export class SurgeClient {
    * Other errors are thrown as `SurgeError`.
    */
   async whoami(): Promise<Session | null> {
+    return (await this.whoamiWithAccount())?.session ?? null;
+  }
+
+  /** Reads the session and its browser-local selector from the same response. */
+  async whoamiWithAccount(): Promise<WhoamiResult | null> {
     const response = await this.fetch(`${this.baseUrl}/v1/whoami`, {
+      headers: this.accountHeaders(),
       credentials: "include",
     });
     if (response.status === 401) return null;
     if (!response.ok) throw await errorFromResponse(response);
-    return (await response.json()) as Session;
+    return {
+      session: (await response.json()) as Session,
+      accountId: response.headers.get("X-Surge-Account"),
+    };
   }
 
-  /**
-   * Revokes the current session and clears the session cookie
-   * (`POST /v1/logout`). Idempotent — succeeds whether or not a valid
-   * session was present.
-   */
+  /** Signs out the pinned account, or the default for an unpinned client. */
   async logout(): Promise<void> {
-    const response = await this.fetch(`${this.baseUrl}/v1/logout`, {
-      method: "POST",
-      headers: { "X-Surge-CSRF": "1" },
-      credentials: "include",
-    });
-    if (!response.ok) throw await errorFromResponse(response);
+    await this.authed("/v1/logout", "POST");
+  }
+
+  async listAccounts(): Promise<BrowserAccountList> {
+    const response = await this.browserRequest("/v1/accounts", "GET");
+    return (await response.json()) as BrowserAccountList;
+  }
+
+  async setDefaultAccount(accountId: string): Promise<void> {
+    await this.browserRequest("/v1/accounts/default", "PUT", { account_id: accountId });
+  }
+
+  async removeAccount(accountId: string): Promise<void> {
+    await this.browserRequest(`/v1/accounts/${encodeURIComponent(accountId)}`, "DELETE");
+  }
+
+  /** Revokes all accounts signed in to this browser. */
+  async logoutAll(): Promise<void> {
+    await this.browserRequest("/v1/logout-all", "POST");
   }
 
   private async submitFlow<T>(
@@ -314,19 +340,27 @@ export class SurgeClient {
     return (await response.json()) as T;
   }
 
-  /**
-   * Cookie-authenticated, CSRF-guarded JSON request for the factor-management
-   * and account endpoints. Sends `X-Surge-CSRF: 1` (the header a cross-origin
-   * form post can't set) alongside the session cookie.
-   */
-  private async authed(
+  private accountHeaders(): Headers {
+    const headers = new Headers();
+    if (this.accountId !== undefined) headers.set("X-Surge-Account", this.accountId);
+    return headers;
+  }
+
+  private authed(path: string, method: "GET" | "POST" | "DELETE", body?: unknown): Promise<Response> {
+    return this.browserRequest(path, method, body, this.accountHeaders());
+  }
+
+  private async browserRequest(
     path: string,
-    method: "POST" | "DELETE",
-    body: unknown,
+    method: "GET" | "POST" | "PUT" | "DELETE",
+    body?: unknown,
+    headers = new Headers(),
   ): Promise<Response> {
+    if (method !== "GET") headers.set("X-Surge-CSRF", "1");
+    if (body !== undefined) headers.set("Content-Type", "application/json");
     const response = await this.fetch(`${this.baseUrl}${path}`, {
       method,
-      headers: { "Content-Type": "application/json", "X-Surge-CSRF": "1" },
+      headers,
       credentials: "include",
       body: JSON.stringify(body),
     });
