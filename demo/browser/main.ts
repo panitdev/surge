@@ -1,7 +1,7 @@
 import { SurgeClient } from "../../packages/surge-client/src/index";
 
 const { origin: baseUrl } = await (await fetch("/config")).json();
-// The hosted UI fills the opt-in callback fragment with the completed membership.
+// Surge fills the opt-in callback fragment with the completed membership.
 const returned = new URLSearchParams(location.hash.slice(1)).get("surge_account");
 if (returned && location.pathname === "/") {
   history.replaceState(null, "", `/u/${encodeURIComponent(returned)}/`);

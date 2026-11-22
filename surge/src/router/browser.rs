@@ -375,17 +375,9 @@ async fn start_login(
                 })
             })?;
 
-            let origin = format!(
-                "{}://{}",
-                return_url.scheme(),
-                return_url.host_str().unwrap_or("")
-            );
-            let origin_with_port = return_url.port().map(|port| format!("{origin}:{port}"));
-
-            let allowed = state.return_origins.iter().any(|o| o == &origin)
-                || origin_with_port
-                    .as_ref()
-                    .is_some_and(|o| state.return_origins.contains(o));
+            let origin = return_url.origin().ascii_serialization();
+            let allowed = matches!(return_url.scheme(), "https" | "http")
+                && (origin == state.auth_ui_origin || state.return_origins.contains(&origin));
 
             if !allowed {
                 return Err(AuthError::Validation(ValidationError::Field {
@@ -587,7 +579,26 @@ async fn finish_login(
     let policy = policy_from_status(state.factor_policy, completed.factor_status);
     let mut body = json!({ "return_to": return_to, "session": issued.session, "policy": policy });
     if let Some(account) = completed.account_id {
-        body["account_id"] = json!(account);
+        let callback = body["return_to"].as_str()
+            .and_then(|value| url::Url::parse(value).ok())
+            .filter(|url| url.fragment() == Some("surge_account"));
+        if let Some(mut url) = callback {
+            // Check after credential verification and membership attachment.
+            // A registry error withholds the selector while still delivering
+            // the cookie for the completed login.
+            let origin = url.origin().ascii_serialization();
+            let allowed = account_list_origin_allowed(state, &origin).await.unwrap_or_else(|error| {
+                tracing::warn!(%error, "could not authorize login callback account selector");
+                false
+            });
+            if allowed {
+                url.set_fragment(Some(&format!("surge_account={account}")));
+                body["return_to"] = json!(url.as_str());
+                body["account_id"] = json!(account);
+            }
+        } else {
+            body["account_id"] = json!(account);
+        }
     }
     Ok((jar, Json(body)).into_response())
 }
@@ -1038,6 +1049,13 @@ async fn whoami(State(state): State<Arc<EmbeddedState>>, resolved: ResolvedSessi
     Ok(response)
 }
 
+async fn account_list_origin_allowed(state: &EmbeddedState, origin: &str) -> Result<bool, AuthError> {
+    if origin == state.auth_ui_origin {
+        return Ok(true);
+    }
+    state.engine.can_list_accounts(origin).await
+}
+
 async fn authorize_account_list(
     State(state): State<Arc<EmbeddedState>>,
     request: axum::extract::Request,
@@ -1045,7 +1063,7 @@ async fn authorize_account_list(
 ) -> Result<Response, ApiError> {
     use http::header::*;
     let origin = cors::list_origin(request.headers(), request.uri(), state.browser_public_origin.as_deref()).ok_or(AuthError::Forbidden)?;
-    if origin != state.auth_ui_origin && !state.engine.can_list_accounts(&origin).await? {
+    if !account_list_origin_allowed(&state, &origin).await? {
         return Err(AuthError::Forbidden.into());
     }
     let mut response = next.run(request).await;
