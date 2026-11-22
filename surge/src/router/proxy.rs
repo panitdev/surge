@@ -264,7 +264,10 @@ fn surge_cookies(cookie_header: &str) -> Option<String> {
     let kept: Vec<&str> = cookie_header
         .split(';')
         .map(str::trim)
-        .filter(|pair| pair.split_once('=').is_some_and(|(name, _)| FORWARDED_COOKIES.contains(&name)))
+        .filter(|pair| {
+            let name = pair.split('=').next().unwrap_or_default().trim();
+            FORWARDED_COOKIES.contains(&name)
+        })
         .collect();
 
     if kept.is_empty() {

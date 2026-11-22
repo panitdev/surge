@@ -36,15 +36,8 @@ where
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let provider: &Arc<dyn AuthProvider> = state.as_ref();
 
-        if let Some(resolved) = parts.extensions.get::<ResolvedSession>() {
-            return Ok(AuthSession(resolved.session.clone()));
-        }
-        match resolve_request(provider.as_ref(), &parts.headers, true).await {
-            Ok(resolved) => {
-                let session = resolved.session.clone();
-                parts.extensions.insert(resolved);
-                Ok(AuthSession(session))
-            }
+        match resolve_request_parts(provider, parts, true).await {
+            Ok(resolved) => Ok(AuthSession(resolved.session)),
             Err(AuthError::InvalidToken | AuthError::SessionExpired) => Err(
                 AuthRejection::Unauthorized("invalid or expired session".into()),
             ),
@@ -68,6 +61,56 @@ pub(crate) const BROWSER_COOKIE: &str = "surge_browser";
 pub(crate) struct ResolvedSession {
     pub session: Session,
     pub account_id: Option<uuid::Uuid>,
+    cookie_authenticated: bool,
+}
+
+#[derive(Clone, Default)]
+struct SessionCache(Vec<(Arc<dyn AuthProvider>, ResolvedSession)>);
+
+pub(crate) async fn resolve_request_parts(
+    provider: &Arc<dyn AuthProvider>,
+    parts: &mut Parts,
+    allow_bearer: bool,
+) -> Result<ResolvedSession, AuthError> {
+    if let Some(cache) = parts.extensions.get::<SessionCache>() {
+        if let Some((_, resolved)) = cache.0.iter().find(|(source, resolved)| {
+            Arc::ptr_eq(source, provider) && (allow_bearer || resolved.cookie_authenticated)
+        }) {
+            return Ok(resolved.clone());
+        }
+    }
+    let resolved = resolve_request(provider.as_ref(), &parts.headers, allow_bearer).await?;
+    parts
+        .extensions
+        .get_or_insert_default::<SessionCache>()
+        .0
+        .push((provider.clone(), resolved.clone()));
+    Ok(resolved)
+}
+
+// Inspect the wire names before CookieJar drops undecodable values or fields.
+pub(crate) fn browser_cookie(
+    headers: &http::HeaderMap,
+) -> Result<Option<BrowserSessionToken>, AuthError> {
+    let mut found = None;
+    for header in headers.get_all(http::header::COOKIE) {
+        for pair in header.as_bytes().split(|byte| *byte == b';') {
+            let mut fields = pair.trim_ascii().splitn(2, |byte| *byte == b'=');
+            if fields.next().unwrap_or_default().trim_ascii() != BROWSER_COOKIE.as_bytes() {
+                continue;
+            }
+            if found.is_some() {
+                return Err(AuthError::InvalidToken);
+            }
+            let token = fields
+                .next()
+                .and_then(|raw| std::str::from_utf8(raw).ok())
+                .and_then(BrowserSessionToken::from_raw)
+                .ok_or(AuthError::InvalidToken)?;
+            found = Some(token);
+        }
+    }
+    Ok(found)
 }
 
 pub(crate) async fn resolve_request(
@@ -90,34 +133,38 @@ pub(crate) async fn resolve_request(
     if selectors.next().is_some() {
         return Err(AuthError::InvalidToken);
     }
-    if let Some(cookie) = jar.get(BROWSER_COOKIE) {
-        let token = BrowserSessionToken::from_raw(cookie.value()).ok_or(AuthError::InvalidToken)?;
+    if let Some(token) = browser_cookie(headers)? {
         let (account_id, session) = provider.resolve_browser_session(&token, selector).await?;
         return Ok(ResolvedSession {
             session,
             account_id: Some(account_id),
+            cookie_authenticated: true,
         });
     }
     if selector.is_some() {
         return Err(AuthError::InvalidToken);
     }
 
-    let session = if let Some(cookie) = jar.get("surge_session") {
-        let token = SessionToken::from_raw(cookie.value()).ok_or(AuthError::InvalidToken)?;
-        provider.verify_browser_cookie(token).await?
+    let (session, cookie_authenticated) = if let Some(cookie) = jar.get("surge_session") {
+        match SessionToken::from_raw(cookie.value()) {
+            Some(token) => (provider.verify_browser_cookie(token).await?, true),
+            None if allow_bearer => (provider.verify_session(None).await?, false),
+            None => return Err(AuthError::InvalidToken),
+        }
     } else if allow_bearer {
         let token = headers
             .get("authorization")
             .and_then(|h| h.to_str().ok())
             .and_then(|s| s.strip_prefix("Bearer "))
             .and_then(SessionToken::from_raw);
-        provider.verify_session(token).await?
+        (provider.verify_session(token).await?, false)
     } else {
         return Err(AuthError::InvalidToken);
     };
     Ok(ResolvedSession {
         session,
         account_id: None,
+        cookie_authenticated,
     })
 }
 
@@ -155,7 +202,7 @@ mod tests {
         let cookie = format!("surge_session={}", legacy.expose_secret());
         headers.insert(http::header::COOKIE, cookie.parse().unwrap());
         assert!(resolve_request(&provider, &headers, false).await.is_ok());
-        for browser in ["invalid", ""] {
+        for browser in ["invalid", "", "%ff"] {
             headers.insert(
                 http::header::COOKIE,
                 format!("{cookie}; {BROWSER_COOKIE}={browser}")
@@ -176,5 +223,76 @@ mod tests {
             resolve_request(&provider, &headers, false).await,
             Err(AuthError::InvalidToken)
         ));
+    }
+    #[tokio::test]
+    async fn malformed_browser_fields_override_legacy_credentials() {
+        let provider = TestProvider::new(TestConfig::default()).unwrap();
+        for bad in [b"surge_browser".as_slice(), b"surge_browser=\xff"] {
+            let mut headers = http::HeaderMap::new();
+            headers.append(
+                http::header::COOKIE,
+                format!("surge_session={}", SessionToken::generate().expose_secret())
+                    .parse()
+                    .unwrap(),
+            );
+            headers.append(
+                http::header::COOKIE,
+                http::HeaderValue::from_bytes(bad).unwrap(),
+            );
+            assert!(matches!(
+                resolve_request(&provider, &headers, true).await,
+                Err(AuthError::InvalidToken)
+            ));
+        }
+        let mut headers = http::HeaderMap::new();
+        headers.insert(
+            http::header::COOKIE,
+            "surge_session=malformed".parse().unwrap(),
+        );
+        assert!(resolve_request(&provider, &headers, true).await.is_ok());
+        assert!(resolve_request(&provider, &headers, false).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn cached_selection_is_scoped_to_provider_and_credential_kind() {
+        let first: Arc<dyn AuthProvider> =
+            Arc::new(TestProvider::new(TestConfig::default()).unwrap());
+        let second: Arc<dyn AuthProvider> =
+            Arc::new(TestProvider::new(TestConfig::default()).unwrap());
+        let token = SessionToken::generate();
+        let (mut parts, _) = http::Request::builder()
+            .header(
+                http::header::AUTHORIZATION,
+                format!("Bearer {}", token.expose_secret()),
+            )
+            .body(())
+            .unwrap()
+            .into_parts();
+        resolve_request_parts(&first, &mut parts, true)
+            .await
+            .unwrap();
+        assert!(resolve_request_parts(&first, &mut parts, false)
+            .await
+            .is_err());
+
+        let (mut parts, _) = http::Request::builder()
+            .header(
+                http::header::COOKIE,
+                format!("surge_session={}", token.expose_secret()),
+            )
+            .body(())
+            .unwrap()
+            .into_parts();
+        let a = resolve_request_parts(&first, &mut parts, true)
+            .await
+            .unwrap();
+        let b = resolve_request_parts(&second, &mut parts, false)
+            .await
+            .unwrap();
+        assert_ne!(a.session.id, b.session.id);
+        let again = resolve_request_parts(&first, &mut parts, false)
+            .await
+            .unwrap();
+        assert_eq!(again.session.issued_at, a.session.issued_at);
     }
 }

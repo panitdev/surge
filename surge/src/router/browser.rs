@@ -22,7 +22,7 @@ use super::csrf::check_flow_csrf;
 use super::error::ApiError;
 use super::rate_limit::RateLimiter;
 use super::trusted_proxy::{trusted_proxy, TrustedClientIp, TrustedProxyState};
-use crate::extract::{require_header_csrf, resolve_request, ACCOUNT_HEADER, BROWSER_COOKIE};
+use crate::extract::{browser_cookie, require_header_csrf, resolve_request_parts, ResolvedSession, ACCOUNT_HEADER};
 use crate::traits::AuthProvider;
 use crate::*;
 
@@ -757,11 +757,19 @@ struct ChangePassword {
     new_password: String,
 }
 
+impl FromRequestParts<Arc<EmbeddedState>> for ResolvedSession {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &Arc<EmbeddedState>) -> Result<Self, Self::Rejection> {
+        Ok(resolve_request_parts(&state.provider, parts, false).await?)
+    }
+}
+
 async fn get_factors(
     State(state): State<Arc<EmbeddedState>>,
-    headers: HeaderMap,
+    resolved: ResolvedSession,
 ) -> Result<Response, ApiError> {
-    let session = resolve_request(state.provider.as_ref(), &headers, false).await?.session;
+    let session = resolved.session;
     let policy = policy_block(&state, session.identity.id).await?;
     Ok(Json(json!({ "policy": policy })).into_response())
 }
@@ -769,10 +777,10 @@ async fn get_factors(
 async fn enroll_totp(
     State(state): State<Arc<EmbeddedState>>,
     MaybeClientIp(ip): MaybeClientIp,
-    headers: HeaderMap,
+    resolved: ResolvedSession,
     Json(body): Json<StepUp>,
 ) -> Result<Response, ApiError> {
-    let session = resolve_request(state.provider.as_ref(), &headers, false).await?.session;
+    let session = resolved.session;
     let id = session.identity.id;
     rate_limit_step_up(&state, ip, id).await?;
     state.engine.verify_step_up(id, &body.step_up).await?;
@@ -793,10 +801,10 @@ struct ConfirmTotp {
 async fn confirm_totp(
     State(state): State<Arc<EmbeddedState>>,
     MaybeClientIp(ip): MaybeClientIp,
-    headers: HeaderMap,
+    resolved: ResolvedSession,
     Json(body): Json<ConfirmTotp>,
 ) -> Result<Response, ApiError> {
-    let session = resolve_request(state.provider.as_ref(), &headers, false).await?.session;
+    let session = resolved.session;
     let id = session.identity.id;
     rate_limit_step_up(&state, ip, id).await?;
     state.engine.confirm_totp(id, &body.code).await?;
@@ -816,10 +824,10 @@ async fn confirm_totp(
 async fn remove_totp(
     State(state): State<Arc<EmbeddedState>>,
     MaybeClientIp(ip): MaybeClientIp,
-    headers: HeaderMap,
+    resolved: ResolvedSession,
     Json(body): Json<StepUp>,
 ) -> Result<Response, ApiError> {
-    let session = resolve_request(state.provider.as_ref(), &headers, false).await?.session;
+    let session = resolved.session;
     let id = session.identity.id;
     rate_limit_step_up(&state, ip, id).await?;
     state.engine.verify_step_up(id, &body.step_up).await?;
@@ -831,10 +839,10 @@ async fn remove_totp(
 async fn enroll_passphrase(
     State(state): State<Arc<EmbeddedState>>,
     MaybeClientIp(ip): MaybeClientIp,
-    headers: HeaderMap,
+    resolved: ResolvedSession,
     Json(body): Json<StepUp>,
 ) -> Result<Response, ApiError> {
-    let session = resolve_request(state.provider.as_ref(), &headers, false).await?.session;
+    let session = resolved.session;
     let id = session.identity.id;
     rate_limit_step_up(&state, ip, id).await?;
     state.engine.verify_step_up(id, &body.step_up).await?;
@@ -850,10 +858,10 @@ struct ConfirmPassphrase {
 async fn confirm_passphrase(
     State(state): State<Arc<EmbeddedState>>,
     MaybeClientIp(ip): MaybeClientIp,
-    headers: HeaderMap,
+    resolved: ResolvedSession,
     Json(body): Json<ConfirmPassphrase>,
 ) -> Result<Response, ApiError> {
-    let session = resolve_request(state.provider.as_ref(), &headers, false).await?.session;
+    let session = resolved.session;
     let id = session.identity.id;
     rate_limit_step_up(&state, ip, id).await?;
     state.engine.confirm_passphrase(id, &body.passphrase).await?;
@@ -864,10 +872,10 @@ async fn confirm_passphrase(
 async fn remove_passphrase(
     State(state): State<Arc<EmbeddedState>>,
     MaybeClientIp(ip): MaybeClientIp,
-    headers: HeaderMap,
+    resolved: ResolvedSession,
     Json(body): Json<StepUp>,
 ) -> Result<Response, ApiError> {
-    let session = resolve_request(state.provider.as_ref(), &headers, false).await?.session;
+    let session = resolved.session;
     let id = session.identity.id;
     rate_limit_step_up(&state, ip, id).await?;
     state.engine.verify_step_up(id, &body.step_up).await?;
@@ -879,10 +887,10 @@ async fn remove_passphrase(
 async fn change_password(
     State(state): State<Arc<EmbeddedState>>,
     MaybeClientIp(ip): MaybeClientIp,
-    headers: HeaderMap,
+    resolved: ResolvedSession,
     Json(body): Json<ChangePassword>,
 ) -> Result<Response, ApiError> {
-    let session = resolve_request(state.provider.as_ref(), &headers, false).await?.session;
+    let session = resolved.session;
     let id = session.identity.id;
     rate_limit_step_up(&state, ip, id).await?;
     state.engine.verify_step_up(id, &body.step_up).await?;
@@ -972,8 +980,7 @@ async fn submit_register(
 /// who am I?" call. Read-only, so no CSRF gate — it only inspects the
 /// session cookie. Cross-origin callers need `session_cors_origins`
 /// (§8.2b); same-origin frontends work with it empty.
-async fn whoami(State(state): State<Arc<EmbeddedState>>, headers: HeaderMap) -> Result<impl IntoResponse, ApiError> {
-    let resolved = resolve_request(state.provider.as_ref(), &headers, false).await?;
+async fn whoami(State(state): State<Arc<EmbeddedState>>, resolved: ResolvedSession) -> Result<impl IntoResponse, ApiError> {
     let session = resolved.session;
     let policy = policy_block(&state, session.identity.id).await?;
     let mut body = serde_json::to_value(&session).unwrap();
@@ -988,7 +995,7 @@ async fn whoami(State(state): State<Arc<EmbeddedState>>, headers: HeaderMap) -> 
 async fn logout(State(state): State<Arc<EmbeddedState>>, headers: HeaderMap) -> Result<Response, ApiError> {
     let jar = CookieJar::from_headers(&headers);
     // Only legacy cookie logout is available until membership removal is enabled.
-    if jar.get(BROWSER_COOKIE).is_some() || headers.contains_key(ACCOUNT_HEADER) {
+    if browser_cookie(&headers)?.is_some() || headers.contains_key(ACCOUNT_HEADER) {
         return Err(AuthError::InvalidToken.into());
     }
     if let Some(cookie) = jar.get("surge_session") {
