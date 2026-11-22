@@ -56,7 +56,7 @@ A compromised token with only `introspect` can verify sessions; one with `identi
 
 ### The `account_list` grant
 
-The hosted auth UI has access by default. To enable a picker in another app, register its exact browser origin with its service, for example `surge-server svc create --name app --grant account_list --origin https://app.example.com`. Revoking the service withdraws that registration immediately. The endpoint uses the browser cookie and the same origin policy for direct and proxied calls. Same-origin GETs that omit `Origin` must supply `Sec-Fetch-Site: same-origin` and a `Referer` containing the application origin. Keep the service token on the backend.
+The hosted auth UI has access by default. To enable a picker in another app, register its exact browser origin with its service, for example `surge-server svc create --name app --grant account_list --origin https://app.example.com`. Revoking the service withdraws that registration immediately. The endpoint uses the browser cookie and the same origin policy for direct and proxied calls. Same-origin GETs that omit `Origin` must supply `Sec-Fetch-Site: same-origin` and identify the application origin through `Referer` or, when it is absent, the trusted public mount origin. Keep the service token on the backend.
 
 ### The `browser_proxy` grant
 

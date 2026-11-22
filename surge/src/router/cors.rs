@@ -39,7 +39,7 @@ pub(crate) fn account_scoped(layer: CorsLayer) -> CorsLayer {
 }
 
 /// Browsers can omit Origin on a same-origin GET. In that case use only
-/// the origin of the browser-supplied referrer, never its path or query.
+/// the referrer origin or, without a referrer, the trusted mount origin.
 pub(crate) fn list_origin(
     headers: &http::HeaderMap,
     uri: &http::Uri,
