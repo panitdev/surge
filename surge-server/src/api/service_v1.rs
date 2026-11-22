@@ -66,6 +66,7 @@ async fn resolve_browser(
     require_grant(&auth, "introspect").map_err(|_| AuthError::Forbidden)?;
     let token = BrowserSessionToken::from_raw(&body.token).ok_or(AuthError::InvalidToken)?;
     let (account_id, session) = state.provider.resolve_browser_session(&token, body.account_id).await?;
+    audit_introspection(&state, auth, "resolve_browser_session", session.id).await?;
     Ok((
         [(axum::http::header::CACHE_CONTROL, "no-store")],
         Json(json!({ "account_id": account_id, "session": session })),
@@ -83,6 +84,17 @@ pub(crate) async fn verify_session(
         SessionToken::from_raw(&body.token).ok_or(AuthError::InvalidToken)?;
     let session = state.provider.verify_session(Some(token)).await?;
 
+    audit_introspection(&state, auth, "verify_session", session.id).await?;
+
+    Ok(Json(serde_json::to_value(&session).unwrap()))
+}
+
+async fn audit_introspection(
+    state: &AppState,
+    auth: ServiceAuth,
+    action: &str,
+    session_id: SessionId,
+) -> Result<(), ApiError> {
     state
         .engine
         .audit(
@@ -90,13 +102,12 @@ pub(crate) async fn verify_session(
                 id: auth.service_id.to_string(),
                 name: auth.service_name,
             },
-            "verify_session",
-            json!({"session_id": session.id.to_string()}),
+            action,
+            json!({"session_id": session_id.to_string()}),
             None,
         )
         .await?;
-
-    Ok(Json(serde_json::to_value(&session).unwrap()))
+    Ok(())
 }
 
 pub(crate) async fn revoke_session(
