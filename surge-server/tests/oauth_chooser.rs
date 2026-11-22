@@ -257,6 +257,14 @@ async fn legacy_picker_preserves_legacy_cookie_and_adopts_only_on_successful_add
                 send(&h, "/v1/whoami", &cookie, None, false).await.status(),
                 StatusCode::UNAUTHORIZED
             );
+            for uri in [
+                &uri[..],
+                uri.strip_suffix("&prompt=select_account").unwrap(),
+            ] {
+                let stale = send(&h, uri, &cookie, None, false).await;
+                assert_eq!(stale.status(), StatusCode::UNAUTHORIZED);
+                assert!(!stale.headers().contains_key("set-cookie"));
+            }
             assert_eq!(
                 body_json(send(&h, "/v1/whoami", &new_cookie, None, false).await).await["id"],
                 legacy.session.id.to_string()

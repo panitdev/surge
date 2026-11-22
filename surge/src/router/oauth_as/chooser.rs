@@ -20,10 +20,14 @@ fn chooser_credential(headers: &HeaderMap) -> Result<Option<ChooserCredential>, 
     if let Some(token) = crate::extract::browser_cookie(headers)? {
         return Ok(Some(ChooserCredential::Browser(token)));
     }
-    Ok(CookieJar::from_headers(headers)
+    CookieJar::from_headers(headers)
         .get("surge_session")
-        .and_then(|c| SessionToken::from_raw(c.value()))
-        .map(ChooserCredential::Legacy))
+        .map(|c| {
+            SessionToken::from_raw(c.value())
+                .map(ChooserCredential::Legacy)
+                .ok_or(AuthError::InvalidToken)
+        })
+        .transpose()
 }
 
 pub(super) async fn start_request(
@@ -34,16 +38,7 @@ pub(super) async fn start_request(
     scopes: &[String],
     force_picker: bool,
 ) -> Result<Response, ApiError> {
-    let existing = match chooser_credential(headers)? {
-        Some(ChooserCredential::Legacy(token)) => match state.engine.verify_session(&token).await {
-            Ok(_) => Some(ChooserCredential::Legacy(token)),
-            Err(
-                AuthError::InvalidToken | AuthError::SessionExpired | AuthError::IdentityDisabled,
-            ) => None,
-            Err(e) => return Err(e.into()),
-        },
-        existing => existing,
-    };
+    let existing = chooser_credential(headers)?;
     let mut jar = CookieJar::new();
     let token = match existing {
         Some(token) => token,

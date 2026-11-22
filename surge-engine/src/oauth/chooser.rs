@@ -1,4 +1,6 @@
-use crate::schema::{browser_session as browser, oauth_authorization_request as request};
+use crate::schema::{
+    browser_session as browser, identity, oauth_authorization_request as request, session,
+};
 use crate::{AuthError, BrowserSessionToken, Engine, FlowId, IssuedBrowserSession, SessionToken};
 use chrono::{Duration, Utc};
 use diesel::prelude::*;
@@ -61,25 +63,54 @@ impl Engine {
     }
 
     async fn chooser_owner(
-        &self,
+        conn: &mut AsyncPgConnection,
         credential: &ChooserCredential,
     ) -> Result<(Option<Uuid>, Option<Uuid>), AuthError> {
         let token = match credential {
             ChooserCredential::Browser(token) => token,
             ChooserCredential::Legacy(token) => {
-                let session = self.verify_session(token).await?;
-                return Ok((None, Some(*session.id.as_uuid())));
+                let hash = token.hash();
+                identity::table
+                    .filter(
+                        identity::id.eq_any(
+                            session::table
+                                .filter(session::token_hash.eq(&hash))
+                                .select(session::identity_id),
+                        ),
+                    )
+                    .filter(identity::state.eq("active"))
+                    .select(identity::id)
+                    .for_update()
+                    .first::<Uuid>(conn)
+                    .await
+                    .optional()?
+                    .ok_or(AuthError::InvalidToken)?;
+                let (id, expiry) = session::table
+                    .filter(session::token_hash.eq(&hash))
+                    .filter(session::revoked_at.is_null())
+                    .select((session::id, session::expires_at))
+                    .for_update()
+                    .first::<(Uuid, chrono::DateTime<Utc>)>(conn)
+                    .await
+                    .optional()?
+                    .ok_or(AuthError::InvalidToken)?;
+                if expiry <= Utc::now() {
+                    return Err(AuthError::InvalidToken);
+                }
+                return Ok((None, Some(id)));
             }
         };
         browser::table
             .filter(browser::token_hash.eq(token.hash()))
             .filter(browser::revoked_at.is_null())
             .filter(browser::expires_at.gt(Utc::now()))
-            .select(browser::id)
-            .first(&mut self.conn().await?)
+            .select((browser::id, browser::expires_at))
+            .for_update()
+            .first::<(Uuid, chrono::DateTime<Utc>)>(conn)
             .await
             .optional()?
-            .map(|id| (Some(id), None))
+            .filter(|(_, expiry)| *expiry > Utc::now())
+            .map(|(id, _)| (Some(id), None))
             .ok_or(AuthError::InvalidToken)
     }
 
@@ -88,19 +119,27 @@ impl Engine {
         credential: &ChooserCredential,
         payload: serde_json::Value,
     ) -> Result<String, AuthError> {
-        let (browser, legacy) = self.chooser_owner(credential).await?;
-        let id = FlowId::generate().to_string();
-        diesel::insert_into(request::table)
-            .values((
-                request::id.eq(&id),
-                request::browser_id.eq(browser),
-                request::legacy_id.eq(legacy),
-                request::request.eq(payload),
-                request::expires_at.eq(Utc::now() + Duration::minutes(10)),
-            ))
-            .execute(&mut self.conn().await?)
-            .await?;
-        Ok(id)
+        self.conn()
+            .await?
+            .transaction(|conn| {
+                async move {
+                    let (browser, legacy) = Self::chooser_owner(conn, credential).await?;
+                    let id = FlowId::generate().to_string();
+                    diesel::insert_into(request::table)
+                        .values((
+                            request::id.eq(&id),
+                            request::browser_id.eq(browser),
+                            request::legacy_id.eq(legacy),
+                            request::request.eq(payload),
+                            request::expires_at.eq(Utc::now() + Duration::minutes(10)),
+                        ))
+                        .execute(conn)
+                        .await?;
+                    Ok(id)
+                }
+                .scope_boxed()
+            })
+            .await
     }
 
     /// Reserve the single choice for a normal hosted login. Only that login can
@@ -111,10 +150,10 @@ impl Engine {
         id: &str,
         resume: &str,
     ) -> Result<String, AuthError> {
-        let (browser, legacy) = self.chooser_owner(credential).await?;
         let mut conn = self.conn().await?;
         conn.transaction(|conn| {
             async move {
+                let (browser, legacy) = Self::chooser_owner(conn, credential).await?;
                 lock_request(conn, id, browser, legacy, false).await?;
                 let flow = Self::insert_login_flow_conn(
                     conn,
@@ -151,10 +190,10 @@ impl Engine {
         id: &str,
         after_login: bool,
     ) -> Result<(serde_json::Value, Option<Uuid>), AuthError> {
-        let (browser, legacy) = self.chooser_owner(credential).await?;
         let mut conn = self.conn().await?;
         conn.transaction(|conn| {
             async move {
+                let (browser, legacy) = Self::chooser_owner(conn, credential).await?;
                 lock_request(conn, id, browser, legacy, after_login).await?;
                 Ok(diesel::delete(request::table.find(id))
                     .returning((request::request, request::session_id))
