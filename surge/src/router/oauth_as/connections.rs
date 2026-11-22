@@ -8,24 +8,23 @@
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
+use axum::http::HeaderMap;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use axum_extra::extract::CookieJar;
 use serde_json::json;
-use surge_engine::AuthError;
 
-use super::authorize::current_session;
 use super::AsState;
+use crate::extract::resolve_request;
 use crate::router::error::ApiError;
 
 pub(crate) async fn list_connections(
     State(state): State<Arc<AsState>>,
-    jar: CookieJar,
+    headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let session = current_session(&state, &jar)
-        .await
-        .ok_or(AuthError::InvalidToken)?;
+    let session = resolve_request(state.provider.as_ref(), &headers, false)
+        .await?
+        .session;
 
     let connections = state.engine.list_connections(session.identity.id).await?;
 
@@ -54,11 +53,11 @@ pub(crate) async fn list_connections(
 pub(crate) async fn revoke_connection(
     State(state): State<Arc<AsState>>,
     Path(client_id): Path<String>,
-    jar: CookieJar,
+    headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let session = current_session(&state, &jar)
-        .await
-        .ok_or(AuthError::InvalidToken)?;
+    let session = resolve_request(state.provider.as_ref(), &headers, false)
+        .await?
+        .session;
 
     state
         .engine

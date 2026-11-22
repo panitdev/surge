@@ -22,38 +22,138 @@ use crate::Engine;
 /// browser redirect and one back-channel exchange.
 pub const AUTHORIZATION_CODE_TTL_SECS: i64 = 60;
 
+/// Credential presented by the browser for a particular authorization.
+pub enum AuthorizationSession {
+    Legacy(SessionToken),
+    Member(BrowserSessionToken, uuid::Uuid),
+}
+
+impl AuthorizationSession {
+    pub fn account_id(&self) -> Option<uuid::Uuid> {
+        match self {
+            Self::Legacy(_) => None,
+            Self::Member(_, account_id) => Some(*account_id),
+        }
+    }
+
+    pub(super) async fn validate(
+        &self,
+        conn: &mut diesel_async::AsyncPgConnection,
+        session_id: uuid::Uuid,
+        identity_id: IdentityId,
+    ) -> Result<chrono::DateTime<Utc>, AuthError> {
+        use crate::schema::{
+            browser_session as browser, browser_session_account as member, identity, session,
+        };
+        let live_session = session::table
+            .inner_join(identity::table)
+            .filter(session::id.eq(session_id))
+            .filter(identity::id.eq(*identity_id.as_uuid()))
+            .filter(identity::state.eq("active"))
+            .filter(session::revoked_at.is_null())
+            .select(session::expires_at);
+        // Browser mutations lock the browser before touching its members.
+        // Keep those shared locks through the consent/code write.
+        let expires_at = match self {
+            Self::Legacy(token) => live_session
+                .filter(session::token_hash.eq(token.hash()))
+                .for_share()
+                .first(conn)
+                .await
+                .optional()?
+                .ok_or(AuthError::InvalidToken)?,
+            Self::Member(token, account_id) => {
+                let (browser_id, browser_expiry) = browser::table
+                    .filter(browser::token_hash.eq(token.hash()))
+                    .filter(browser::revoked_at.is_null())
+                    .select((browser::id, browser::expires_at))
+                    .for_share()
+                    .first::<(uuid::Uuid, chrono::DateTime<Utc>)>(conn)
+                    .await
+                    .optional()?
+                    .ok_or(AuthError::InvalidToken)?;
+                member::table
+                    .find((browser_id, *account_id))
+                    .filter(member::session_id.eq(session_id))
+                    .select(member::account_id)
+                    .for_share()
+                    .first::<uuid::Uuid>(conn)
+                    .await
+                    .optional()?
+                    .ok_or(AuthError::InvalidToken)?;
+                let session_expiry = live_session
+                    .for_share()
+                    .first(conn)
+                    .await
+                    .optional()?
+                    .ok_or(AuthError::InvalidToken)?;
+                browser_expiry.min(session_expiry)
+            }
+        };
+        if expires_at <= now() {
+            return Err(AuthError::InvalidToken);
+        }
+        Ok(expires_at)
+    }
+}
+
 impl Engine {
     /// Mints a code for an authorization that has already cleared every
     /// check. Returns the plaintext exactly once — only its hash is stored.
     pub async fn mint_authorization_code(
         &self,
         grant: &AuthorizationGrant,
+        binding: &AuthorizationSession,
+        consent_flow: Option<&str>,
     ) -> Result<AuthorizationCode, AuthError> {
         let code = AuthorizationCode::generate();
-        let issued_at = now();
-        let expires_at = issued_at + Duration::seconds(AUTHORIZATION_CODE_TTL_SECS);
 
         let mut conn = self.conn().await?;
-        diesel::insert_into(oauth_authorization_code::table)
-            .values(&NewOauthAuthorizationCode {
-                code_hash: code.hash(),
-                client_id: &grant.client_id,
-                identity_id: *grant.identity_id.as_uuid(),
-                session_id: grant.session_id,
-                resource_uri: &grant.resource_uri,
-                redirect_uri: &grant.redirect_uri,
-                scopes: grant.scopes.clone(),
-                code_challenge: &grant.code_challenge,
-                code_challenge_method: &grant.code_challenge_method,
-                nonce: grant.nonce.as_deref(),
-                issued_at,
-                expires_at,
-            })
-            .execute(&mut conn)
-            .await
-            .map_err(|e| AuthError::Internal(e.into()))?;
+        conn.transaction::<_, AuthError, _>(|conn| {
+            async move {
+                let session_expiry = binding
+                    .validate(conn, grant.session_id, grant.identity_id)
+                    .await?;
+                if let Some(flow_id) = consent_flow {
+                    super::consent::consume_flow(conn, flow_id).await?;
+                    super::consent::record_approval(
+                        conn,
+                        &grant.client_id,
+                        grant.identity_id,
+                        &grant.resource_uri,
+                        grant.scopes.clone(),
+                    )
+                    .await?;
+                }
+                let issued_at = now();
+                if session_expiry <= issued_at {
+                    return Err(AuthError::InvalidToken);
+                }
+                let expires_at = issued_at + Duration::seconds(AUTHORIZATION_CODE_TTL_SECS);
+                diesel::insert_into(oauth_authorization_code::table)
+                    .values(&NewOauthAuthorizationCode {
+                        code_hash: code.hash(),
+                        client_id: &grant.client_id,
+                        identity_id: *grant.identity_id.as_uuid(),
+                        session_id: grant.session_id,
+                        resource_uri: &grant.resource_uri,
+                        redirect_uri: &grant.redirect_uri,
+                        scopes: grant.scopes.clone(),
+                        code_challenge: &grant.code_challenge,
+                        code_challenge_method: &grant.code_challenge_method,
+                        nonce: grant.nonce.as_deref(),
+                        issued_at,
+                        expires_at,
+                    })
+                    .execute(conn)
+                    .await
+                    .map_err(|e| AuthError::Internal(e.into()))?;
 
-        Ok(code)
+                Ok(code)
+            }
+            .scope_boxed()
+        })
+        .await
     }
 
     /// Redeems a code for the client that presented it. Returns
@@ -157,11 +257,14 @@ pub fn verify_pkce(code_challenge: &str, method: &str, verifier: &str) -> bool {
 fn base64url(bytes: &[u8]) -> String {
     // Base64url without padding, per RFC 7636 §A. Hand-rolled to keep the
     // engine free of a base64 dependency it would otherwise use once.
-    const ALPHABET: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
-        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
         let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
         let indices = [(n >> 18) & 63, (n >> 12) & 63, (n >> 6) & 63, n & 63];
         for (i, idx) in indices.iter().enumerate() {

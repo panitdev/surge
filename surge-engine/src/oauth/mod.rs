@@ -20,7 +20,7 @@ mod resource;
 mod token;
 
 pub use client::validate_redirect_uri;
-pub use code::{verify_pkce, AUTHORIZATION_CODE_TTL_SECS};
+pub use code::{AuthorizationSession, verify_pkce, AUTHORIZATION_CODE_TTL_SECS};
 pub use consent::ConsentFlowRequest;
 pub use key::ES256;
 pub use resource::canonicalize_resource_uri;
@@ -148,6 +148,7 @@ pub struct ConsentFlow {
     pub client_id: String,
     pub identity_id: IdentityId,
     pub session_id: Uuid,
+    pub account_id: Option<Uuid>,
     pub resource_uri: String,
     pub scopes: Vec<String>,
     pub redirect_uri: String,

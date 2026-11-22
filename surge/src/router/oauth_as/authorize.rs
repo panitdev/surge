@@ -12,11 +12,14 @@ use axum::response::{IntoResponse, Redirect, Response};
 use axum_extra::extract::CookieJar;
 use serde::Deserialize;
 use surge_engine::oauth::{
-    canonicalize_resource_uri, AuthorizationGrant, ConsentFlowRequest, OauthClient, OauthResource,
+    canonicalize_resource_uri, AuthorizationGrant, AuthorizationSession, ConsentFlowRequest,
+    OauthClient, OauthResource,
 };
 use surge_engine::{AuthError, Session, SessionToken};
 
-use super::error::{authorize_error_page, authorize_error_redirect, build_redirect, OauthErrorCode};
+use super::error::{
+    authorize_error_page, authorize_error_redirect, build_redirect, OauthErrorCode,
+};
 use super::AsState;
 
 #[derive(Debug, Deserialize)]
@@ -30,16 +33,15 @@ pub(crate) struct AuthorizeQuery {
     pub code_challenge_method: Option<String>,
     pub resource: Option<String>,
     pub nonce: Option<String>,
-    /// OIDC `prompt`. Only `none` is honoured, and only to refuse: a client
-    /// that asks for no interaction gets `login_required` or
-    /// `consent_required` rather than a screen.
+    /// Browser-local selector supplied by an account-pinned application.
+    pub account_id: Option<String>,
     pub prompt: Option<String>,
 }
 
 pub(crate) async fn authorize(
     State(state): State<Arc<AsState>>,
     Query(query): Query<AuthorizeQuery>,
-    jar: CookieJar,
+    headers: axum::http::HeaderMap,
     uri: axum::http::Uri,
 ) -> Response {
     // --- Phase 1: nothing may be redirected anywhere yet. ---
@@ -109,18 +111,28 @@ pub(crate) async fn authorize(
         Err(message) => return fail(OauthErrorCode::InvalidScope, &message),
     };
 
-    // --- Phase 3: who is this? ---
-    //
-    // Re-check the session on every authorization request. The bounce carries a
-    // `return_to` pointing back at this same URL, so the round-trip re-enters
-    // here once `surge_session` is set.
-    let session = match current_session(&state, &jar).await {
-        Some(session) => session,
-        None => {
-            if query.prompt.as_deref() == Some("none") {
+    if query.account_id.is_some() && query.prompt.as_deref() == Some("select_account") {
+        return fail(
+            OauthErrorCode::InvalidRequest,
+            "account_id conflicts with prompt=select_account",
+        );
+    }
+    let selector = match query.account_id.as_deref().map(str::parse).transpose() {
+        Ok(value) => value,
+        Err(_) => {
+            return fail(
+                OauthErrorCode::LoginRequired,
+                "requested account is unavailable",
+            )
+        }
+    };
+    let (session, binding) = match resolve_authorization_session(&state, &headers, selector).await {
+        Ok(selected) => selected,
+        Err(AuthError::InvalidToken | AuthError::SessionExpired | AuthError::IdentityDisabled) => {
+            if query.account_id.is_some() || query.prompt.as_deref() == Some("none") {
                 return fail(
                     OauthErrorCode::LoginRequired,
-                    "no active session and prompt=none was requested",
+                    "requested account is unavailable",
                 );
             }
             let self_url = format!("{}{}", state.issuer(), uri);
@@ -131,6 +143,7 @@ pub(crate) async fn authorize(
             );
             return Redirect::to(&login).into_response();
         }
+        Err(error) => return fail(OauthErrorCode::ServerError, &error.to_string()),
     };
 
     // --- Phase 4: consent. ---
@@ -139,7 +152,11 @@ pub(crate) async fn authorize(
     } else {
         match state
             .engine
-            .find_consent(&client.client_id, session.identity.id, &resource.resource_uri)
+            .find_consent(
+                &client.client_id,
+                session.identity.id,
+                &resource.resource_uri,
+            )
             .await
         {
             Ok(Some(consent)) => !scopes.iter().all(|s| consent.scopes.contains(s)),
@@ -162,6 +179,7 @@ pub(crate) async fn authorize(
                 client_id: client.client_id.clone(),
                 identity_id: session.identity.id,
                 session_id: *session.id.as_uuid(),
+                account_id: binding.account_id(),
                 resource_uri: resource.resource_uri.clone(),
                 scopes: scopes.clone(),
                 redirect_uri: redirect_uri.to_string(),
@@ -197,9 +215,13 @@ pub(crate) async fn authorize(
         nonce: query.nonce.clone(),
     };
 
-    match issue_code_redirect(&state, &grant, query.state.as_deref()).await {
+    match issue_code_redirect(&state, &grant, &binding, None, query.state.as_deref()).await {
         Ok(response) => response,
-        Err(message) => fail(OauthErrorCode::ServerError, &message),
+        Err(AuthError::InvalidToken) => fail(
+            OauthErrorCode::LoginRequired,
+            "requested account is unavailable",
+        ),
+        Err(error) => fail(OauthErrorCode::ServerError, &error.to_string()),
     }
 }
 
@@ -208,13 +230,14 @@ pub(crate) async fn authorize(
 pub(crate) async fn issue_code_redirect(
     state: &AsState,
     grant: &AuthorizationGrant,
+    binding: &AuthorizationSession,
+    consent_flow: Option<&str>,
     oauth_state: Option<&str>,
-) -> Result<Response, String> {
+) -> Result<Response, AuthError> {
     let code = state
         .engine
-        .mint_authorization_code(grant)
-        .await
-        .map_err(|e| e.to_string())?;
+        .mint_authorization_code(grant, binding, consent_flow)
+        .await?;
 
     // Best-effort: this only feeds the unused-client sweep, and failing an
     // otherwise-good authorization over it would be absurd.
@@ -228,7 +251,9 @@ pub(crate) async fn issue_code_redirect(
             q.append_pair("state", state);
         }
     })
-    .ok_or_else(|| "registered redirect_uri failed to parse".to_string())?;
+    .ok_or_else(|| {
+        AuthError::Internal(anyhow::anyhow!("registered redirect_uri failed to parse"))
+    })?;
 
     Ok(Redirect::to(&url).into_response())
 }
@@ -317,10 +342,28 @@ pub(crate) fn resolve_scopes(
     Ok(requested)
 }
 
-pub(crate) async fn current_session(state: &AsState, jar: &CookieJar) -> Option<Session> {
-    let cookie = jar.get("surge_session")?;
-    let token = SessionToken::from_raw(cookie.value())?;
-    state.provider.verify_session(Some(token)).await.ok()
+pub(crate) async fn resolve_authorization_session(
+    state: &AsState,
+    headers: &axum::http::HeaderMap,
+    selector: Option<uuid::Uuid>,
+) -> Result<(Session, AuthorizationSession), AuthError> {
+    if let Some(token) = crate::extract::browser_cookie(headers)? {
+        let (account_id, session) = state
+            .provider
+            .resolve_browser_session(&token, selector)
+            .await?;
+        return Ok((session, AuthorizationSession::Member(token, account_id)));
+    }
+    if selector.is_some() {
+        return Err(AuthError::InvalidToken);
+    }
+    let jar = CookieJar::from_headers(headers);
+    let token = jar
+        .get("surge_session")
+        .and_then(|cookie| SessionToken::from_raw(cookie.value()))
+        .ok_or(AuthError::InvalidToken)?;
+    let session = state.provider.verify_browser_cookie(token.clone()).await?;
+    Ok((session, AuthorizationSession::Legacy(token)))
 }
 
 pub(crate) fn percent_encode(s: &str) -> String {

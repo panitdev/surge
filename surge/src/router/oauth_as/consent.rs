@@ -10,15 +10,15 @@
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
+use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use axum_extra::extract::CookieJar;
 use serde::Deserialize;
 use serde_json::json;
 use surge_engine::oauth::{AuthorizationGrant, RegistrationSource};
 use surge_engine::AuthError;
 
-use super::authorize::{current_session, issue_code_redirect};
+use super::authorize::{issue_code_redirect, resolve_authorization_session};
 use super::error::{build_redirect, OauthErrorCode};
 use super::AsState;
 use crate::router::error::ApiError;
@@ -26,18 +26,13 @@ use crate::router::error::ApiError;
 pub(crate) async fn get_consent_flow(
     State(state): State<Arc<AsState>>,
     Path(flow_id): Path<String>,
-    jar: CookieJar,
+    headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let flow = state.engine.get_consent_flow(&flow_id).await?;
 
     // The flow belongs to whoever was signed in when it was created. Reading
     // it as anyone else would leak which apps another person is connecting.
-    let session = current_session(&state, &jar)
-        .await
-        .ok_or(AuthError::InvalidToken)?;
-    if session.identity.id != flow.identity_id {
-        return Err(AuthError::Forbidden.into());
-    }
+    verify_flow_session(&state, &headers, &flow).await?;
 
     let client = state.engine.get_oauth_client(&flow.client_id).await?;
     let resource = state.engine.get_oauth_resource(&flow.resource_uri).await?;
@@ -93,22 +88,17 @@ pub(crate) struct ConsentDecision {
 pub(crate) async fn decide_consent_flow(
     State(state): State<Arc<AsState>>,
     Path(flow_id): Path<String>,
-    jar: CookieJar,
+    headers: HeaderMap,
     Json(decision): Json<ConsentDecision>,
 ) -> Result<Response, ApiError> {
     let flow = state.engine.get_consent_flow(&flow_id).await?;
 
-    let session = current_session(&state, &jar)
-        .await
-        .ok_or(AuthError::InvalidToken)?;
-    if session.identity.id != flow.identity_id {
-        return Err(AuthError::Forbidden.into());
-    }
+    let binding = verify_flow_session(&state, &headers, &flow).await?;
     crate::router::csrf::check_flow_csrf(&flow.csrf_token, &decision.csrf_token)?;
 
     if !decision.approve {
         // Denial is an answer, so the flow is spent either way.
-        state.engine.decide_consent_flow(&flow_id).await?;
+        state.engine.deny_consent_flow(&flow, &binding).await?;
         let redirect = build_redirect(&flow.redirect_uri, |q| {
             q.append_pair("error", OauthErrorCode::AccessDenied.as_str());
             q.append_pair("error_description", "the user denied this request");
@@ -135,20 +125,6 @@ pub(crate) async fn decide_consent_flow(
         None => flow.scopes.clone(),
     };
 
-    // Consume the flow before minting anything: an approve that could be
-    // replayed is a code-minting oracle.
-    let flow = state.engine.decide_consent_flow(&flow_id).await?;
-
-    state
-        .engine
-        .record_consent(
-            &flow.client_id,
-            flow.identity_id,
-            &flow.resource_uri,
-            approved.clone(),
-        )
-        .await?;
-
     let grant = AuthorizationGrant {
         client_id: flow.client_id.clone(),
         identity_id: flow.identity_id,
@@ -163,9 +139,14 @@ pub(crate) async fn decide_consent_flow(
 
     // The UI navigates the browser itself, so the redirect target comes back
     // as JSON rather than as a 303 the fetch() would have to follow.
-    let response = issue_code_redirect(&state, &grant, flow.state.as_deref())
-        .await
-        .map_err(|e| AuthError::Internal(anyhow::anyhow!(e)))?;
+    let response = issue_code_redirect(
+        &state,
+        &grant,
+        &binding,
+        Some(&flow.id),
+        flow.state.as_deref(),
+    )
+    .await?;
 
     let redirect_to = response
         .headers()
@@ -175,4 +156,19 @@ pub(crate) async fn decide_consent_flow(
         .ok_or_else(|| AuthError::Internal(anyhow::anyhow!("no redirect target was built")))?;
 
     Ok(Json(json!({ "redirect_to": redirect_to })).into_response())
+}
+
+async fn verify_flow_session(
+    state: &AsState,
+    headers: &HeaderMap,
+    flow: &surge_engine::oauth::ConsentFlow,
+) -> Result<surge_engine::oauth::AuthorizationSession, ApiError> {
+    let (session, binding) = resolve_authorization_session(state, headers, flow.account_id).await?;
+    if session.identity.id != flow.identity_id
+        || *session.id.as_uuid() != flow.session_id
+        || binding.account_id() != flow.account_id
+    {
+        return Err(AuthError::Forbidden.into());
+    }
+    Ok(binding)
 }

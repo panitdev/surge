@@ -165,6 +165,7 @@ diesel::table! {
         client_id -> Text,
         identity_id -> Uuid,
         session_id -> Uuid,
+        account_id -> Nullable<Uuid>,
         resource_uri -> Text,
         scopes -> Array<Text>,
         redirect_uri -> Text,

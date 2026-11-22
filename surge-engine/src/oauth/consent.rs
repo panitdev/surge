@@ -13,7 +13,7 @@ use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_async::{AsyncConnection, RunQueryDsl};
 
 use super::client::row_to_client;
-use super::{now, ConsentFlow, ConsentGrant, Connection};
+use super::{now, Connection, ConsentFlow, ConsentGrant};
 use crate::models::{
     NewOauthConsent, NewOauthConsentFlow, OauthClientRow, OauthConsentFlowRow, OauthConsentRow,
 };
@@ -26,52 +26,70 @@ use crate::Engine;
 /// after the user has walked away from it.
 const CONSENT_FLOW_TTL_MINUTES: i64 = 10;
 
-impl Engine {
-    /// Records approval. Re-approving replaces the scope set rather than
-    /// unioning it: the screen the user just read is the whole agreement, so
-    /// a later narrower approval must actually narrow.
-    pub async fn record_consent(
-        &self,
-        client_id: &str,
-        identity_id: IdentityId,
-        resource_uri: &str,
-        scopes: Vec<String>,
-    ) -> Result<ConsentGrant, AuthError> {
-        let granted_at = now();
-        let mut conn = self.conn().await?;
+/// Records approval. Re-approving replaces the scope set rather than
+/// unioning it: the screen the user just read is the whole agreement, so
+/// a later narrower approval must actually narrow.
+pub(super) async fn record_approval(
+    conn: &mut diesel_async::AsyncPgConnection,
+    client_id: &str,
+    identity_id: IdentityId,
+    resource_uri: &str,
+    scopes: Vec<String>,
+) -> Result<ConsentGrant, AuthError> {
+    let granted_at = now();
 
-        diesel::insert_into(oauth_consent::table)
-            .values(&NewOauthConsent {
-                client_id,
-                identity_id: *identity_id.as_uuid(),
-                resource_uri,
-                scopes: scopes.clone(),
-                granted_at,
-            })
-            .on_conflict((
-                oauth_consent::client_id,
-                oauth_consent::identity_id,
-                oauth_consent::resource_uri,
-            ))
-            .do_update()
-            .set((
-                oauth_consent::scopes.eq(scopes.clone()),
-                oauth_consent::granted_at.eq(granted_at),
-                oauth_consent::revoked_at.eq(None::<chrono::DateTime<Utc>>),
-            ))
-            .execute(&mut conn)
-            .await
-            .map_err(|e| AuthError::Internal(e.into()))?;
-
-        Ok(ConsentGrant {
-            client_id: client_id.to_string(),
-            identity_id,
-            resource_uri: resource_uri.to_string(),
-            scopes,
+    diesel::insert_into(oauth_consent::table)
+        .values(&NewOauthConsent {
+            client_id,
+            identity_id: *identity_id.as_uuid(),
+            resource_uri,
+            scopes: scopes.clone(),
             granted_at,
         })
-    }
+        .on_conflict((
+            oauth_consent::client_id,
+            oauth_consent::identity_id,
+            oauth_consent::resource_uri,
+        ))
+        .do_update()
+        .set((
+            oauth_consent::scopes.eq(scopes.clone()),
+            oauth_consent::granted_at.eq(granted_at),
+            oauth_consent::revoked_at.eq(None::<chrono::DateTime<Utc>>),
+        ))
+        .execute(conn)
+        .await
+        .map_err(|e| AuthError::Internal(e.into()))?;
 
+    Ok(ConsentGrant {
+        client_id: client_id.to_string(),
+        identity_id,
+        resource_uri: resource_uri.to_string(),
+        scopes,
+        granted_at,
+    })
+}
+
+pub(super) async fn consume_flow(
+    conn: &mut diesel_async::AsyncPgConnection,
+    id: &str,
+) -> Result<(), AuthError> {
+    let changed = diesel::update(
+        oauth_consent_flow::table
+            .find(id)
+            .filter(oauth_consent_flow::decided_at.is_null())
+            .filter(oauth_consent_flow::expires_at.gt(diesel::dsl::now)),
+    )
+    .set(oauth_consent_flow::decided_at.eq(diesel::dsl::now))
+    .execute(conn)
+    .await?;
+    if changed == 0 {
+        return Err(AuthError::SessionExpired);
+    }
+    Ok(())
+}
+
+impl Engine {
     /// The live consent for one (client, identity, resource), if any.
     pub async fn find_consent(
         &self,
@@ -185,7 +203,10 @@ impl Engine {
         .await
     }
 
-    pub async fn create_consent_flow(&self, flow: ConsentFlowRequest) -> Result<ConsentFlow, AuthError> {
+    pub async fn create_consent_flow(
+        &self,
+        flow: ConsentFlowRequest,
+    ) -> Result<ConsentFlow, AuthError> {
         let id = FlowId::generate();
         let csrf = FlowId::generate();
         let created_at = now();
@@ -198,6 +219,7 @@ impl Engine {
                 client_id: &flow.client_id,
                 identity_id: *flow.identity_id.as_uuid(),
                 session_id: flow.session_id,
+                account_id: flow.account_id,
                 resource_uri: &flow.resource_uri,
                 scopes: flow.scopes.clone(),
                 redirect_uri: &flow.redirect_uri,
@@ -218,6 +240,7 @@ impl Engine {
             client_id: flow.client_id,
             identity_id: flow.identity_id,
             session_id: flow.session_id,
+            account_id: flow.account_id,
             resource_uri: flow.resource_uri,
             scopes: flow.scopes,
             redirect_uri: flow.redirect_uri,
@@ -248,37 +271,18 @@ impl Engine {
         Ok(row_to_consent_flow(row))
     }
 
-    /// Marks a consent flow decided and returns it. Single-use, settled in
-    /// the database: the approve step mints a code, and a flow that could be
-    /// submitted twice is a code-minting oracle.
-    pub async fn decide_consent_flow(&self, id: &str) -> Result<ConsentFlow, AuthError> {
-        let id = id.to_string();
+    pub async fn deny_consent_flow(
+        &self,
+        flow: &ConsentFlow,
+        binding: &super::AuthorizationSession,
+    ) -> Result<(), AuthError> {
         let mut conn = self.conn().await?;
-
         conn.transaction::<_, AuthError, _>(|conn| {
             async move {
-                let row: OauthConsentFlowRow = oauth_consent_flow::table
-                    .find(&id)
-                    .select(OauthConsentFlowRow::as_select())
-                    .for_update()
-                    .first(conn)
-                    .await
-                    .map_err(|e| match e {
-                        diesel::result::Error::NotFound => AuthError::NotFound,
-                        other => AuthError::Internal(other.into()),
-                    })?;
-
-                if row.decided_at.is_some() || row.expires_at < Utc::now() {
-                    return Err(AuthError::SessionExpired);
-                }
-
-                diesel::update(oauth_consent_flow::table.find(&id))
-                    .set(oauth_consent_flow::decided_at.eq(Utc::now()))
-                    .execute(conn)
-                    .await
-                    .map_err(|e| AuthError::Internal(e.into()))?;
-
-                Ok(row_to_consent_flow(row))
+                binding
+                    .validate(conn, flow.session_id, flow.identity_id)
+                    .await?;
+                consume_flow(conn, &flow.id).await
             }
             .scope_boxed()
         })
@@ -287,11 +291,12 @@ impl Engine {
 
     pub async fn gc_expired_consent_flows(&self) -> Result<u64, AuthError> {
         let mut conn = self.conn().await?;
-        let deleted =
-            diesel::delete(oauth_consent_flow::table.filter(oauth_consent_flow::expires_at.lt(Utc::now())))
-                .execute(&mut conn)
-                .await
-                .map_err(|e| AuthError::Internal(e.into()))?;
+        let deleted = diesel::delete(
+            oauth_consent_flow::table.filter(oauth_consent_flow::expires_at.lt(Utc::now())),
+        )
+        .execute(&mut conn)
+        .await
+        .map_err(|e| AuthError::Internal(e.into()))?;
         Ok(deleted as u64)
     }
 }
@@ -302,6 +307,7 @@ pub struct ConsentFlowRequest {
     pub client_id: String,
     pub identity_id: IdentityId,
     pub session_id: uuid::Uuid,
+    pub account_id: Option<uuid::Uuid>,
     pub resource_uri: String,
     pub scopes: Vec<String>,
     pub redirect_uri: String,
@@ -317,6 +323,7 @@ fn row_to_consent_flow(row: OauthConsentFlowRow) -> ConsentFlow {
         client_id: row.client_id,
         identity_id: IdentityId::from_uuid(row.identity_id),
         session_id: row.session_id,
+        account_id: row.account_id,
         resource_uri: row.resource_uri,
         scopes: row.scopes,
         redirect_uri: row.redirect_uri,
