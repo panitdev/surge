@@ -34,10 +34,12 @@ async function authorize() {
 if (location.pathname === "/oauth/callback") {
   element("login").hidden = true;
   element("session").textContent = "Completing authorization…";
-  await run(async () => {
+  let returnPath: string | undefined;
+  try {
     const params = new URLSearchParams(location.search);
     const saved = JSON.parse(sessionStorage.getItem(transactionKey) || "null");
     if (!saved || params.get("state") !== saved.state) throw new Error("Unknown authorization response.");
+    returnPath = saved.accountId ? path(saved.accountId) : "/";
     sessionStorage.removeItem(transactionKey);
     history.replaceState(null, "", callback);
     const code = params.get("code");
@@ -48,11 +50,16 @@ if (location.pathname === "/oauth/callback") {
     });
     if (!response.ok) throw new Error("Could not exchange the authorization code.");
     element("session").textContent = "Authorization complete.";
+  } catch (err) {
+    element("session").textContent = "Authorization failed.";
+    element("error").textContent = err instanceof Error ? err.message : "Unknown error.";
+  }
+  if (returnPath) {
     const link = document.createElement("a");
-    link.href = saved.accountId ? path(saved.accountId) : "/";
+    link.href = returnPath;
     link.textContent = "Return to account";
     element("session").append(" ", link);
-  });
+  }
 } else {
   await showAccounts();
 }
