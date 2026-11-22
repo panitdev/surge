@@ -290,6 +290,7 @@ mod tests {
             .create_browser_login_flow(None, true, Some(&browser.token), None)
             .await
             .is_err());
+        engine.gc_expired_sessions().await.unwrap();
         let flow = engine
             .create_browser_login_flow(None, true, None, Some(&other_device.token))
             .await

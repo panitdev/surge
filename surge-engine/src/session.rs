@@ -108,29 +108,50 @@ impl Engine {
 
         conn.transaction::<_, AuthError, _>(|conn| {
             async move {
-                use crate::schema::browser_session;
+                use crate::schema::{browser_session, browser_session_account as member};
+
+                // All membership mutations take the browser lock first. Restrict
+                // the sweep to these IDs even if another row becomes stale later.
+                let stale_members = member::table
+                    .inner_join(session::table.inner_join(identity::table))
+                    .filter(session::expires_at.le(now)
+                        .or(session::revoked_at.is_not_null())
+                        .or(identity::state.ne("active")))
+                    .select(member::browser_session_id);
+                let browsers = browser_session::table
+                    .filter(browser_session::expires_at.le(now)
+                        .or(browser_session::revoked_at.is_not_null())
+                        .or(browser_session::id.eq_any(stale_members)))
+                    .order(browser_session::id)
+                    .select(browser_session::id)
+                    .for_update()
+                    .skip_locked()
+                    .load::<uuid::Uuid>(conn)
+                    .await?;
 
                 diesel::delete(
                     browser_session::table
-                        .filter(browser_session::expires_at.le(now))
-                        .or_filter(browser_session::revoked_at.is_not_null()),
+                        .filter(browser_session::id.eq_any(&browsers))
+                        .filter(browser_session::expires_at.le(now).or(browser_session::revoked_at.is_not_null())),
                 )
                 .execute(conn)
                 .await?;
 
-                // The session and browser foreign keys prune their memberships.
-                // Disabled identities retain their session rows for existing callers.
                 diesel::sql_query(
-                    "DELETE FROM surge.browser_session_account a USING surge.identity i
-                     WHERE a.identity_id = i.id AND i.state = 'disabled'",
+                    "DELETE FROM surge.browser_session_account a USING surge.session s, surge.identity i
+                     WHERE a.browser_session_id = ANY($1) AND a.session_id = s.id
+                       AND a.identity_id = i.id
+                       AND (i.state <> 'active' OR s.expires_at <= $2 OR s.revoked_at IS NOT NULL)",
                 )
+                .bind::<diesel::sql_types::Array<diesel::sql_types::Uuid>, _>(&browsers)
+                .bind::<diesel::sql_types::Timestamptz, _>(now)
                 .execute(conn)
                 .await?;
 
                 let deleted = diesel::delete(
                     session::table
-                        .filter(session::expires_at.le(now))
-                        .or_filter(session::revoked_at.is_not_null()),
+                        .filter(session::expires_at.le(now).or(session::revoked_at.is_not_null()))
+                        .filter(session::id.ne_all(member::table.select(member::session_id))),
                 )
                 .execute(conn)
                 .await?;
