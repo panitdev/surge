@@ -88,10 +88,6 @@ pub struct BrowserRouterConfig {
     /// redirecting to `auth_ui_origin`. Required for served+inline
     /// (architecture.md §6).
     pub allow_inline: Option<bool>,
-    /// Opt-in Hydra login/consent bridge
-    /// (`docs/integration/hydra-oauth-bridge.md`). Superseded by `oauth_as`
-    /// below, but kept working for the duration of a cutover.
-    pub oauth_bridge: Option<super::OauthBridgeConfig>,
     /// Opt-in native OAuth 2.1 / OIDC authorization server
     /// (internal/oauth-as.md). Unset means no `/oauth2/*` routes, no signing
     /// key ever generated, and no behavior change.
@@ -136,9 +132,6 @@ pub(crate) fn embedded_browser_router(
     provider: Arc<dyn AuthProvider>,
     config: BrowserRouterConfig,
 ) -> Router {
-    let oauth_bridge = config.oauth_bridge.clone();
-    #[cfg(feature = "oauth-as")]
-    let oauth_as = config.oauth_as.clone();
     let state = Arc::new(EmbeddedState {
         auth_ui_origin: config.auth_ui_origin.clone(),
         session_cors_origins: config.session_cors_origins,
@@ -152,20 +145,12 @@ pub(crate) fn embedded_browser_router(
         engine,
         provider: Arc::clone(&provider),
     });
-    let mut v1 = V1Router::new(Arc::clone(&state)).into_router();
-    if let Some(bridge_config) = oauth_bridge {
-        v1 = v1.merge(super::oauth_bridge::router(
-            Arc::clone(&provider),
-            bridge_config,
-        ));
-    }
+    let v1 = V1Router::new(Arc::clone(&state)).into_router();
 
     // The AS mounts two halves: its own browser API under `/v1`, and the
     // OAuth wire protocol at the origin root (see `router::oauth_as`).
     #[cfg(feature = "oauth-as")]
-    let mut oauth_as_root = Router::new();
-    #[cfg(feature = "oauth-as")]
-    if let Some(as_config) = oauth_as {
+    let (v1, oauth_as_root) = if let Some(as_config) = config.oauth_as.as_ref() {
         let as_state = Arc::new(super::oauth_as::AsState {
             engine: Arc::clone(&state.engine),
             provider: Arc::clone(&provider),
@@ -177,9 +162,13 @@ pub(crate) fn embedded_browser_router(
         } else {
             cors::union(&state.session_cors_origins)
         };
-        v1 = v1.merge(super::oauth_as::v1_router(Arc::clone(&as_state), session_cors));
-        oauth_as_root = super::oauth_as::root_router(as_state);
-    }
+        (
+            v1.merge(super::oauth_as::v1_router(Arc::clone(&as_state), session_cors)),
+            super::oauth_as::root_router(as_state),
+        )
+    } else {
+        (v1, Router::new())
+    };
 
     // Outside both CORS zones: it resolves who the caller is on behalf of
     // before any handler reads a rate-limit key.

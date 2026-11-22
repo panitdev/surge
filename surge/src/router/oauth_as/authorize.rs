@@ -111,8 +111,7 @@ pub(crate) async fn authorize(
 
     // --- Phase 3: who is this? ---
     //
-    // Re-checked on every authorize rather than trusting any remembered
-    // state, exactly as the Hydra bridge does. The bounce carries a
+    // Re-check the session on every authorization request. The bounce carries a
     // `return_to` pointing back at this same URL, so the round-trip re-enters
     // here once `surge_session` is set.
     let session = match current_session(&state, &jar).await {

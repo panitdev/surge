@@ -59,10 +59,8 @@ fn check_startup_coherence(
     }
 
     if let Some(oauth) = &config.oauth_as {
-        // Same trap the Hydra bridge check guards: the authorize handler
-        // bounces through `GET /v1/login?return_to=<self>`, so an issuer that
-        // is not a registered return origin makes every authorization fail
-        // return_to validation — after the user has already signed in.
+        // The authorize handler bounces through `GET /v1/login?return_to=<self>`,
+        // which validates the issuer against the registered return origins.
         if !return_origins.iter().any(|o| o == &oauth.issuer) {
             anyhow::bail!(
                 "SURGE_OAUTH_ISSUER ({}) is not among registered return_origins; the \
@@ -87,26 +85,6 @@ fn check_startup_coherence(
                  unauthenticated by specification. It is rate-limited per IP and its clients are \
                  always untrusted, third-party, and consent-gated — but this is the largest \
                  abuse surface the server exposes."
-            );
-        }
-
-        if config.hydra_bridge.is_some() {
-            warn!(
-                "both SURGE_HYDRA_ADMIN_URL and SURGE_OAUTH_ISSUER are set. That is a legitimate \
-                 migration state (internal/oauth-as.md §9) but not a steady one: finish the \
-                 cutover and unset SURGE_HYDRA_ADMIN_URL."
-            );
-        }
-    }
-
-    if let Some(bridge) = &config.hydra_bridge {
-        if !return_origins.iter().any(|o| o == &bridge.bridge_origin) {
-            anyhow::bail!(
-                "SURGE_HYDRA_ADMIN_URL is set but SURGE_HYDRA_BRIDGE_ORIGIN ({}) is not among \
-                 registered return_origins; the bridge's own return_to callback would be \
-                 rejected by GET /v1/login's origin check, silently breaking every login \
-                 challenge. Register it with `surge-server svc create --origin`.",
-                bridge.bridge_origin
             );
         }
     }
@@ -142,14 +120,6 @@ pub async fn router(
         RateLimitConfig::default(),
     ));
 
-    let oauth_bridge = config.hydra_bridge.as_ref().map(|bridge| {
-        surge::router::OauthBridgeConfig {
-            hydra_admin_url: bridge.admin_url.clone(),
-            hydra_admin_timeout: bridge.admin_timeout,
-            bridge_origin: bridge.bridge_origin.clone(),
-        }
-    });
-
     let oauth_as = config.oauth_as.as_ref().map(|oauth| surge::router::OauthAsConfig {
         issuer: oauth.issuer.clone(),
         auth_ui_origin: config.auth_ui_origin.clone(),
@@ -173,7 +143,6 @@ pub async fn router(
         registration: Some(config.registration),
         factor_policy: Some(config.factor_policy),
         allow_inline: Some(config.allow_served_inline),
-        oauth_bridge,
         oauth_as,
         // Mounting the router starts the sweep.
         maintenance_interval: None,

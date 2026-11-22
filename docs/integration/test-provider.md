@@ -79,7 +79,6 @@ let app = Router::new()
         registration: None,
         factor_policy: None,
         allow_inline: None,
-        oauth_bridge: None,
         maintenance_interval: None,
     }));
 ```

@@ -133,7 +133,6 @@ pub async fn harness_with(tune: impl FnOnce(OauthAsSettings) -> OauthAsSettings)
         factor_policy: surge::router::FactorPolicy::None,
         session_cors_origins: vec![],
         allow_served_inline: true,
-        hydra_bridge: None,
         oauth_as: Some(settings),
     });
 

@@ -88,7 +88,6 @@ async fn listening_as() -> (String, Arc<surge_engine::Engine>, axum::Router, Str
         factor_policy: surge::router::FactorPolicy::None,
         session_cors_origins: vec![],
         allow_served_inline: true,
-        hydra_bridge: None,
         oauth_as: Some(OauthAsSettings {
             issuer: issuer.clone(),
             access_ttl: Duration::from_secs(600),

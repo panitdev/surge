@@ -23,9 +23,6 @@ Here is the complete reference:
 | `SURGE_REGISTRATION` | `open` | Registration mode (`open`, `invite`, `closed`) |
 | `SURGE_SESSION_CORS_ORIGINS` | empty | Comma-separated origins for credentialed CORS |
 | `SURGE_ALLOW_SERVED_INLINE` | `false` | Allow inline flow-init on served deployments |
-| `SURGE_HYDRA_ADMIN_URL` | (unset) | Ory Hydra admin API base URL; setting this enables the Hydra login/consent bridge |
-| `SURGE_HYDRA_BRIDGE_ORIGIN` | (required if `SURGE_HYDRA_ADMIN_URL` is set) | This server's own public origin for the bridge's `return_to` callback |
-| `SURGE_HYDRA_ADMIN_TIMEOUT_SECS` | `10` | Timeout in seconds for Hydra admin API requests |
 | `SURGE_OAUTH_ISSUER` | (unset) | This server's public origin; setting it enables the native OAuth authorization server |
 | `SURGE_OAUTH_ACCESS_TTL_SECS` | `600` | Access-token lifetime — also the offline revocation window |
 | `SURGE_OAUTH_REFRESH_TTL_DAYS` | `30` | Refresh-token lifetime |
@@ -190,28 +187,9 @@ export SURGE_OAUTH_ACCESS_TTL_SECS=600
 export SURGE_OAUTH_ALLOW_DYNAMIC_REGISTRATION=0
 ```
 
-Startup refuses to proceed unless the issuer is among the registered return origins (the authorize endpoint re-enters `GET /v1/login?return_to=<self>`, which would otherwise be rejected after the user has already signed in), and unless it is `https` on a non-loopback bind. It warns when no audiences are registered, when dynamic registration is open, and when the Hydra bridge is enabled at the same time.
+The issuer must be a registered return origin because the authorize endpoint re-enters `GET /v1/login?return_to=<self>`. Startup also requires an `https` issuer on a non-loopback bind. It warns when no audiences are registered or when dynamic registration is enabled.
 
 Two of these are security parameters rather than preferences. `SURGE_OAUTH_ACCESS_TTL_SECS` is the revocation window for any resource server that verifies tokens offline. `SURGE_OAUTH_ALLOW_DYNAMIC_REGISTRATION` opens an endpoint that is unauthenticated by specification — never enable it without a working consent screen.
-
-## Hydra OAuth bridge (`SURGE_HYDRA_ADMIN_URL`, `SURGE_HYDRA_BRIDGE_ORIGIN`, `SURGE_HYDRA_ADMIN_TIMEOUT_SECS`)
-
-The Hydra login/consent bridge connects Surge to Ory Hydra as an OAuth 2.1 authorization server. It is opt-in — setting `SURGE_HYDRA_ADMIN_URL` is the on-switch; when unset, no bridge routes are mounted and Hydra is never contacted.
-
-```bash
-# Enable the bridge (all three are needed together)
-export SURGE_HYDRA_ADMIN_URL="http://hydra:4434"
-export SURGE_HYDRA_BRIDGE_ORIGIN="https://auth.example.com"
-export SURGE_HYDRA_ADMIN_TIMEOUT_SECS=10
-```
-
-`SURGE_HYDRA_ADMIN_URL` must point at Hydra's admin API (typically port `4434`, not the public port `4433`). `SURGE_HYDRA_BRIDGE_ORIGIN` is this server's own public origin — it must match a registered return origin or startup coherence will reject it with a hard error. `SURGE_HYDRA_ADMIN_TIMEOUT_SECS` controls the timeout for outbound requests to Hydra (default 10 seconds).
-
-The bridge mounts two routes:
-- `GET /v1/oauth/login` — handles Hydra login challenges
-- `GET /v1/oauth/consent` — handles Hydra consent challenges (auto-accepted for first-party clients)
-
-See [Hydra OAuth Bridge](/integration/hydra-oauth-bridge) for the full request-flow walkthrough, subject-identity and cookie-separation guarantees, and non-goals.
 
 ## Embedded config conversion
 
@@ -241,9 +219,6 @@ SURGE_SESSION_TTL_HOURS=72
 SURGE_REGISTRATION=open
 SURGE_SESSION_CORS_ORIGINS="https://auth.example.com,https://app.example.com"
 SURGE_ALLOW_SERVED_INLINE=0
-SURGE_HYDRA_ADMIN_URL="http://hydra:4434"
-SURGE_HYDRA_BRIDGE_ORIGIN="https://auth.example.com"
-SURGE_HYDRA_ADMIN_TIMEOUT_SECS=10
 ```
 
 **Related:** [Deployment: Docker](/deployment/docker), [Registration Modes](/integration/registration-modes), [Health Checks](/deployment/health-checks)

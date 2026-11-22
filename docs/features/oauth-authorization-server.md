@@ -10,11 +10,7 @@ This is opt-in. Setting `SURGE_OAUTH_ISSUER` is the on-switch: unset, no `/oauth
 
 ## Why this lives inside Surge
 
-Surge previously delegated authorization-server work to [Ory Hydra through a bridge](/integration/hydra-oauth-bridge). That decision was reversed, and the reason is worth stating because it also explains the data model.
-
-What an MCP token must be scoped to is a **resource server**, and Surge already holds the registry of those: the `service` table. In the Hydra split, Hydra owned clients, scopes and audiences while Surge owned services and identities — and the mapping between them lived in nobody's schema. Consent ("let this client read your Dispatch resources"), revocation ("show me every app connected to my account") and audience validation ("is this `resource` a service I know?") each need both halves in one query. Internalizing the authorization server is what collapses that seam.
-
-The bridge still works and both can run at once during a cutover; `sub` is the identity UUID in both, so the two issuers name the same subject.
+An MCP token is scoped to a **resource server**. Surge stores resource audiences alongside the services and identities that own or authorize access to them. Keeping clients, scopes, and audiences in the same database lets Surge validate the requested audience, show what a client will gain access to, and revoke that access from the user's account settings.
 
 ## What the MCP spec pins
 
@@ -79,7 +75,7 @@ export SURGE_OAUTH_ISSUER="https://auth.example.com"
 surge-server serve
 ```
 
-Startup refuses to proceed if the issuer is not a registered return origin, or if it is not `https` on a non-loopback bind. It warns if no resources are registered (every authorize would fail audience validation) or if the Hydra bridge is enabled at the same time.
+Startup requires a registered return origin for the issuer and requires `https` on a non-loopback bind. It warns when no resources are registered or when dynamic registration is enabled.
 
 ## Endpoints
 
@@ -202,4 +198,4 @@ Note the metadata path. A resource URI with a path is described at `https://host
 | `SURGE_OAUTH_DCR_TTL_DAYS` | `30` | Sweep dynamic clients that never authorized. |
 | `SURGE_OAUTH_ENABLE_OIDC` | `1` | ID tokens, `userinfo`, and `/.well-known/openid-configuration`. |
 
-**Related:** [Hydra OAuth Bridge](/integration/hydra-oauth-bridge), [Service Grants](/reference/grants), [Tokens](/reference/tokens), [CLI](/reference/cli), [Session Management](/features/session-management)
+**Related:** [Service Grants](/reference/grants), [Tokens](/reference/tokens), [CLI](/reference/cli), [Session Management](/features/session-management)

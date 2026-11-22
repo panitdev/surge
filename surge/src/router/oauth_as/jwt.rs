@@ -23,8 +23,7 @@ const ACCESS_TOKEN_TYPE: &str = "at+jwt";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct AccessClaims {
     pub iss: String,
-    /// The identity UUID — the same subject the Hydra bridge uses, so tokens
-    /// from both issuers name the same person during a cutover (§9).
+    /// The identity UUID.
     pub sub: String,
     /// Single-valued: a token minted for resource A must not validate at
     /// resource B, and an array invites exactly that.

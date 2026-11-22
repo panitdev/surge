@@ -8,7 +8,7 @@ description: Version history, per-release changes, and migration notes.
 
 ### OAuth 2.1 / OIDC authorization server
 
-Surge can now issue audience-scoped OAuth tokens itself, rather than delegating to Ory Hydra. Opt-in via `SURGE_OAUTH_ISSUER`; unset, nothing changes. See [OAuth Authorization Server](/features/oauth-authorization-server).
+Surge can now issue audience-scoped OAuth tokens. Enable the authorization server by setting `SURGE_OAUTH_ISSUER`. See [OAuth Authorization Server](/features/oauth-authorization-server).
 
 - **Authorization code flow with mandatory PKCE `S256`** at `/oauth2/authorize` and `/oauth2/token`, plus JWKS, RFC 8414 discovery, RFC 7662 introspection, RFC 7009 revocation, OIDC ID tokens and `userinfo`. No implicit, client-credentials or password grant.
 - **Audience-restricted tokens** (RFC 8707). A `resource` parameter is valid only if it resolves to a registered audience owned by a registered service, and a token minted for one resource does not validate at another.
@@ -22,7 +22,7 @@ Surge can now issue audience-scoped OAuth tokens itself, rather than delegating 
 
 Behaviour change worth noting: `revoke_all_sessions` now also revokes that identity's OAuth refresh tokens. "Log this person out everywhere" would otherwise leave their connected apps refreshing.
 
-The Hydra bridge still works and both can run at once during a cutover — `sub` is the identity UUID in both. See the [migration steps](/integration/hydra-oauth-bridge).
+The Hydra login and consent bridge has been removed. Surge ignores the old `SURGE_HYDRA_*` settings. To migrate a bridge deployment, register clients and resources in Surge and authorize those clients again against the Surge issuer. See [OAuth Authorization Server setup](/features/oauth-authorization-server#setup).
 
 ## 0.1.0
 

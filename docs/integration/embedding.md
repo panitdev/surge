@@ -113,7 +113,6 @@ let browser_router = Arc::clone(&provider).browser_router(BrowserRouterConfig {
     registration: Some(RegistrationMode::Open),
     factor_policy: Some(surge::router::FactorPolicy::None),
     allow_inline: Some(true),  // safe in embedded mode
-    oauth_bridge: None,
     maintenance_interval: None,  // default: sweep every 15 minutes
 });
 
@@ -146,7 +145,7 @@ You may mount the router under a prefix of your own — `.nest("/api/surge", bro
 | `registration` | `Open`, `Invite`, or `Closed` — embedded only |
 | `factor_policy` | Soft factor-enrollment policy surfaced to the frontend — embedded only |
 | `allow_inline` | Enable content-negotiated inline flow-init (`Accept: application/json`) — embedded only |
-| `oauth_bridge` | Opt-in Hydra login/consent bridge — embedded only |
+| `oauth_as` | Opt-in OAuth authorization server configuration for the issuer, available with the `oauth-as` feature |
 | `maintenance_interval` | Background sweep cadence. `None` = every 15 minutes; `Duration::ZERO` = you drive it — embedded only |
 
 The `Option` fields are required for `EmbeddedProvider` (panics if `rate_limiter` is `None`) and ignored by `RemoteProvider` — the remote surge-server handles those settings itself.
@@ -230,7 +229,6 @@ async fn main() -> anyhow::Result<()> {
         registration: Some(RegistrationMode::Open),
         factor_policy: Some(FactorPolicy::None),
         allow_inline: Some(true),
-        oauth_bridge: None,
         // Session GC and flow expiry sweep every 15 minutes, started by
         // mounting the router below.
         maintenance_interval: None,

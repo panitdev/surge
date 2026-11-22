@@ -64,9 +64,7 @@ use serde_json::json;
 /// are, how often to refetch them — is discovered or defaulted.
 #[derive(Clone, Debug)]
 pub struct ResourceServerConfig {
-    /// The authorization server's issuer. Tokens whose `iss` is anything else
-    /// are rejected, which is also what makes a two-issuer cutover explicit
-    /// rather than accidental (internal/oauth-as.md §9).
+    /// The authorization server's issuer. A token's `iss` must match this value.
     pub issuer: String,
     /// This resource's canonical audience URI. A token minted for another
     /// resource must not validate here, and this is the check that ensures it.
