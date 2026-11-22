@@ -74,13 +74,18 @@ pub(super) async fn consume_flow(
     conn: &mut diesel_async::AsyncPgConnection,
     id: &str,
 ) -> Result<(), AuthError> {
+    oauth_consent_flow::table.find(id)
+        .select(oauth_consent_flow::id)
+        .for_update()
+        .first::<String>(conn).await.optional()?.ok_or(AuthError::SessionExpired)?;
+    let decided = Utc::now();
     let changed = diesel::update(
         oauth_consent_flow::table
             .find(id)
             .filter(oauth_consent_flow::decided_at.is_null())
-            .filter(oauth_consent_flow::expires_at.gt(diesel::dsl::now)),
+            .filter(oauth_consent_flow::expires_at.gt(decided)),
     )
-    .set(oauth_consent_flow::decided_at.eq(diesel::dsl::now))
+    .set(oauth_consent_flow::decided_at.eq(decided))
     .execute(conn)
     .await?;
     if changed == 0 {
@@ -279,10 +284,12 @@ impl Engine {
         let mut conn = self.conn().await?;
         conn.transaction::<_, AuthError, _>(|conn| {
             async move {
-                binding
+                let expiry = binding
                     .validate(conn, flow.session_id, flow.identity_id)
                     .await?;
-                consume_flow(conn, &flow.id).await
+                consume_flow(conn, &flow.id).await?;
+                if expiry <= Utc::now() { return Err(AuthError::InvalidToken); }
+                Ok(())
             }
             .scope_boxed()
         })

@@ -163,10 +163,14 @@ async fn verify_flow_session(
     headers: &HeaderMap,
     flow: &surge_engine::oauth::ConsentFlow,
 ) -> Result<surge_engine::oauth::AuthorizationSession, ApiError> {
-    let (session, binding) = resolve_authorization_session(state, headers, flow.account_id).await?;
+    let selector = match (flow.account_id, crate::extract::browser_cookie(headers)?) {
+        (None, Some(token)) => Some(state.engine.account_for_session(&token, flow.session_id).await?),
+        (selector, _) => selector,
+    };
+    let (session, binding) = resolve_authorization_session(state, headers, selector).await?;
     if session.identity.id != flow.identity_id
         || *session.id.as_uuid() != flow.session_id
-        || binding.account_id() != flow.account_id
+        || binding.account_id() != selector
     {
         return Err(AuthError::Forbidden.into());
     }
