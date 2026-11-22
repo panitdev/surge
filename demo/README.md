@@ -61,3 +61,18 @@ Open the demo in two tabs, add an account, and choose a different identity in
 each. Refresh either tab or paste its address into a new tab. “Make default”
 changes which identity opens at the root URL. Signing out of this account
 uses the selector from the tab URL.
+
+To try OAuth from a pinned tab, register a public OAuth client with redirect
+URI `http://127.0.0.1:3300/oauth/callback`. Supply its `OAUTH_CLIENT_ID`,
+`OAUTH_RESOURCE` and optional space-delimited `OAUTH_SCOPE` when starting the
+demo. “Authorize application” sends the route's account selector on a
+top-level authorization request and exchanges the resulting code using PKCE.
+The client's first-party consent setting is configured independently.
+
+The Chromium integration test in `browser/tests/oauth.mjs` creates two users
+on a disposable open-registration deployment and checks the third-party
+callback and token. Install Playwright and Chromium, then run
+`node demo/browser/tests/oauth.mjs` with `SURGE_URL`, `SURGE_AUTH_UI_ORIGIN`,
+`OAUTH_CLIENT_ID`, `OAUTH_RESOURCE` and `OAUTH_REDIRECT_URI`. Register that
+exact callback on a separate host for a public client requiring consent.
+`PLAYWRIGHT_MODULE` and `CHROMIUM_PATH` can select an existing installation.

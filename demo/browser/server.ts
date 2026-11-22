@@ -7,7 +7,11 @@ const server = Bun.serve({
   routes: {
     "/": page,
     "/u/:accountId/": page,
-    "/config": () => Response.json({ origin }),
+    "/oauth/callback": page,
+    "/config": () => Response.json({
+      origin, clientId: process.env.OAUTH_CLIENT_ID, resource: process.env.OAUTH_RESOURCE,
+      scope: process.env.OAUTH_SCOPE,
+    }),
   },
 });
 console.log(`Browser demo listening at ${server.url}`);
