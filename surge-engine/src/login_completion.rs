@@ -34,6 +34,17 @@ pub enum VerifiedLogin {
     Register(RegisterRequest),
 }
 
+impl VerifiedLogin {
+    fn identity_id(&self) -> Option<IdentityId> {
+        match self {
+            Self::Password(proof) => Some(proof.id),
+            Self::Totp(id, _) => Some(*id),
+            Self::Passphrase(proof) | Self::Recover(proof, _) => Some(proof.id),
+            Self::Register(_) => None,
+        }
+    }
+}
+
 pub struct CompletedLogin {
     pub factor_status: FactorStatus,
     pub adopted_legacy: bool,
@@ -107,6 +118,20 @@ impl Engine {
                     ("add_account", None, None) if multi_account => {
                         let bound = flow.bound_legacy_id.ok_or(AuthError::InvalidToken)?;
                         let token = legacy.ok_or(AuthError::InvalidToken)?;
+                        // Cross-adoptions can name the same two identities in reverse.
+                        // Lock both in UUID order before rechecking the bound session.
+                        let target = verified.identity_id().map(|id| *id.as_uuid());
+                        identity::table
+                            .filter(
+                                identity::id
+                                    .eq_any(session::table.find(bound).select(session::identity_id))
+                                    .or(identity::id.nullable().eq(target)),
+                            )
+                            .order(identity::id.asc())
+                            .select(identity::id)
+                            .for_update()
+                            .load::<Uuid>(conn)
+                            .await?;
                         let owner = session::table
                             .inner_join(identity::table)
                             .filter(session::id.eq(bound))
@@ -156,14 +181,9 @@ impl Engine {
                             .await?
                     }
                     _ => {
-                        let id = match &verified {
-                            VerifiedLogin::Password(proof) => proof.id,
-                            VerifiedLogin::Totp(id, _) => *id,
-                            VerifiedLogin::Passphrase(proof) | VerifiedLogin::Recover(proof, _) => {
-                                proof.id
-                            }
-                            VerifiedLogin::Register(_) => unreachable!(),
-                        };
+                        let id = verified
+                            .identity_id()
+                            .ok_or(AuthError::InvalidCredentials)?;
                         let row = identity::table
                             .find(*id.as_uuid())
                             .select(IdentityRow::as_select())

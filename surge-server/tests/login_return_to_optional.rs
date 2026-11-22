@@ -271,18 +271,15 @@ async fn concurrent_legacy_add_adopts_original_session_once() {
         ))
         .unwrap()
     }
-    let flow = start(&old_app, "/v1/login", "").await;
-    let response = old_app
-        .oneshot(submit(&flow, "", &work, &password))
-        .await
-        .unwrap();
-    let legacy = response.headers()["set-cookie"]
-        .to_str()
-        .unwrap()
-        .split(';')
-        .next()
-        .unwrap()
-        .to_owned();
+    async fn legacy_cookie(app: &axum::Router, owner: &str, password: &str) -> String {
+        let flow = start(app, "/v1/login", "").await;
+        let response = app.clone().oneshot(submit(&flow, "", owner, password)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        response.headers()["set-cookie"].to_str().unwrap().split(';').next().unwrap().to_owned()
+    }
+    let legacy = legacy_cookie(&old_app, &work, &password).await;
+    let inverse_legacy = legacy_cookie(&old_app, &personal, &password).await;
+    let inverse = start(&app, "/v1/login?intent=add_account", &inverse_legacy).await;
     let first = start(&app, "/v1/login?intent=add_account", &legacy).await;
     let second = start(&app, "/v1/login?intent=add_account", &legacy).await;
     let response = app
@@ -300,12 +297,14 @@ async fn concurrent_legacy_add_adopts_original_session_once() {
     let response = app.clone().oneshot(whoami(&legacy)).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let old = body_json(response).await;
-    let (a, b) = tokio::join!(
+    let (a, b, reverse) = tokio::join!(
         app.clone()
             .oneshot(submit(&first, &legacy, &personal, &password)),
         app.clone()
             .oneshot(submit(&second, &legacy, &personal, &password)),
+        app.clone().oneshot(submit(&inverse, &inverse_legacy, &work, &password)),
     );
+    assert_eq!(reverse.unwrap().status(), StatusCode::OK);
     let (a, b) = (a.unwrap(), b.unwrap());
     let (winner, retired) = if a.status().is_success() {
         (a, b)
@@ -328,8 +327,15 @@ async fn concurrent_legacy_add_adopts_original_session_once() {
         .unwrap()
         .split(';')
         .next()
-        .unwrap();
-    let response = app.clone().oneshot(whoami(browser)).await.unwrap();
+        .unwrap().to_owned();
+    let account = body_json(winner).await["account_id"].as_str().unwrap().to_owned();
+    let mut selected = whoami(&browser);
+    selected.headers_mut().insert("x-surge-account", account.parse().unwrap());
+    let response = app.clone().oneshot(selected).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["x-surge-account"], account);
+    assert_eq!(body_json(response).await["identity"]["username"], personal);
+    let response = app.clone().oneshot(whoami(&browser)).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let adopted = body_json(response).await;
     for field in ["id", "identity", "issued_at", "expires_at"] {
