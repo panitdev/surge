@@ -111,6 +111,16 @@ impl Engine {
         Ok(())
     }
 
+    pub async fn can_list_accounts(&self, origin: &str) -> Result<bool, AuthError> {
+        let granted = service::table
+            .filter(service::revoked_at.is_null())
+            .filter(service::grants.contains(vec!["account_list"]))
+            .filter(service::return_origins.contains(vec![origin]));
+        Ok(diesel::select(diesel::dsl::exists(granted))
+            .get_result(&mut self.conn().await?)
+            .await?)
+    }
+
     pub async fn all_return_origins(&self) -> Result<Vec<String>, AuthError> {
         let services = self.list_services().await?;
         Ok(services

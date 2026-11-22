@@ -13,6 +13,7 @@ Service tokens carry grants that control which API operations the service can pe
 | `identity_write` | Update identities (profile update, enable/disable) |
 | `direct_auth` | Authenticate users directly (password verification) |
 | `revoke` | Revoke sessions and tokens |
+| `account_list` | Allow the service’s registered origins to list accounts signed in to the current browser |
 | `browser_proxy` | Front the browser perimeter on behalf of end users |
 | `external_auth` | Sign users in through an external provider (email, OAuth), creating the identity on first sight |
 | `external_link` | Attach an external provider account to an existing identity, or detach one |
@@ -29,6 +30,7 @@ Each grant unlocks a specific set of service API endpoints:
 | `identity_write` | `PATCH /v1/identities/{id}` — update profile fields |
 | `direct_auth` | `POST /v1/authenticate/password` — authenticate with username + password; `POST /v1/register` — create an identity directly |
 | `revoke` | `POST /v1/sessions/revoke` — revoke a single session; `POST /v1/identities/{id}/revoke-sessions` — revoke all sessions for an identity |
+| `account_list` | `GET /v1/accounts` from an exact origin registered with `--origin`. The browser supplies its own session cookie. |
 | `browser_proxy` | The browser endpoints (`/v1/login`, `/v1/flows/...`, `/v1/whoami`, ...) — permits stating the end user's address in `X-Surge-Client-Ip` |
 | `external_auth` | `POST /v1/authenticate/link` — resolve a `(provider, subject)` pair to a session, creating the identity if the link is new |
 | `external_link` | `POST /v1/identities/{id}/links` — attach or confirm a link; `DELETE /v1/identities/{id}/links` — detach one |
@@ -51,6 +53,10 @@ A request to an endpoint without the required grant returns `403 Forbidden`:
 Grants follow the principle of least privilege. A service token should carry only the grants it needs for its specific role. If a service only verifies sessions, give it `introspect` — not `identity_write` or `direct_auth`.
 
 A compromised token with only `introspect` can verify sessions; one with `identity_write` and `revoke` can disable accounts and force-logout every user. Grant scope accordingly.
+
+### The `account_list` grant
+
+The hosted auth UI has access by default. To enable a picker in another app, register its exact browser origin with its service, for example `surge-server svc create --name app --grant account_list --origin https://app.example.com`. Revoking the service withdraws that registration immediately. The endpoint uses the browser cookie and the same origin policy for direct and proxied calls. Same-origin GETs that omit `Origin` must supply `Sec-Fetch-Site: same-origin` and a `Referer` containing the application origin. Keep the service token on the backend.
 
 ### The `browser_proxy` grant
 

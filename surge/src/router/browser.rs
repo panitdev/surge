@@ -184,7 +184,7 @@ pub(crate) fn embedded_browser_router(
     let v1 = v1.layer(middleware::from_fn_with_state(
         Arc::new(TrustedProxyState::new(Arc::clone(&state.engine))),
         trusted_proxy,
-    ));
+    )).layer(middleware::map_response(super::no_store));
 
     let interval = config
         .maintenance_interval
@@ -263,6 +263,10 @@ impl V1Router {
         };
 
         let csrf = || middleware::from_fn(require_header_csrf);
+        let accounts = Router::new()
+            .route("/accounts", get(list_accounts).options(|| async { StatusCode::NO_CONTENT }))
+            .layer(middleware::from_fn_with_state(Arc::clone(&self.state), authorize_account_list))
+            .with_state(Arc::clone(&self.state));
         let session_management = Router::new()
             .route("/whoami", get(whoami))
             .route("/accounts/default", axum::routing::put(set_default_account).layer(csrf()))
@@ -287,8 +291,8 @@ impl V1Router {
 
         Router::new()
             .merge(credential_entry)
+            .merge(accounts)
             .merge(session_management)
-            .layer(middleware::map_response(super::no_store))
     }
 }
 
@@ -1026,6 +1030,37 @@ async fn whoami(State(state): State<Arc<EmbeddedState>>, resolved: ResolvedSessi
         response.headers_mut().insert(ACCOUNT_HEADER, id.to_string().parse().unwrap());
     }
     Ok(response)
+}
+
+async fn authorize_account_list(
+    State(state): State<Arc<EmbeddedState>>,
+    request: axum::extract::Request,
+    next: middleware::Next,
+) -> Result<Response, ApiError> {
+    use http::header::*;
+    let origin = cors::list_origin(request.headers()).ok_or(AuthError::Forbidden)?;
+    if origin != state.auth_ui_origin && !state.engine.can_list_accounts(&origin).await? {
+        return Err(AuthError::Forbidden.into());
+    }
+    let mut response = next.run(request).await;
+    let headers = response.headers_mut();
+    headers.insert(ACCESS_CONTROL_ALLOW_ORIGIN, origin.parse().map_err(|_| AuthError::Forbidden)?);
+    headers.insert(ACCESS_CONTROL_ALLOW_CREDENTIALS, HeaderValue::from_static("true"));
+    headers.insert(ACCESS_CONTROL_ALLOW_METHODS, HeaderValue::from_static("GET"));
+    headers.insert(ACCESS_CONTROL_ALLOW_HEADERS, HeaderValue::from_static("content-type, x-surge-csrf"));
+    headers.append(VARY, HeaderValue::from_static("Origin, Referer, Sec-Fetch-Site"));
+    Ok(response)
+}
+
+async fn list_accounts(
+    State(state): State<Arc<EmbeddedState>>,
+    headers: HeaderMap,
+) -> Result<Json<surge_engine::BrowserAccountList>, ApiError> {
+    let accounts = match browser_cookie(&headers)? {
+        Some(token) => state.engine.list_browser_accounts(&token).await?,
+        None => Default::default(),
+    };
+    Ok(Json(accounts))
 }
 
 #[derive(Deserialize)]

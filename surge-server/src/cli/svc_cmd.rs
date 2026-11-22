@@ -35,6 +35,7 @@ pub async fn svc(cmd: SvcCommand, engine: Arc<Engine>) -> anyhow::Result<()> {
                 "direct_auth",
                 "revoke",
                 "browser_proxy",
+                "account_list",
                 "external_auth",
                 "external_link",
                 "oauth_admin",

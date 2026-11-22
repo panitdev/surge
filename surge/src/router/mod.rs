@@ -32,3 +32,6 @@ async fn no_store(mut response: axum::response::Response) -> axum::response::Res
     );
     response
 }
+
+#[cfg(all(test, feature = "embedded"))]
+mod account_list_tests;

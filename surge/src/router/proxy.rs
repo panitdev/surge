@@ -96,6 +96,9 @@ pub(crate) fn proxy_browser_router(config: ProxyConfig) -> Router {
         cors::union(&session_cors_origins)
     };
 
+    let accounts = Router::new()
+        .route("/v1/accounts", get(proxy_handler).options(proxy_handler))
+        .with_state(Arc::clone(&state));
     let session_management = Router::new()
         .route("/v1/whoami", get(proxy_handler))
         .route("/v1/logout", post(proxy_handler))
@@ -116,6 +119,7 @@ pub(crate) fn proxy_browser_router(config: ProxyConfig) -> Router {
         .with_state(state);
 
     Router::new()
+        .merge(accounts)
         .merge(credential_entry)
         .merge(session_management)
         .layer(axum::middleware::map_response(super::no_store))
@@ -146,7 +150,17 @@ async fn proxy_handler(
     };
     let mut upstream_req = config.client.request(upstream_method, &upstream_url);
 
+    let listing = uri.path() == "/v1/accounts";
+    if listing {
+        let Some(origin) = cors::list_origin(&headers) else {
+            return StatusCode::FORBIDDEN.into_response();
+        };
+        upstream_req = upstream_req.header(http::header::ORIGIN, origin);
+    }
     for name in FORWARDED_REQUEST_HEADERS {
+        if listing && *name == "origin" {
+            continue;
+        }
         for value in headers.get_all(*name) {
             upstream_req = upstream_req.header(*name, value);
         }
@@ -200,7 +214,7 @@ async fn proxy_handler(
     for (name, value) in upstream_resp.headers() {
         // This hop has its own CORS zones, applied as a layer around this
         // handler; upstream's would collide with them.
-        if is_cors_header(name) {
+        if !listing && is_cors_header(name) {
             continue;
         }
         if HOP_BY_HOP_RESPONSE_HEADERS.contains(&name.as_str()) {

@@ -37,3 +37,25 @@ pub(crate) fn account_scoped(layer: CorsLayer) -> CorsLayer {
         .allow_headers([http::header::CONTENT_TYPE, http::header::COOKIE, CSRF_HEADER.clone(), selector.clone()])
         .expose_headers([selector])
 }
+
+/// Browsers can omit Origin on a same-origin GET. In that case use only
+/// the origin of the browser-supplied referrer, never its path or query.
+pub(crate) fn list_origin(headers: &http::HeaderMap) -> Option<String> {
+    fn single<'a>(headers: &'a http::HeaderMap, name: &str) -> Option<&'a str> {
+        let mut values = headers.get_all(name).iter();
+        let value = values.next()?.to_str().ok()?;
+        values.next().is_none().then_some(value)
+    }
+    let explicit = headers.contains_key(http::header::ORIGIN);
+    let source = if explicit {
+        single(headers, "origin")?
+    } else {
+        if single(headers, "sec-fetch-site")? != "same-origin" {
+            return None;
+        }
+        single(headers, "referer")?
+    };
+    let url = url::Url::parse(source).ok()?;
+    let origin = url.origin().ascii_serialization();
+    (matches!(url.scheme(), "http" | "https") && (!explicit || origin == source)).then_some(origin)
+}

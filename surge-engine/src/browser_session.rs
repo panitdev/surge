@@ -13,6 +13,25 @@ pub struct IssuedBrowserSession {
     pub expires_at: DateTime<Utc>,
 }
 
+#[derive(Default, serde::Serialize)]
+pub struct BrowserAccountList {
+    pub accounts: Vec<BrowserAccount>,
+    pub default_account_id: Option<Uuid>,
+}
+
+#[derive(serde::Serialize)]
+pub struct BrowserAccount {
+    pub account_id: Uuid,
+    pub identity: BrowserAccountIdentity,
+    pub expires_at: DateTime<Utc>,
+}
+
+#[derive(serde::Serialize)]
+pub struct BrowserAccountIdentity {
+    pub id: Uuid,
+    pub username: String,
+}
+
 impl Engine {
     pub async fn resolve_browser_session(
         &self,
@@ -53,6 +72,39 @@ impl Engine {
             .optional()?
             .ok_or(AuthError::InvalidToken)?;
         Ok((id, crate::session::session_from_rows(session, identity)?))
+    }
+
+    pub async fn list_browser_accounts(
+        &self,
+        token: &BrowserSessionToken,
+    ) -> Result<BrowserAccountList, AuthError> {
+        use crate::schema::{browser_session_account as member, identity, session};
+
+        let now = Utc::now();
+        let rows = member::table
+            .inner_join(browser_session::table)
+            .inner_join(session::table.inner_join(identity::table))
+            .filter(browser_session::token_hash.eq(token.hash()))
+            .filter(browser_session::revoked_at.is_null())
+            .filter(browser_session::expires_at.gt(now))
+            .filter(session::revoked_at.is_null())
+            .filter(session::expires_at.gt(now))
+            .filter(identity::state.eq("active"))
+            .order(member::account_id)
+            .select((member::account_id, identity::id, identity::username,
+                session::expires_at, browser_session::default_account_id))
+            .load::<(Uuid, Uuid, String, DateTime<Utc>, Option<Uuid>)>(&mut self.conn().await?)
+            .await?;
+        let mut list = BrowserAccountList::default();
+        for (account_id, id, username, expires_at, default_id) in rows {
+            if default_id == Some(account_id) {
+                list.default_account_id = default_id;
+            }
+            list.accounts.push(BrowserAccount {
+                account_id, identity: BrowserAccountIdentity { id, username }, expires_at,
+            });
+        }
+        Ok(list)
     }
 
     /// Create an empty browser session with its own bounded lifetime.
@@ -155,6 +207,10 @@ mod tests {
             .revoke_session(&personal_session.token)
             .await
             .unwrap();
+        let list = engine.list_browser_accounts(&browser.token).await.unwrap();
+        assert_eq!(list.default_account_id, None);
+        assert_eq!(list.accounts.len(), 1);
+        assert_eq!(list.accounts[0].account_id, *work);
         assert!(matches!(
             engine.resolve_browser_session(&browser.token, None).await,
             Err(AuthError::InvalidToken)

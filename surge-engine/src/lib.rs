@@ -6,7 +6,7 @@ pub mod audit;
 pub mod oauth;
 mod browser_mutation;
 mod browser_session;
-pub use browser_session::IssuedBrowserSession;
+pub use browser_session::{BrowserAccountList, IssuedBrowserSession};
 
 mod counter;
 mod crypto;
