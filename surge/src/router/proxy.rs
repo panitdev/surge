@@ -520,6 +520,7 @@ mod tests {
                 registration: None,
                 factor_policy: None,
                 allow_inline: None,
+                multi_account: false,
                 #[cfg(feature = "oauth-as")]
                 oauth_as: None,
                 maintenance_interval: None,

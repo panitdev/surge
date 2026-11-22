@@ -143,6 +143,7 @@ pub async fn router(
         registration: Some(config.registration),
         factor_policy: Some(config.factor_policy),
         allow_inline: Some(config.allow_served_inline),
+        multi_account: config.multi_account,
         oauth_as,
         // Mounting the router starts the sweep.
         maintenance_interval: None,

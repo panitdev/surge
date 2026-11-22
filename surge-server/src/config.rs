@@ -27,6 +27,7 @@ pub struct ServerConfig {
     /// Defaults to `false` — a served deployment stays redirect-only until
     /// this is set.
     pub allow_served_inline: bool,
+    pub multi_account: bool,
     /// Opt-in native OAuth 2.1 / OIDC authorization server
     /// (internal/oauth-as.md). Enabled by setting `SURGE_OAUTH_ISSUER`.
     pub oauth_as: Option<OauthAsSettings>,
@@ -136,6 +137,7 @@ impl ServerConfig {
             factor_policy,
             session_cors_origins,
             allow_served_inline,
+            multi_account: std::env::var("SURGE_MULTI_ACCOUNT").is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true")),
             oauth_as,
         })
     }

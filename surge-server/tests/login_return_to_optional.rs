@@ -27,7 +27,7 @@ use surge_server::config::ServerConfig;
 const AUTH_UI_ORIGIN: &str = "https://auth.canary.test";
 const RETURN_ORIGIN: &str = "https://app.canary.test";
 
-async fn test_app() -> (axum::Router, String) {
+async fn test_app(multi_account: bool) -> (axum::Router, String) {
     let database_url = std::env::var("DATABASE_URL")
         .expect("DATABASE_URL must be set to run this test");
 
@@ -71,6 +71,7 @@ async fn test_app() -> (axum::Router, String) {
         factor_policy: surge::router::FactorPolicy::None,
         session_cors_origins: vec![],
         allow_served_inline: true,
+        multi_account,
         oauth_as: None,
     });
 
@@ -120,7 +121,7 @@ async fn register_identity(app: &axum::Router, token: &str, username: &str) -> S
 #[tokio::test]
 #[ignore = "requires DATABASE_URL against a disposable Postgres"]
 async fn inline_login_without_return_to_succeeds_and_completes_with_null() {
-    let (app, token) = test_app().await;
+    let (app, token) = test_app(false).await;
     let username = format!("noreturn-{}", rand_suffix());
     let password = register_identity(&app, &token, &username).await;
 
@@ -170,7 +171,7 @@ async fn inline_login_without_return_to_succeeds_and_completes_with_null() {
 #[tokio::test]
 #[ignore = "requires DATABASE_URL against a disposable Postgres"]
 async fn non_inline_login_without_return_to_is_rejected() {
-    let (app, _token) = test_app().await;
+    let (app, _token) = test_app(false).await;
 
     let resp = app
         .clone()
@@ -189,4 +190,46 @@ async fn non_inline_login_without_return_to_is_rejected() {
         StatusCode::UNPROCESSABLE_ENTITY,
         "browser-navigation login without return_to must be rejected"
     );
+}
+
+#[tokio::test]
+#[ignore = "requires DATABASE_URL against a disposable Postgres"]
+async fn browser_sign_in_add_and_reauthenticate_preserve_default() {
+    let (app, service) = test_app(true).await;
+    let mut cookie = String::new();
+    let mut accounts = Vec::new();
+    let work = format!("work-{}", rand_suffix());
+    let personal = format!("personal-{}", rand_suffix());
+    for username in [&work, &personal] {
+        register_identity(&app, &service, username).await;
+    }
+    for username in [&work, &personal, &personal] {
+        let adding = !cookie.is_empty();
+        let uri = if adding { "/v1/login?intent=add_account" } else { "/v1/login" };
+        let start = Request::get(uri).header("accept", "application/json")
+            .header("cookie", &cookie).body(Body::empty()).unwrap();
+        let response = app.clone().oneshot(start).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let flow = body_json(response).await;
+        let submit = Request::post(format!("/v1/flows/{}/password", flow["flow_id"].as_str().unwrap()))
+            .header("cookie", &cookie).header("origin", AUTH_UI_ORIGIN)
+            .header("content-type", "application/json")
+            .body(Body::from(json!({"username": username, "password": "correct horse battery staple", "csrf_token": flow["csrf_token"]}).to_string())).unwrap();
+        let response = app.clone().oneshot(submit).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        if !adding {
+            let header = response.headers()["set-cookie"].to_str().unwrap();
+            for attribute in ["surge_browser=", "HttpOnly", "Secure", "SameSite=Lax", "Domain=canary.test", "Path=/"] {
+                assert!(header.contains(attribute), "missing {attribute}");
+            }
+            cookie = header.split(';').next().unwrap().to_owned();
+        }
+        accounts.push(body_json(response).await["account_id"].as_str().unwrap().to_owned());
+    }
+    assert_ne!(accounts[0], accounts[1]);
+    assert_eq!(accounts[1], accounts[2]);
+    let whoami = Request::get("/v1/whoami").header("cookie", cookie).body(Body::empty()).unwrap();
+    let response = app.oneshot(whoami).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["x-surge-account"], accounts[0]);
 }

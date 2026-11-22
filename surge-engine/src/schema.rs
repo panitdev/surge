@@ -61,6 +61,8 @@ diesel::table! {
         expires_at -> Timestamptz,
         created_at -> Timestamptz,
         identity_id -> Nullable<Uuid>,
+        login_intent -> Text,
+        bound_browser_id -> Nullable<Uuid>,
     }
 }
 

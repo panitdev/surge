@@ -124,6 +124,7 @@ async fn test_app_inner() -> (axum::Router, Arc<surge_engine::Engine>, String, S
         factor_policy: surge::router::FactorPolicy::None,
         session_cors_origins: vec![],
         allow_served_inline: true,
+        multi_account: false,
         oauth_as: Some(surge_server::config::OauthAsSettings {
             issuer: OAUTH_ISSUER.to_string(),
             access_ttl: Duration::from_secs(600),

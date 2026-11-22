@@ -124,11 +124,15 @@ pub struct LoginFlowRow {
     pub expires_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
     pub identity_id: Option<Uuid>,
+    pub login_intent: String,
+    pub bound_browser_id: Option<Uuid>,
 }
 
 #[derive(Insertable)]
 #[diesel(table_name = schema::login_flow)]
 pub struct NewLoginFlow<'a> {
+    pub login_intent: &'a str,
+    pub bound_browser_id: Option<Uuid>,
     pub id: &'a str,
     pub return_to: Option<&'a str>,
     pub csrf_token: &'a str,

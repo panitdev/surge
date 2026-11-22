@@ -8,7 +8,7 @@ use crate::types::*;
 use crate::Engine;
 
 const FLOW_TTL_MINUTES: i64 = 10;
-const FLOW_MAX_ATTEMPTS: i32 = 5;
+pub(crate) const FLOW_MAX_ATTEMPTS: i32 = 5;
 
 pub struct FlowInfo {
     pub id: String,
@@ -24,6 +24,49 @@ pub struct FlowInfo {
 
 impl Engine {
     pub async fn create_login_flow(&self, return_to: Option<&str>) -> Result<FlowInfo, AuthError> {
+        self.insert_login_flow(return_to, "legacy", None).await
+    }
+
+    pub async fn create_browser_login_flow(
+        &self,
+        return_to: Option<&str>,
+        add_account: bool,
+        token: Option<&BrowserSessionToken>,
+    ) -> Result<FlowInfo, AuthError> {
+        use crate::schema::browser_session as browser;
+        let bound = match token {
+            Some(token) => Some(
+                browser::table
+                    .filter(browser::token_hash.eq(token.hash()))
+                    .filter(browser::revoked_at.is_null())
+                    .filter(browser::expires_at.gt(Utc::now()))
+                    .select(browser::id)
+                    .first(&mut self.conn().await?)
+                    .await
+                    .optional()?
+                    .ok_or(AuthError::InvalidToken)?,
+            ),
+            None if add_account => return Err(AuthError::InvalidToken),
+            None => None,
+        };
+        self.insert_login_flow(
+            return_to,
+            if add_account {
+                "add_account"
+            } else {
+                "sign_in"
+            },
+            bound,
+        )
+        .await
+    }
+
+    async fn insert_login_flow(
+        &self,
+        return_to: Option<&str>,
+        login_intent: &str,
+        bound_browser_id: Option<uuid::Uuid>,
+    ) -> Result<FlowInfo, AuthError> {
         let mut conn = self.conn().await?;
         let flow_id = FlowId::generate();
         let csrf = FlowId::generate();
@@ -31,6 +74,8 @@ impl Engine {
         let expires = now + Duration::minutes(FLOW_TTL_MINUTES);
 
         let new = NewLoginFlow {
+            login_intent,
+            bound_browser_id,
             id: flow_id.as_str(),
             return_to,
             csrf_token: csrf.as_str(),
@@ -59,6 +104,15 @@ impl Engine {
     }
 
     pub async fn get_login_flow(&self, id: &str) -> Result<FlowInfo, AuthError> {
+        self.get_browser_login_flow(id, None).await
+    }
+
+    pub async fn get_browser_login_flow(
+        &self,
+        id: &str,
+        token: Option<&BrowserSessionToken>,
+    ) -> Result<FlowInfo, AuthError> {
+        use crate::schema::browser_session as browser;
         let mut conn = self.conn().await?;
         let now = Utc::now();
 
@@ -72,6 +126,22 @@ impl Engine {
                 other => AuthError::Internal(other.into()),
             })?;
 
+        match (row.bound_browser_id, token) {
+            (Some(bound), Some(token)) => {
+                browser::table
+                    .find(bound)
+                    .filter(browser::token_hash.eq(token.hash()))
+                    .filter(browser::revoked_at.is_null())
+                    .filter(browser::expires_at.gt(now))
+                    .select(browser::id)
+                    .first::<uuid::Uuid>(&mut conn)
+                    .await
+                    .optional()?
+                    .ok_or(AuthError::InvalidToken)?;
+            }
+            (None, None) => {}
+            _ => return Err(AuthError::InvalidToken),
+        }
         if row.expires_at < now || row.attempts >= FLOW_MAX_ATTEMPTS {
             if row.state == "created" {
                 diesel::update(login_flow::table.find(id))
@@ -104,15 +174,22 @@ impl Engine {
     ) -> Result<(), AuthError> {
         let mut conn = self.conn().await?;
 
-        diesel::update(login_flow::table.find(id))
-            .set((
-                login_flow::state.eq("awaiting_totp"),
-                login_flow::identity_id.eq(*identity_id.as_uuid()),
-            ))
-            .execute(&mut conn)
-            .await
-            .map_err(|e| AuthError::Internal(e.into()))?;
+        let changed = diesel::update(
+            login_flow::table
+                .find(id)
+                .filter(login_flow::state.eq("created")),
+        )
+        .set((
+            login_flow::state.eq("awaiting_totp"),
+            login_flow::identity_id.eq(*identity_id.as_uuid()),
+        ))
+        .execute(&mut conn)
+        .await
+        .map_err(|e| AuthError::Internal(e.into()))?;
 
+        if changed == 0 {
+            return Err(AuthError::InvalidToken);
+        }
         Ok(())
     }
 

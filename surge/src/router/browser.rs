@@ -13,7 +13,7 @@ use axum_extra::extract::CookieJar;
 use secrecy::SecretString;
 use serde::Deserialize;
 use serde_json::json;
-use surge_engine::Engine;
+use surge_engine::{Engine, VerifiedLogin};
 use tracing::warn;
 
 use super::cookie::{removal_cookie, session_cookie};
@@ -88,6 +88,8 @@ pub struct BrowserRouterConfig {
     /// redirecting to `auth_ui_origin`. Required for served+inline
     /// (architecture.md §6).
     pub allow_inline: Option<bool>,
+    /// Issue browser memberships for new credential-entry flows.
+    pub multi_account: bool,
     /// Opt-in native OAuth 2.1 / OIDC authorization server
     /// (internal/oauth-as.md). Unset means no `/oauth2/*` routes, no signing
     /// key ever generated, and no behavior change.
@@ -120,6 +122,7 @@ struct EmbeddedState {
     return_origins: Vec<String>,
     registration: RegistrationMode,
     factor_policy: FactorPolicy,
+    multi_account: bool,
     allow_inline: bool,
     engine: Arc<Engine>,
     provider: Arc<dyn AuthProvider>,
@@ -141,6 +144,7 @@ pub(crate) fn embedded_browser_router(
         return_origins: config.return_origins.unwrap_or_default(),
         registration: config.registration.unwrap_or(RegistrationMode::Closed),
         factor_policy: config.factor_policy.unwrap_or(FactorPolicy::None),
+        multi_account: config.multi_account,
         allow_inline: config.allow_inline.unwrap_or(false),
         engine,
         provider: Arc::clone(&provider),
@@ -314,7 +318,14 @@ impl<S: Send + Sync> FromRequestParts<S> for MaybeClientIp {
 
 #[derive(Deserialize)]
 struct LoginQuery {
+    intent: Option<LoginIntent>,
     return_to: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum LoginIntent {
+    AddAccount,
 }
 
 async fn start_login(
@@ -381,7 +392,17 @@ async fn start_login(
         }
     };
 
-    let flow = state.engine.create_login_flow(return_to).await?;
+    let token = browser_cookie(&headers)?;
+    let flow = if state.multi_account {
+        state.engine
+            .create_browser_login_flow(return_to, query.intent.is_some(), token.as_ref())
+            .await?
+    } else {
+        if query.intent.is_some() || token.is_some() {
+            return Err(AuthError::Forbidden.into());
+        }
+        state.engine.create_login_flow(return_to).await?
+    };
 
     if wants_json {
         return Ok(Json(json!({
@@ -403,8 +424,11 @@ async fn start_login(
 async fn get_flow(
     State(state): State<Arc<EmbeddedState>>,
     Path(id): Path<String>,
+    headers: HeaderMap,
 ) -> Result<impl IntoResponse, ApiError> {
-    let flow = state.engine.get_login_flow(&id).await?;
+    let flow = state.engine
+        .get_browser_login_flow(&id, browser_cookie(&headers)?.as_ref())
+        .await?;
 
     Ok(Json(json!({
         "id": flow.id,
@@ -426,9 +450,12 @@ async fn submit_password(
     State(state): State<Arc<EmbeddedState>>,
     MaybeClientIp(ip): MaybeClientIp,
     Path(id): Path<String>,
+    headers: HeaderMap,
     Json(body): Json<PasswordSubmit>,
 ) -> Result<Response, ApiError> {
-    let flow = state.engine.get_login_flow(&id).await?;
+    let flow = state.engine
+        .get_browser_login_flow(&id, browser_cookie(&headers)?.as_ref())
+        .await?;
 
     if flow.state != "created" {
         return Err(AuthError::InvalidToken.into());
@@ -485,10 +512,12 @@ async fn submit_password(
     finish_login(
         &state,
         &id,
+        &body.csrf_token,
+        &headers,
         flow.return_to,
-        identity.id,
+        VerifiedLogin::Password(identity.id),
         "authenticate",
-        json!({ "factors": ["password"] }),
+        Some(json!({ "factors": ["password"] })),
     )
     .await
 }
@@ -500,15 +529,18 @@ async fn submit_password(
 async fn finish_login(
     state: &EmbeddedState,
     flow_id: &str,
+    csrf: &str,
+    headers: &HeaderMap,
     return_to: Option<String>,
-    identity_id: IdentityId,
+    verified: VerifiedLogin,
     audit_action: &str,
-    audit_detail: serde_json::Value,
+    audit_detail: Option<serde_json::Value>,
 ) -> Result<Response, ApiError> {
-    let issued = state
-        .engine
-        .mint_session(identity_id, AuthMethod::Password)
+    let completed = state.engine
+        .finish_login_flow(flow_id, csrf, browser_cookie(headers)?.as_ref(), state.multi_account, verified)
         .await?;
+    let issued = completed.issued;
+    let identity_id = issued.session.identity.id;
 
     state
         .engine
@@ -518,29 +550,25 @@ async fn finish_login(
             },
             audit_action,
             json!({ "session_id": issued.session.id.to_string() }),
-            Some(audit_detail),
+            audit_detail,
         )
         .await?;
 
-    state.engine.complete_flow(flow_id).await?;
-
-    let cookie = session_cookie(
-        issued.token.expose_secret(),
-        &state.cookie_domain,
-        state.session_ttl.as_secs() as i64,
-    );
-    let jar = CookieJar::new().add(cookie);
-    let policy = policy_block(&state, identity_id).await?;
-
-    Ok((
-        jar,
-        Json(json!({
-            "return_to": return_to,
-            "session": serde_json::to_value(&issued.session).unwrap(),
-            "policy": policy,
-        })),
-    )
-        .into_response())
+    let mut jar = CookieJar::new();
+    if let Some(browser) = completed.browser_cookie {
+        let mut cookie = session_cookie(browser.token.expose_secret(), &state.cookie_domain,
+            (browser.expires_at - chrono::Utc::now()).num_seconds());
+        cookie.set_name(crate::extract::BROWSER_COOKIE);
+        jar = jar.add(cookie);
+    } else if completed.account_id.is_none() {
+        jar = jar.add(session_cookie(issued.token.expose_secret(), &state.cookie_domain, state.session_ttl.as_secs() as i64));
+    }
+    let policy = policy_block(state, identity_id).await?;
+    let mut body = json!({ "return_to": return_to, "session": issued.session, "policy": policy });
+    if let Some(account) = completed.account_id {
+        body["account_id"] = json!(account);
+    }
+    Ok((jar, Json(body)).into_response())
 }
 
 /// The soft-policy compliance block surfaced to the frontend.
@@ -571,9 +599,12 @@ async fn submit_totp(
     State(state): State<Arc<EmbeddedState>>,
     MaybeClientIp(ip): MaybeClientIp,
     Path(id): Path<String>,
+    headers: HeaderMap,
     Json(body): Json<TotpSubmit>,
 ) -> Result<Response, ApiError> {
-    let flow = state.engine.get_login_flow(&id).await?;
+    let flow = state.engine
+        .get_browser_login_flow(&id, browser_cookie(&headers)?.as_ref())
+        .await?;
     if flow.state != "awaiting_totp" {
         return Err(AuthError::InvalidToken.into());
     }
@@ -594,10 +625,12 @@ async fn submit_totp(
             finish_login(
                 &state,
                 &id,
+                &body.csrf_token,
+                &headers,
                 flow.return_to,
-                identity_id,
+                VerifiedLogin::Totp(identity_id),
                 "authenticate",
-                json!({ "factors": ["password", "totp"] }),
+                Some(json!({ "factors": ["password", "totp"] })),
             )
             .await
         }
@@ -620,9 +653,12 @@ async fn submit_passphrase(
     State(state): State<Arc<EmbeddedState>>,
     MaybeClientIp(ip): MaybeClientIp,
     Path(id): Path<String>,
+    headers: HeaderMap,
     Json(body): Json<PassphraseLogin>,
 ) -> Result<Response, ApiError> {
-    let flow = state.engine.get_login_flow(&id).await?;
+    let flow = state.engine
+        .get_browser_login_flow(&id, browser_cookie(&headers)?.as_ref())
+        .await?;
     if flow.state != "created" {
         return Err(AuthError::InvalidToken.into());
     }
@@ -652,10 +688,12 @@ async fn submit_passphrase(
             finish_login(
                 &state,
                 &id,
+                &body.csrf_token,
+                &headers,
                 flow.return_to,
-                identity.id,
+                VerifiedLogin::Passphrase(identity.id),
                 "passphrase_login",
-                json!({ "factors": ["passphrase"] }),
+                Some(json!({ "factors": ["passphrase"] })),
             )
             .await
         }
@@ -679,9 +717,12 @@ async fn submit_recover(
     State(state): State<Arc<EmbeddedState>>,
     MaybeClientIp(ip): MaybeClientIp,
     Path(id): Path<String>,
+    headers: HeaderMap,
     Json(body): Json<RecoverSubmit>,
 ) -> Result<Response, ApiError> {
-    let flow = state.engine.get_login_flow(&id).await?;
+    let flow = state.engine
+        .get_browser_login_flow(&id, browser_cookie(&headers)?.as_ref())
+        .await?;
     if flow.state != "created" {
         return Err(AuthError::InvalidToken.into());
     }
@@ -712,14 +753,15 @@ async fn submit_recover(
         .await
     {
         Ok(identity) => {
-            state.engine.set_password(identity.id, &new_password).await?;
             finish_login(
                 &state,
                 &id,
+                &body.csrf_token,
+                &headers,
                 flow.return_to,
-                identity.id,
+                VerifiedLogin::Recover(identity.id, new_password),
                 "password_reset",
-                json!({ "factors": ["passphrase"] }),
+                Some(json!({ "factors": ["passphrase"] })),
             )
             .await
         }
@@ -913,6 +955,7 @@ async fn submit_register(
     State(state): State<Arc<EmbeddedState>>,
     MaybeClientIp(ip): MaybeClientIp,
     Path(id): Path<String>,
+    headers: HeaderMap,
     Json(body): Json<RegisterSubmit>,
 ) -> Result<Response, ApiError> {
     match state.registration {
@@ -926,7 +969,9 @@ async fn submit_register(
         RegistrationMode::Open => {}
     }
 
-    let flow = state.engine.get_login_flow(&id).await?;
+    let flow = state.engine
+        .get_browser_login_flow(&id, browser_cookie(&headers)?.as_ref())
+        .await?;
     if flow.state != "created" {
         return Err(AuthError::InvalidToken.into());
     }
@@ -950,30 +995,10 @@ async fn submit_register(
         display_name: body.display_name,
     };
 
-    let issued = state.provider.register_and_authenticate(req).await?;
-
-    state.engine.complete_flow(&id).await?;
-
-    let cookie = session_cookie(
-        issued.token.expose_secret(),
-        &state.cookie_domain,
-        state.session_ttl.as_secs() as i64,
-    );
-    let jar = CookieJar::new().add(cookie);
-    // A fresh user is non-compliant the moment they register under any
-    // non-`none` policy, so the frontend needs the block here too.
-    let policy = policy_block(&state, issued.session.identity.id).await?;
-
-    Ok((
-        StatusCode::CREATED,
-        jar,
-        Json(json!({
-            "return_to": flow.return_to,
-            "session": serde_json::to_value(&issued.session).unwrap(),
-            "policy": policy,
-        })),
-    )
-        .into_response())
+    let mut response = finish_login(&state, &id, &body.csrf_token, &headers, flow.return_to,
+        VerifiedLogin::Register(req), "register_and_authenticate", None).await?;
+    *response.status_mut() = StatusCode::CREATED;
+    Ok(response)
 }
 
 /// Browser->Surge session resolution: the frontend's "am I logged in, and

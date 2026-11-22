@@ -22,6 +22,7 @@ Here is the complete reference:
 | `SURGE_SESSION_TTL_HOURS` | `72` | Session time-to-live in hours |
 | `SURGE_REGISTRATION` | `open` | Registration mode (`open`, `invite`, `closed`) |
 | `SURGE_SESSION_CORS_ORIGINS` | empty | Comma-separated origins for credentialed CORS |
+| `SURGE_MULTI_ACCOUNT` | `false` | Issue browser account memberships on sign-in. Enable after browser consumers support the new cookie. |
 | `SURGE_ALLOW_SERVED_INLINE` | `false` | Allow inline flow-init on served deployments |
 | `SURGE_OAUTH_ISSUER` | (unset) | This server's public origin; setting it enables the native OAuth authorization server |
 | `SURGE_OAUTH_ACCESS_TTL_SECS` | `600` | Access-token lifetime — also the offline revocation window |

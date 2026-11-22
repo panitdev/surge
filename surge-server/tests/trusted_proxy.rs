@@ -88,6 +88,7 @@ async fn test_app() -> (axum::Router, Tokens) {
         factor_policy: surge::router::FactorPolicy::None,
         session_cors_origins: vec![],
         allow_served_inline: true,
+        multi_account: false,
         oauth_as: None,
     });
 

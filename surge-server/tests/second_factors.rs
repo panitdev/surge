@@ -65,6 +65,7 @@ async fn test_app(policy: FactorPolicy) -> (axum::Router, String) {
         factor_policy: policy,
         session_cors_origins: vec![],
         allow_served_inline: true,
+        multi_account: false,
         oauth_as: None,
     });
 
