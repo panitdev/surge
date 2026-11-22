@@ -68,12 +68,14 @@ impl Engine {
     }
 
     pub async fn run_migrations(&self) -> Result<(), anyhow::Error> {
-        use diesel::Connection;
+        use diesel::{Connection, RunQueryDsl};
         use diesel_migrations::MigrationHarness;
 
         let url = self.database_url.clone();
         tokio::task::spawn_blocking(move || {
             let mut conn = diesel::PgConnection::establish(&url)?;
+            // Hold the lock on this dedicated connection across all migration transactions.
+            diesel::sql_query("SELECT pg_advisory_lock(1937076839, 1)").execute(&mut conn)?;
             conn.run_pending_migrations(MIGRATIONS)
                 .map_err(|e| anyhow::anyhow!("migration error: {e}"))?;
             Ok::<_, anyhow::Error>(())

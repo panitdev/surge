@@ -76,3 +76,10 @@ callback and token. Install Playwright and Chromium, then run
 `OAUTH_CLIENT_ID`, `OAUTH_RESOURCE` and `OAUTH_REDIRECT_URI`. Register that
 exact callback on a separate host for a public client requiring consent.
 `PLAYWRIGHT_MODULE` and `CHROMIUM_PATH` can select an existing installation.
+
+For the two-tab rollout test, run `node demo/browser/tests/two-tabs.mjs` with
+the same OAuth and Chromium settings and an `APP_API_URL` pointing to the
+embedded browser API. Repeat with the remote proxy as `APP_API_URL`, keeping
+`SURGE_URL` pointed at the issuer. The test creates disposable accounts,
+changes their passwords, completes a pending consent after changing the
+default in another tab, and checks a removed pin while the default is live.

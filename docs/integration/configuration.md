@@ -35,6 +35,18 @@ Here is the complete reference:
 | `SURGE_OAUTH_DCR_TTL_DAYS` | `30` | Sweep unused dynamic clients |
 | `SURGE_OAUTH_ENABLE_OIDC` | `1` | ID tokens, `userinfo`, OpenID discovery |
 
+## Enabling simultaneous browser sign-in
+
+Deploy the schema and updated browser consumers with issuance disabled. Upgrade each embedded browser router, remote proxy, Rust session extractor, and the hosted auth UI. Remote proxies need the `browser_proxy` service grant. First-party pickers need an active service registered with `account_list` and their exact origin. Apps with account-specific views must carry the route selector on reads, writes and logout, and use `account_id` for top-level OAuth navigation to the issuer.
+
+Before enabling issuance, run the embedded and remote acceptance tests against a disposable PostgreSQL database:
+
+```sh
+DATABASE_URL=postgresql:///surge_rollout_test cargo test -p surge-server --test browser_rollout -- --ignored
+```
+
+Once those consumers are deployed, enable `SURGE_MULTI_ACCOUNT=true` on the issuer and set `BrowserRouterConfig::multi_account` on deployments using embedded handlers. Existing legacy sessions keep working. The first successful addition adopts the legacy account as the default. An unchanged client follows the currently selected default on its next request, including a pending save or logout. Logging out the default leaves headerless requests unauthorized until a user explicitly chooses a new default. Other signed-in accounts remain accessible from their pinned routes.
+
 ## Database connection
 
 `DATABASE_URL` is a standard Postgres connection string. Surge uses it for Diesel migrations (run automatically at startup) and all runtime queries.
