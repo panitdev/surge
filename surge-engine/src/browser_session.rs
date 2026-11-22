@@ -80,6 +80,7 @@ impl Engine {
     ) -> Result<BrowserAccountList, AuthError> {
         use crate::schema::{browser_session_account as member, identity, session};
 
+        let mut conn = self.conn().await?;
         let now = Utc::now();
         let rows = member::table
             .inner_join(browser_session::table)
@@ -93,7 +94,7 @@ impl Engine {
             .order(member::account_id)
             .select((member::account_id, identity::id, identity::username,
                 session::expires_at, browser_session::default_account_id))
-            .load::<(Uuid, Uuid, String, DateTime<Utc>, Option<Uuid>)>(&mut self.conn().await?)
+            .load::<(Uuid, Uuid, String, DateTime<Utc>, Option<Uuid>)>(&mut conn)
             .await?;
         let mut list = BrowserAccountList::default();
         for (account_id, id, username, expires_at, default_id) in rows {

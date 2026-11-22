@@ -79,6 +79,10 @@ pub struct BrowserRouterConfig {
     /// zone to `auth_ui_origin`; set it when your frontend is served from
     /// an origin other than the auth UI's (§8.2b).
     pub session_cors_origins: Vec<String>,
+    /// Exact public origin of this mount for same-origin account listing when
+    /// the browser suppresses its referrer. Terminate TLS at a trusted ingress
+    /// that enforces this origin and preserves the original request authority.
+    pub browser_public_origin: Option<String>,
 
     // -- Embedded-only fields (ignored by RemoteProvider) --
 
@@ -123,6 +127,7 @@ struct EmbeddedState {
     session_ttl: Duration,
     auth_ui_origin: String,
     session_cors_origins: Vec<String>,
+    browser_public_origin: Option<String>,
     rate_limiter: Arc<dyn RateLimiter>,
     return_origins: Vec<String>,
     registration: RegistrationMode,
@@ -143,6 +148,7 @@ pub(crate) fn embedded_browser_router(
     let state = Arc::new(EmbeddedState {
         auth_ui_origin: config.auth_ui_origin.clone(),
         session_cors_origins: config.session_cors_origins,
+        browser_public_origin: config.browser_public_origin,
         cookie_domain: config.cookie_domain,
         session_ttl: config.session_ttl,
         rate_limiter: config.rate_limiter.expect("embedded mode requires rate_limiter"),
@@ -1038,7 +1044,7 @@ async fn authorize_account_list(
     next: middleware::Next,
 ) -> Result<Response, ApiError> {
     use http::header::*;
-    let origin = cors::list_origin(request.headers()).ok_or(AuthError::Forbidden)?;
+    let origin = cors::list_origin(request.headers(), request.uri(), state.browser_public_origin.as_deref()).ok_or(AuthError::Forbidden)?;
     if origin != state.auth_ui_origin && !state.engine.can_list_accounts(&origin).await? {
         return Err(AuthError::Forbidden.into());
     }

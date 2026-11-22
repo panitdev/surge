@@ -90,6 +90,7 @@ async fn list_grants_apply_directly_and_through_proxy() {
         cookie_domain: "example".into(),
         session_ttl: Duration::from_secs(3600),
         auth_ui_origin: hosted.into(),
+        browser_public_origin: Some(granted.clone()),
         session_cors_origins: vec![missing.clone()],
         rate_limiter: Some(Arc::new(PostgresRateLimiter::new(
             engine.clone(),
@@ -116,6 +117,7 @@ async fn list_grants_apply_directly_and_through_proxy() {
         upstream_base_url: upstream,
         cookie_domain: "example".into(),
         auth_ui_origin: hosted.into(),
+        browser_public_origin: Some(granted.clone()),
         session_cors_origins: vec![missing.clone()],
         service_token: proxy_token.expose_secret().to_owned().into(),
         client: reqwest::Client::new(),
@@ -154,6 +156,19 @@ async fn list_grants_apply_directly_and_through_proxy() {
                     }
                 }
             }
+        }
+    }
+    for app in [&direct, &proxy] {
+        for (site, host, status) in [
+            ("same-origin", format!("{name}.example"), StatusCode::OK),
+            ("same-origin", format!("ungranted-{name}.example"), StatusCode::FORBIDDEN),
+            ("same-site", format!("{name}.example"), StatusCode::FORBIDDEN),
+        ] {
+            let req = Request::builder().uri("/v1/accounts")
+                .header("sec-fetch-site", site)
+                .header(header::HOST, host)
+                .body(Body::empty()).unwrap();
+            assert_eq!(app.clone().oneshot(req).await.unwrap().status(), status);
         }
     }
     let mut browser = None;

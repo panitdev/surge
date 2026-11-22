@@ -66,6 +66,7 @@ pub(crate) struct ProxyConfig {
     pub cookie_domain: String,
     pub auth_ui_origin: String,
     pub session_cors_origins: Vec<String>,
+    pub browser_public_origin: Option<String>,
     pub service_token: SecretString,
     pub client: Client,
 }
@@ -152,7 +153,7 @@ async fn proxy_handler(
 
     let listing = uri.path() == "/v1/accounts";
     if listing {
-        let Some(origin) = cors::list_origin(&headers) else {
+        let Some(origin) = cors::list_origin(&headers, &uri, config.browser_public_origin.as_deref()) else {
             return StatusCode::FORBIDDEN.into_response();
         };
         upstream_req = upstream_req.header(http::header::ORIGIN, origin);
@@ -384,6 +385,7 @@ mod tests {
         proxy_browser_router(ProxyConfig {
             upstream_base_url: upstream,
             cookie_domain: "app.example.com".into(),
+            browser_public_origin: None,
             auth_ui_origin: "https://app.example.com".into(),
             session_cors_origins: vec![],
             service_token: SecretString::from("aeg_svc_test"),
@@ -529,6 +531,7 @@ mod tests {
             crate::router::BrowserRouterConfig {
                 cookie_domain: "app.example.com".into(),
                 session_ttl: std::time::Duration::from_secs(3600),
+                browser_public_origin: None,
                 auth_ui_origin: "https://auth.example.com".into(),
                 session_cors_origins: vec!["https://app.example.com".into()],
                 rate_limiter: None,

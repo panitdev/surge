@@ -86,6 +86,7 @@ async fn listening_as() -> (String, Arc<surge_engine::Engine>, axum::Router, Str
         session_ttl_hours: 1,
         registration: surge::router::RegistrationMode::Open,
         factor_policy: surge::router::FactorPolicy::None,
+        browser_public_origin: None,
         session_cors_origins: vec![],
         allow_served_inline: true,
         multi_account: false,

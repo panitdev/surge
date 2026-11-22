@@ -90,6 +90,7 @@ mod tests {
                 cookie_domain: "localhost".into(),
                 session_ttl: Duration::from_secs(3600),
                 auth_ui_origin: "http://localhost:5173".into(),
+                browser_public_origin: None,
                 session_cors_origins: Vec::new(),
                 rate_limiter: None,
                 return_origins: None,

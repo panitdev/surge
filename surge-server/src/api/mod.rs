@@ -138,6 +138,7 @@ pub async fn router(
         session_ttl: config.session_ttl(),
         auth_ui_origin: config.auth_ui_origin.clone(),
         session_cors_origins: config.session_cors_origins.clone(),
+        browser_public_origin: config.browser_public_origin.clone(),
         rate_limiter: Some(rate_limiter),
         return_origins: Some(return_origins),
         registration: Some(config.registration),

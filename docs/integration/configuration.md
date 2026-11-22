@@ -18,6 +18,7 @@ Here is the complete reference:
 | `SURGE_PEPPER` | `dev-pepper-change-me` | Secret pepper for Argon2id |
 | `SURGE_BIND` | `0.0.0.0:3000` | Listen address and port |
 | `SURGE_COOKIE_DOMAIN` | `.panit.dev` | Domain for session cookies |
+| `SURGE_BROWSER_PUBLIC_ORIGIN` | unset | Exact public origin of the browser API mount. Enables same-origin account listing with a suppressed referrer when the request authority matches. Configure only behind an ingress enforcing the declared scheme and authority. |
 | `SURGE_AUTH_UI_ORIGIN` | `https://auth.panit.dev` | Origin for the auth UI redirect |
 | `SURGE_SESSION_TTL_HOURS` | `72` | Session time-to-live in hours |
 | `SURGE_REGISTRATION` | `open` | Registration mode (`open`, `invite`, `closed`) |

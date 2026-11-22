@@ -104,6 +104,7 @@ let browser_router = Arc::clone(&provider).browser_router(BrowserRouterConfig {
     cookie_domain: ".example.com".to_string(),
     session_ttl: Duration::from_secs(72 * 3600),
     auth_ui_origin: "https://auth.example.com".to_string(),
+    browser_public_origin: None,
     session_cors_origins: vec![],
     rate_limiter: Some(Arc::new(PostgresRateLimiter::new(
         Arc::clone(&engine),
@@ -220,6 +221,7 @@ async fn main() -> anyhow::Result<()> {
         cookie_domain: "localhost".to_string(),
         session_ttl: Duration::from_secs(72 * 3600),
         auth_ui_origin: "http://localhost:3000".to_string(),
+        browser_public_origin: None,
         session_cors_origins: vec![],
         rate_limiter: Some(Arc::new(PostgresRateLimiter::new(
             Arc::clone(&engine),

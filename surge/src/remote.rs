@@ -435,6 +435,7 @@ impl AuthProvider for RemoteProvider {
             cookie_domain: config.cookie_domain,
             auth_ui_origin: config.auth_ui_origin,
             session_cors_origins: config.session_cors_origins,
+            browser_public_origin: config.browser_public_origin,
             service_token: self.service_token.clone(),
             client: self.client.clone(),
         })

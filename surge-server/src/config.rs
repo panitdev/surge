@@ -10,6 +10,7 @@ pub struct ServerConfig {
     pub bind_addr: String,
     pub cookie_domain: String,
     pub auth_ui_origin: String,
+    pub browser_public_origin: Option<String>,
     pub session_ttl_hours: u64,
     pub registration: RegistrationMode,
     /// Soft, server-wide factor-enrollment recommendation (`SURGE_FACTOR_POLICY`).
@@ -132,6 +133,7 @@ impl ServerConfig {
             bind_addr,
             cookie_domain,
             auth_ui_origin,
+            browser_public_origin: std::env::var("SURGE_BROWSER_PUBLIC_ORIGIN").ok(),
             session_ttl_hours,
             registration,
             factor_policy,

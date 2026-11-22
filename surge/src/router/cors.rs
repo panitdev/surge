@@ -40,7 +40,11 @@ pub(crate) fn account_scoped(layer: CorsLayer) -> CorsLayer {
 
 /// Browsers can omit Origin on a same-origin GET. In that case use only
 /// the origin of the browser-supplied referrer, never its path or query.
-pub(crate) fn list_origin(headers: &http::HeaderMap) -> Option<String> {
+pub(crate) fn list_origin(
+    headers: &http::HeaderMap,
+    uri: &http::Uri,
+    public_origin: Option<&str>,
+) -> Option<String> {
     fn single<'a>(headers: &'a http::HeaderMap, name: &str) -> Option<&'a str> {
         let mut values = headers.get_all(name).iter();
         let value = values.next()?.to_str().ok()?;
@@ -53,9 +57,59 @@ pub(crate) fn list_origin(headers: &http::HeaderMap) -> Option<String> {
         if single(headers, "sec-fetch-site")? != "same-origin" {
             return None;
         }
+        if !headers.contains_key(http::header::REFERER) {
+            // Fetch Metadata establishes the same-origin relationship. The
+            // configured mount supplies the scheme and authority; Host alone
+            // (or forwarding headers from the caller) cannot grant access.
+            let configured = public_origin?;
+            let url = url::Url::parse(configured).ok()?;
+            if !matches!(url.scheme(), "http" | "https")
+                || url.origin().ascii_serialization() != configured
+            {
+                return None;
+            }
+            let authority = &url[url::Position::BeforeHost..url::Position::AfterPort];
+            let host = if headers.contains_key(http::header::HOST) {
+                Some(single(headers, "host")?)
+            } else {
+                None
+            };
+            let target = uri.authority().map(|value| value.as_str());
+            if host.or(target).is_none()
+                || host.into_iter().chain(target).any(|value| !value.eq_ignore_ascii_case(authority))
+                || uri.scheme_str().is_some_and(|scheme| scheme != url.scheme())
+            {
+                return None;
+            }
+            return Some(configured.to_owned());
+        }
         single(headers, "referer")?
     };
     let url = url::Url::parse(source).ok()?;
     let origin = url.origin().ascii_serialization();
     (matches!(url.scheme(), "http" | "https") && (!explicit || origin == source)).then_some(origin)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::list_origin;
+    use http::{HeaderMap, HeaderValue, Uri};
+
+    #[test]
+    fn referrerless_listing_requires_a_trusted_matching_origin() {
+        let mut headers = HeaderMap::new();
+        headers.insert("sec-fetch-site", HeaderValue::from_static("same-origin"));
+        headers.insert("x-forwarded-host", HeaderValue::from_static("app.example"));
+        let path = Uri::from_static("/v1/accounts");
+        let origin = Some("https://app.example");
+        assert!(list_origin(&headers, &path, origin).is_none());
+        let absolute = Uri::from_static("https://app.example/v1/accounts");
+        assert_eq!(list_origin(&headers, &absolute, origin).as_deref(), origin);
+        assert!(list_origin(&headers, &absolute, None).is_none());
+        headers.insert("host", HeaderValue::from_static("other.example"));
+        assert!(list_origin(&headers, &absolute, origin).is_none());
+        headers.insert("host", HeaderValue::from_static("app.example"));
+        headers.insert("origin", HeaderValue::from_static("null"));
+        assert!(list_origin(&headers, &path, origin).is_none());
+    }
 }
