@@ -114,8 +114,9 @@ impl Engine {
                 let session_expiry = binding
                     .validate(conn, grant.session_id, grant.identity_id)
                     .await?;
+                let mut flow_expiry = None;
                 if let Some(flow_id) = consent_flow {
-                    super::consent::consume_flow(conn, flow_id).await?;
+                    flow_expiry = Some(super::consent::consume_flow(conn, flow_id).await?);
                     super::consent::record_approval(
                         conn,
                         &grant.client_id,
@@ -126,6 +127,9 @@ impl Engine {
                     .await?;
                 }
                 let issued_at = now();
+                if flow_expiry.is_some_and(|expiry| expiry <= issued_at) {
+                    return Err(AuthError::SessionExpired);
+                }
                 if session_expiry <= issued_at {
                     return Err(AuthError::InvalidToken);
                 }

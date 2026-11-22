@@ -73,12 +73,12 @@ pub(super) async fn record_approval(
 pub(super) async fn consume_flow(
     conn: &mut diesel_async::AsyncPgConnection,
     id: &str,
-) -> Result<(), AuthError> {
-    oauth_consent_flow::table
+) -> Result<chrono::DateTime<Utc>, AuthError> {
+    let expires_at = oauth_consent_flow::table
         .find(id)
-        .select(oauth_consent_flow::id)
+        .select(oauth_consent_flow::expires_at)
         .for_update()
-        .first::<String>(conn)
+        .first::<chrono::DateTime<Utc>>(conn)
         .await
         .optional()?
         .ok_or(AuthError::SessionExpired)?;
@@ -95,7 +95,7 @@ pub(super) async fn consume_flow(
     if changed == 0 {
         return Err(AuthError::SessionExpired);
     }
-    Ok(())
+    Ok(expires_at)
 }
 
 impl Engine {
