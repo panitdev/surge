@@ -127,7 +127,7 @@ pub(super) async fn authorize_query(
         );
     }
 
-    if !client_may_use_resource(&client, &resource) {
+    if !client_may_use_resource(&client, &resource, state.engine.eligibility_policy()) {
         return fail(OauthErrorCode::InvalidTarget, INELIGIBLE_TARGET);
     }
 

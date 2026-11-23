@@ -241,6 +241,16 @@ async fn live_tokens(reg: Uuid) -> i64 {
 
 // -- routing ---------------------------------------------------------------
 
+/// A harness with the global DCR switch on, which dynamically registered
+/// clients need to be eligible for anything.
+async fn dcr_harness() -> Harness {
+    harness_with(|mut settings| {
+        settings.allow_dynamic_registration = true;
+        settings
+    })
+    .await
+}
+
 #[tokio::test]
 #[ignore = "requires a live Postgres via DATABASE_URL"]
 async fn encoded_paths_and_queries_route_to_the_canonical_uri() {
@@ -591,7 +601,7 @@ async fn cimd_client(client_id: &str) {
 #[tokio::test]
 #[ignore = "requires a live Postgres via DATABASE_URL"]
 async fn removing_a_cimd_client_ends_its_grants_and_restoring_it_needs_fresh_consent() {
-    let h = harness().await;
+    let h = dcr_harness().await;
     let session = h.sign_in().await;
     let (_, token) = registrar(&h, "cimd").await;
     let rs = uri(&h, "cimd");
@@ -638,7 +648,7 @@ async fn removing_a_cimd_client_ends_its_grants_and_restoring_it_needs_fresh_con
 #[tokio::test]
 #[ignore = "requires a live Postgres via DATABASE_URL"]
 async fn disabling_dcr_ends_dynamic_client_grants_flows_and_codes() {
-    let h = harness().await;
+    let h = dcr_harness().await;
     let session = h.sign_in().await;
     let (_, token) = registrar(&h, "dcr").await;
     let rs = uri(&h, "dcr");

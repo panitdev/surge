@@ -164,6 +164,7 @@ pub(crate) async fn admit(
     client_id: &str,
     registration_id: Uuid,
     scopes: &[String],
+    policy: super::EligibilityPolicy,
 ) -> Result<OauthResource, AuthError> {
     let resource = lock_registration_shared(conn, registration_id).await?;
     let client_row: Option<OauthClientRow> = oauth_client::table
@@ -180,7 +181,7 @@ pub(crate) async fn admit(
     let client = super::client::rows_to_clients(conn, vec![client_row])
         .await?
         .remove(0);
-    if !client_may_use_resource(&client, &resource) {
+    if !client_may_use_resource(&client, &resource, policy) {
         return Err(AuthError::Forbidden);
     }
     let offered = |s: &String| {
@@ -370,6 +371,7 @@ impl Engine {
             .map(validate_cimd_ids)
             .transpose()?;
         let dcr = patch.dcr_enabled;
+        let policy = self.eligibility_policy();
         let descriptions = patch.scope_descriptions;
 
         let mut conn = self.conn().await?;
@@ -445,7 +447,7 @@ impl Engine {
                 }
                 if !removed_cimd.is_empty() || (old.dcr_enabled && !new_dcr) {
                     ended.add(
-                        end_ineligible_grants(conn, &updated, &removed_cimd).await?,
+                        end_ineligible_grants(conn, &updated, &removed_cimd, policy).await?,
                     );
                 }
 
@@ -718,6 +720,7 @@ async fn end_ineligible_grants(
     conn: &mut AsyncPgConnection,
     resource: &OauthResource,
     removed_cimd: &[String],
+    policy: super::EligibilityPolicy,
 ) -> Result<Invalidated, AuthError> {
     let id = resource.registration_id;
 
@@ -797,7 +800,7 @@ async fn end_ineligible_grants(
         for client in super::client::rows_to_clients(conn, rows).await? {
             // A revoked client's refresh tokens were already ended; ending
             // the rest of its state here is harmless and tidy.
-            if !client_may_use_resource(&client, resource) {
+            if !client_may_use_resource(&client, resource, policy) {
                 to_end.push(client.client_id);
             }
         }

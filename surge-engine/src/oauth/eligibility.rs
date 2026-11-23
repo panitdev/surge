@@ -20,15 +20,33 @@
 //!    unless a dynamically registered client meets a resource that has opted
 //!    in to DCR.
 //!
+//! 0. The global DCR switch is a kill switch: with it off, a dynamically
+//!    registered client is ineligible for every resource (after rule 1, which
+//!    governs CIMD clients).
+//!
 //! One further condition applies to dynamically registered clients, because
 //! their registration is unauthenticated: an explicit binding to a delegated
 //! resource is honoured only if that resource has opted in to DCR. Otherwise
 //! anyone could bind themselves to any developer's resource.
 
+/// Deployment-wide inputs to the eligibility rule, kept apart from the rule
+/// so it stays a pure function of its arguments.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EligibilityPolicy {
+    /// The global DCR switch (`SURGE_OAUTH_ALLOW_DYNAMIC_REGISTRATION`). It is
+    /// a kill switch: when `false`, a dynamically registered client may use
+    /// nothing, so its grants end at their next refresh.
+    pub dynamic_clients_enabled: bool,
+}
+
 use super::{OauthClient, OauthResource, RegistrationSource, ResourceSource};
 
 /// True when `client` may be issued tokens for `resource`.
-pub fn client_may_use_resource(client: &OauthClient, resource: &OauthResource) -> bool {
+pub fn client_may_use_resource(
+    client: &OauthClient,
+    resource: &OauthResource,
+    policy: EligibilityPolicy,
+) -> bool {
     // A source this build does not recognise grants nothing to anyone.
     if resource.registration_source == ResourceSource::Unknown
         || client.registration_source == RegistrationSource::Unknown
@@ -45,6 +63,12 @@ pub fn client_may_use_resource(client: &OauthClient, resource: &OauthResource) -
     // is stored for it.
     if is_cimd_client_id(&client.client_id) {
         return resource.allowed_cimd_client_ids.contains(&client.client_id);
+    }
+
+    // The global kill switch. After the CIMD rule: a CIMD client is not a
+    // dynamically registered one, whatever source it is stored with.
+    if dynamic && !policy.dynamic_clients_enabled {
+        return false;
     }
 
     if let Some(approved) = &client.audiences {
@@ -153,6 +177,37 @@ mod tests {
     }
 
     const URI: &str = "https://rs.example/mcp";
+
+    const ON: EligibilityPolicy = EligibilityPolicy {
+        dynamic_clients_enabled: true,
+    };
+
+    /// The rule with the global switch on, which every test but the kill
+    /// switch's own assumes.
+    fn client_may_use_resource(client: &OauthClient, resource: &OauthResource) -> bool {
+        super::client_may_use_resource(client, resource, ON)
+    }
+
+    #[test]
+    fn the_global_switch_is_a_kill_switch_for_dynamic_clients_only() {
+        let off = EligibilityPolicy {
+            dynamic_clients_enabled: false,
+        };
+        let service = resource(ResourceSource::Service, false, vec![]);
+        let open = resource(ResourceSource::Delegated, true, vec![]);
+        for audiences in [None, Some(vec![URI])] {
+            let dynamic = client(RegistrationSource::Dynamic, audiences.clone());
+            assert!(super::client_may_use_resource(&dynamic, &service, ON) || audiences.is_some());
+            assert!(!super::client_may_use_resource(&dynamic, &service, off));
+            assert!(!super::client_may_use_resource(&dynamic, &open, off));
+        }
+        // Other sources, and CIMD clients, are untouched.
+        let admin = client(RegistrationSource::Admin, None);
+        assert!(super::client_may_use_resource(&admin, &service, off));
+        let cimd = client_id("https://app.example/c.json", RegistrationSource::Dynamic, None);
+        let listed = resource(ResourceSource::Service, false, vec!["https://app.example/c.json"]);
+        assert!(super::client_may_use_resource(&cimd, &listed, off));
+    }
 
     #[test]
     fn an_unrecognised_source_grants_nothing() {

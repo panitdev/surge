@@ -84,9 +84,11 @@ async fn run(
 
     // The global switch is also enforced here, not only by whether the route
     // is mounted: the handler must not be reachable by any other wiring.
-    if !state.config.allow_dynamic_registration {
+    if !state.config.allow_dynamic_registration
+        || !state.engine.eligibility_policy().dynamic_clients_enabled
+    {
         return Err(OauthError::new(
-            OauthErrorCode::InvalidClientMetadata,
+            OauthErrorCode::AccessDenied,
             "dynamic client registration is not enabled",
         ));
     }
@@ -116,7 +118,13 @@ async fn run(
     // Asking for scopes is asking for a ceiling; the registration records
     // which it was. Omitting them stores today's defaults as a snapshot only:
     // the client's effective scopes follow the target resource.
-    let scope_ceiling_explicit = !requested.is_empty();
+    // A request that names only identity scopes (`openid`, `offline_access`)
+    // names no resource scope, so it is an omission too; so is an empty or
+    // whitespace-only `scope`.
+    let scope_ceiling_explicit = requested
+        .iter()
+        .any(|s| !matches!(s.as_str(), "openid" | "profile" | "offline_access"));
+    let requested = if scope_ceiling_explicit { requested } else { Vec::new() };
     let scopes: Vec<String> = if requested.is_empty() {
         declared.iter().cloned().collect()
     } else {

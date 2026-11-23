@@ -11,6 +11,16 @@
 --
 -- Existing rows are backfilled `true`: a stored scope list of unknown
 -- provenance is treated as an explicit ceiling, the conservative reading.
--- The default stays `true` so a writer that predates the column is also safe.
+-- The default exists only to backfill and is dropped straight away, so every
+-- later insert has to state what it means rather than silently becoming an
+-- explicit (possibly empty) ceiling.
 ALTER TABLE surge.oauth_client
     ADD COLUMN scope_ceiling_explicit BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE surge.oauth_client
+    ALTER COLUMN scope_ceiling_explicit DROP DEFAULT;
+-- Only a client that registered itself can have omitted its scopes. Admin and
+-- platform clients are always explicit. 'cimd' is listed for the source that
+-- a later migration introduces; the constraint only restricts the flag.
+ALTER TABLE surge.oauth_client
+    ADD CONSTRAINT oauth_client_ceiling_provenance
+        CHECK (scope_ceiling_explicit OR registration_source IN ('dynamic', 'cimd'));

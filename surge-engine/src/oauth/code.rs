@@ -115,6 +115,7 @@ impl Engine {
     ) -> Result<AuthorizationCode, AuthError> {
         let code = AuthorizationCode::generate();
 
+        let policy = self.eligibility_policy();
         let mut conn = self.conn().await?;
         conn.transaction::<_, AuthError, _>(|conn| {
             async move {
@@ -125,6 +126,7 @@ impl Engine {
                     &grant.client_id,
                     grant.registration_id,
                     &grant.scopes,
+                    policy,
                 )
                 .await?;
                 let session_expiry = binding

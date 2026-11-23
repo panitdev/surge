@@ -317,7 +317,7 @@ async fn ensure_eligible(
             ),
             other => OauthError::from(other),
         })?;
-    if client_may_use_resource(client, &registration) {
+    if client_may_use_resource(client, &registration, state.engine.eligibility_policy()) {
         Ok(())
     } else {
         Err(OauthError::new(

@@ -26,7 +26,7 @@ pub use chooser::ChooserCredential;
 pub use client::{validate_redirect_uri, MAX_PLATFORM_RESOURCES};
 pub use code::{AuthorizationSession, verify_pkce, AUTHORIZATION_CODE_TTL_SECS};
 pub use consent::ConsentFlowRequest;
-pub use eligibility::{client_may_use_resource, offers_scopes_to_dcr, permitted_scopes};
+pub use eligibility::{client_may_use_resource, EligibilityPolicy, offers_scopes_to_dcr, permitted_scopes};
 pub use key::ES256;
 pub use lifecycle::{
     reuse_window, DeleteOutcome, ResourceManager, ResourcePatch, ACCESS_TOKEN_CLOCK_SKEW,

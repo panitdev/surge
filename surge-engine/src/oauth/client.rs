@@ -51,6 +51,14 @@ impl Engine {
         spec: NewOauthClient,
         scope_ceiling_explicit: bool,
     ) -> Result<(OauthClient, Option<ClientSecret>), AuthError> {
+        // Only a client that registered itself can have omitted its scopes;
+        // the database holds the same line.
+        if !scope_ceiling_explicit && spec.registration_source != RegistrationSource::Dynamic {
+            return Err(field(
+                "scope",
+                "only a dynamically registered client can omit its scope ceiling",
+            ));
+        }
         if spec.registration_source == RegistrationSource::Platform {
             return Err(field(
                 "registration_source",
@@ -156,6 +164,7 @@ impl Engine {
             created_at,
         };
 
+        let policy = self.eligibility_policy();
         let mut conn = self.conn().await?;
         let row_ref = &row;
         let client_ref = &client;
@@ -179,7 +188,7 @@ impl Engine {
                         // directly, not through the DCR-oriented admin check.
                         approve_registrations(conn, row_ref.client_id, bound).await?;
                     } else if let Some(uris) = &client_ref.audiences {
-                        approve_audiences(conn, client_ref, uris).await?;
+                        approve_audiences(conn, client_ref, uris, policy).await?;
                     }
                     Ok(bound)
                 }
@@ -415,6 +424,7 @@ async fn approve_audiences(
     conn: &mut diesel_async::AsyncPgConnection,
     client: &OauthClient,
     uris: &[String],
+    policy: super::EligibilityPolicy,
 ) -> Result<(), AuthError> {
     let resources: Vec<OauthResourceRow> = oauth_resource::table
         .filter(oauth_resource::resource_uri.eq_any(uris))
@@ -441,7 +451,7 @@ async fn approve_audiences(
     let resources: Vec<_> = resources.into_iter().map(row_to_resource).collect();
     if let Some(denied) = resources
         .iter()
-        .find(|resource| !super::client_may_use_resource(client, resource))
+        .find(|resource| !super::client_may_use_resource(client, resource, policy))
     {
         return Err(field(
             "resources",

@@ -353,3 +353,134 @@ async fn the_global_switch_closes_registration_and_its_advertisement() {
     let doc = body_json(h.get("/.well-known/oauth-authorization-server", None).await).await;
     assert!(doc["registration_endpoint"].is_null());
 }
+
+#[tokio::test]
+#[ignore = "requires a live Postgres via DATABASE_URL"]
+async fn the_global_switch_is_a_kill_switch_for_existing_dynamic_clients() {
+    let h = dcr_harness().await;
+    let session = h.sign_in().await;
+    let open = delegated_resource(&h, "kill", &["mcp:read"], true).await;
+
+    // One dynamic client on a service resource, one on an opted-in
+    // delegated resource, and an admin client as a control.
+    let (_, a) = register(&h, json!({ "scope": "mcp:read" })).await;
+    let (_, b) = register(&h, json!({ "scope": "mcp:read", "resources": [open] })).await;
+    let (a_id, b_id) = (a["client_id"].as_str().unwrap(), b["client_id"].as_str().unwrap());
+    let admin = h.client(false).await;
+    let a_tokens = full_grant(&h, a_id, &session, &h.resource_uri, Some("mcp:read")).await;
+    let b_tokens = full_grant(&h, b_id, &session, &open, None).await;
+    let admin_tokens = full_grant(&h, &admin, &session, &h.resource_uri, Some("mcp:read")).await;
+
+    // The deployment turns DCR off.
+    h.engine.set_dynamic_clients_enabled(false);
+
+    // Authorize: invalid_target, whatever the resource.
+    for (id, rs) in [(a_id, h.resource_uri.as_str()), (b_id, open.as_str())] {
+        let target = authorize(&h, id, &session, rs, Some("mcp:read")).await;
+        assert_eq!(query_param(&target, "error").as_deref(), Some("invalid_target"), "{target}");
+    }
+    // Refresh: invalid_target, and the grant ends.
+    for (id, tokens) in [(a_id, &a_tokens), (b_id, &b_tokens)] {
+        let rt = tokens["refresh_token"].as_str().unwrap();
+        let (status, body) = refresh(&h, id, rt, None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"], "invalid_target", "{body}");
+    }
+    // The non-dynamic control is untouched.
+    let (status, _) = refresh(&h, &admin, admin_tokens["refresh_token"].as_str().unwrap(), None).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Turning it back on does not resurrect what ended.
+    h.engine.set_dynamic_clients_enabled(true);
+    for (id, tokens) in [(a_id, &a_tokens), (b_id, &b_tokens)] {
+        let (status, _) = refresh(&h, id, tokens["refresh_token"].as_str().unwrap(), None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires a live Postgres via DATABASE_URL"]
+async fn the_register_handler_checks_the_switch_itself() {
+    // Mounted (the config is on), but the engine's switch is off: the
+    // handler must refuse on its own, not rely on the route being absent.
+    let h = dcr_harness().await;
+    h.engine.set_dynamic_clients_enabled(false);
+    let (status, body) = register(&h, json!({})).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["error"], "access_denied");
+}
+
+#[tokio::test]
+#[ignore = "requires a live Postgres via DATABASE_URL"]
+async fn identity_only_or_blank_scope_requests_count_as_omitted() {
+    let h = dcr_harness().await;
+    for scope in ["openid offline_access", "   ", ""] {
+        let (status, body) = register(&h, json!({ "scope": scope })).await;
+        assert_eq!(status, StatusCode::CREATED, "{scope:?}: {body}");
+        let stored = h
+            .engine
+            .get_oauth_client(body["client_id"].as_str().unwrap())
+            .await
+            .unwrap();
+        assert!(!stored.scope_ceiling_explicit, "{scope:?}");
+        assert!(scope_set(&body).contains(&"mcp:read".to_string()));
+    }
+    // A named scope alongside identity scopes is still a ceiling.
+    let (_, body) = register(&h, json!({ "scope": "openid mcp:read" })).await;
+    let stored = h
+        .engine
+        .get_oauth_client(body["client_id"].as_str().unwrap())
+        .await
+        .unwrap();
+    assert!(stored.scope_ceiling_explicit);
+    assert_eq!(stored.scopes, vec!["mcp:read".to_string()]);
+}
+
+#[tokio::test]
+#[ignore = "requires a live Postgres via DATABASE_URL"]
+async fn only_self_registered_clients_may_omit_a_ceiling() {
+    let h = harness().await;
+    // The engine refuses it for any other source...
+    let spec = |source| NewOauthClient {
+        client_name: "x".into(),
+        client_uri: None,
+        logo_uri: None,
+        redirect_uris: vec![CLIENT_REDIRECT.to_string()],
+        grant_types: vec!["authorization_code".into()],
+        scopes: vec!["mcp:read".into()],
+        confidential: false,
+        first_party: false,
+        registration_source: source,
+        audiences: None,
+    };
+    assert!(h
+        .engine
+        .create_oauth_client_with_ceiling(spec(RegistrationSource::Admin), false)
+        .await
+        .is_err());
+    assert!(h
+        .engine
+        .create_oauth_client_with_ceiling(spec(RegistrationSource::Dynamic), false)
+        .await
+        .is_ok());
+
+    // ...and so does the database, and it has no default to fall back on.
+    let mut conn = AsyncPgConnection::establish(&std::env::var("DATABASE_URL").unwrap())
+        .await
+        .unwrap();
+    let id = format!("aeg_cid_w8t_{}", h.suffix);
+    let admin_false = diesel::sql_query(format!(
+        "INSERT INTO surge.oauth_client (client_id, client_name, redirect_uris, registration_source, scope_ceiling_explicit) \
+         VALUES ('{id}a', 'x', ARRAY['https://c.test/cb'], 'admin', false)"
+    ))
+    .execute(&mut conn)
+    .await;
+    assert!(admin_false.is_err());
+    let unstated = diesel::sql_query(format!(
+        "INSERT INTO surge.oauth_client (client_id, client_name, redirect_uris, registration_source) \
+         VALUES ('{id}b', 'x', ARRAY['https://c.test/cb'], 'dynamic')"
+    ))
+    .execute(&mut conn)
+    .await;
+    assert!(unstated.is_err());
+}

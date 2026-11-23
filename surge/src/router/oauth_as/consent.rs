@@ -123,7 +123,7 @@ pub(crate) async fn decide_consent_flow(
         .get_oauth_registration(flow.registration_id)
         .await
     {
-        Ok(registration) => client_may_use_resource(&client, &registration),
+        Ok(registration) => client_may_use_resource(&client, &registration, state.engine.eligibility_policy()),
         // Deleted since the flow began: the same answer as ineligible.
         Err(AuthError::NotFound) => false,
         Err(e) => return Err(e.into()),
