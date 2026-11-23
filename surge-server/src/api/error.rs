@@ -21,6 +21,7 @@ impl IntoResponse for ApiError {
             AuthError::InvalidCredentials => (StatusCode::UNAUTHORIZED, "invalid_credentials"),
             AuthError::RateLimited { .. } => (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
             AuthError::UsernameTaken => (StatusCode::CONFLICT, "username_taken"),
+            AuthError::ResourceAlreadyRegistered => (StatusCode::CONFLICT, "resource_already_registered"),
             AuthError::Validation(_) => (StatusCode::UNPROCESSABLE_ENTITY, "validation_error"),
             AuthError::NotFound => (StatusCode::NOT_FOUND, "not_found"),
             AuthError::Forbidden => (StatusCode::FORBIDDEN, "forbidden"),

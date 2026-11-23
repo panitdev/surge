@@ -533,15 +533,12 @@ pub(crate) async fn revoke_oauth_client(
 #[derive(Deserialize)]
 pub(crate) struct CreateOauthResourceBody {
     resource_uri: String,
+    owner_service_id: Option<uuid::Uuid>,
     scopes: Vec<String>,
     #[serde(default)]
     scope_descriptions: Option<serde_json::Value>,
 }
 
-/// A service registers its *own* audience. It cannot register one on behalf
-/// of another service — the owning `service_id` is taken from the
-/// authenticated token, not from the body — which is what keeps the
-/// introspection authorization check meaningful.
 pub(crate) async fn create_oauth_resource(
     State(state): State<Arc<AppState>>,
     Extension(auth): Extension<ServiceAuth>,
@@ -551,9 +548,13 @@ pub(crate) async fn create_oauth_resource(
 
     let resource = state
         .engine
-        .create_oauth_resource(
+        .register_oauth_resource(
+            surge_engine::audit::AuditActor::Service {
+                id: auth.service_id.to_string(),
+                name: auth.service_name,
+            },
             &body.resource_uri,
-            auth.service_id,
+            body.owner_service_id.unwrap_or(auth.service_id),
             body.scopes,
             body.scope_descriptions
                 .unwrap_or_else(|| json!({})),

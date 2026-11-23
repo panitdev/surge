@@ -49,7 +49,7 @@ Three things must exist before anything can authorize: a service, an audience ow
 #    among the return origins — the authorize endpoint bounces through
 #    GET /v1/login, and an unregistered issuer would fail that check.
 surge-server svc create --name dispatch \
-  --grant introspect --grant oauth_admin \
+  --grant introspect \
   --origin https://auth.example.com
 
 # 2. The audience. Scopes are defined here, by the resource — never by clients.

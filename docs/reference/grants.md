@@ -34,7 +34,7 @@ Each grant unlocks a specific set of service API endpoints:
 | `browser_proxy` | The browser endpoints (`/v1/login`, `/v1/flows/...`, `/v1/whoami`, ...) — permits stating the end user's address in `X-Surge-Client-Ip` |
 | `external_auth` | `POST /v1/authenticate/link` — resolve a `(provider, subject)` pair to a session, creating the identity if the link is new |
 | `external_link` | `POST /v1/identities/{id}/links` — attach or confirm a link; `DELETE /v1/identities/{id}/links` — detach one |
-| `oauth_admin` | `POST /v1/oauth/clients` — register an OAuth client; `GET /v1/oauth/clients` — list them; `DELETE /v1/oauth/clients/{client_id}` — revoke one; `POST /v1/oauth/resources` — register this service's audience; `GET /v1/oauth/resources` — list audiences |
+| `oauth_admin` | `POST /v1/oauth/clients` — register an OAuth client; `GET /v1/oauth/clients` — list them; `DELETE /v1/oauth/clients/{client_id}` — revoke one; `POST /v1/oauth/resources` — register an audience for any service; `GET /v1/oauth/resources` — list audiences |
 
 A request to an endpoint without the required grant returns `403 Forbidden`:
 
@@ -78,7 +78,7 @@ Surge stores links — `("email", "alice@example.com")`, `("google", "117...")` 
 
 `oauth_admin` is deliberately separate from `identity_write`: registering an OAuth client is not an identity operation, and a service that manages users has no business minting clients. The flag that makes it sensitive is `first_party`, which skips the consent screen — a first-party client obtains a user's tokens with no approval step, so the grant that can set it stays narrow. Dynamically registered clients can never be first-party, whatever grant asked.
 
-A service registers its **own** audience: the owning `service_id` on `POST /v1/oauth/resources` is taken from the authenticated token, never from the body. That is what keeps the introspection check meaningful — `POST /oauth2/introspect` is authenticated by a service token with `introspect`, and answers only about tokens whose audience that service owns. Any other service gets `active: false`, not someone else's token contents.
+Treat `oauth_admin` as trusted registry-wide delegation authority. Its holder can register an audience for any existing service by supplying `owner_service_id`. Omitting the field assigns the audience to the caller. The owner needs the separate `introspect` grant to introspect tokens for that audience. Other services receive `active: false`. [Resource registration API](../api/service/oauth-resources.md)
 
 ### Verified and unverified links
 

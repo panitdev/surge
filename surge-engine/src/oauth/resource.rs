@@ -3,8 +3,11 @@
 //! the row points at the `service` that owns the resource server — a join no
 //! external authorization server can perform.
 
+use crate::audit::{audit_conn, AuditActor};
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use diesel::result::{DatabaseErrorKind, Error};
+use diesel_async::scoped_futures::ScopedFutureExt;
+use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
 
 use super::{now, OauthResource};
 use crate::models::{NewOauthResource, OauthResourceRow};
@@ -20,35 +23,47 @@ impl Engine {
         scopes: Vec<String>,
         scope_descriptions: serde_json::Value,
     ) -> Result<OauthResource, AuthError> {
-        let canonical = canonicalize_resource_uri(resource_uri)?;
-        if !scope_descriptions.is_object() {
-            return Err(AuthError::Validation(ValidationError::Field {
-                field: "scope_descriptions",
-                message: "must be a JSON object of {scope: description}".into(),
-            }));
-        }
-        let created_at = now();
-
         let mut conn = self.conn().await?;
-        diesel::insert_into(oauth_resource::table)
-            .values(&NewOauthResource {
-                resource_uri: &canonical,
-                service_id,
-                scopes: scopes.clone(),
-                scope_descriptions: scope_descriptions.clone(),
-                created_at,
-            })
-            .execute(&mut conn)
-            .await
-            .map_err(|e| AuthError::Internal(e.into()))?;
-
-        Ok(OauthResource {
-            resource_uri: canonical,
+        insert_resource(
+            &mut conn,
+            resource_uri,
             service_id,
             scopes,
             scope_descriptions,
-            created_at,
+        )
+        .await
+    }
+
+    pub async fn register_oauth_resource(
+        &self,
+        actor: AuditActor,
+        resource_uri: &str,
+        service_id: uuid::Uuid,
+        scopes: Vec<String>,
+        scope_descriptions: serde_json::Value,
+    ) -> Result<OauthResource, AuthError> {
+        let mut conn = self.conn().await?;
+        conn.transaction(|conn| {
+            async move {
+                let resource =
+                    insert_resource(conn, resource_uri, service_id, scopes, scope_descriptions)
+                        .await?;
+                audit_conn(
+                    conn,
+                    actor,
+                    "create_oauth_resource",
+                    serde_json::json!({
+                        "resource_uri": resource.resource_uri,
+                        "owner_service_id": service_id,
+                    }),
+                    None,
+                )
+                .await?;
+                Ok(resource)
+            }
+            .scope_boxed()
         })
+        .await
     }
 
     pub async fn get_oauth_resource(&self, resource_uri: &str) -> Result<OauthResource, AuthError> {
@@ -114,6 +129,49 @@ impl Engine {
             .await
             .map_err(|e| AuthError::Internal(e.into()))
     }
+}
+
+async fn insert_resource(
+    conn: &mut AsyncPgConnection,
+    resource_uri: &str,
+    service_id: uuid::Uuid,
+    scopes: Vec<String>,
+    scope_descriptions: serde_json::Value,
+) -> Result<OauthResource, AuthError> {
+    let canonical = canonicalize_resource_uri(resource_uri)?;
+    if !scope_descriptions.is_object() {
+        return Err(AuthError::Validation(ValidationError::Field {
+            field: "scope_descriptions",
+            message: "must be a JSON object of {scope: description}".into(),
+        }));
+    }
+    let created_at = now();
+
+    diesel::insert_into(oauth_resource::table)
+        .values(&NewOauthResource {
+            resource_uri: &canonical,
+            service_id,
+            scopes: scopes.clone(),
+            scope_descriptions: scope_descriptions.clone(),
+            created_at,
+        })
+        .execute(conn)
+        .await
+        .map_err(|err| match err {
+            Error::DatabaseError(DatabaseErrorKind::UniqueViolation, _) => {
+                AuthError::ResourceAlreadyRegistered
+            }
+            Error::DatabaseError(DatabaseErrorKind::ForeignKeyViolation, _) => AuthError::NotFound,
+            other => AuthError::Internal(other.into()),
+        })?;
+
+    Ok(OauthResource {
+        resource_uri: canonical,
+        service_id,
+        scopes,
+        scope_descriptions,
+        created_at,
+    })
 }
 
 fn row_to_resource(row: OauthResourceRow) -> OauthResource {

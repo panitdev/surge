@@ -21,6 +21,9 @@ pub enum AuthError {
     #[error("username taken")]
     UsernameTaken,
 
+    #[error("resource URI already registered")]
+    ResourceAlreadyRegistered,
+
     #[error("validation error: {0}")]
     Validation(ValidationError),
 

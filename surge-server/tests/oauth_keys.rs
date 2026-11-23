@@ -144,8 +144,40 @@ async fn rotation_keeps_older_tokens_verifiable_until_the_key_is_retired() {
 
 #[tokio::test]
 #[ignore = "requires a live Postgres via DATABASE_URL"]
-async fn introspection_answers_the_owning_service_and_nobody_else() {
-    let h = harness().await;
+async fn introspection_answers_the_delegated_owner_and_nobody_else() {
+    let mut h = harness().await;
+    let owner_token = surge_engine::types::ServiceToken::generate();
+    let owner = h
+        .engine
+        .create_service(
+            &format!("delegated-{}", h.suffix),
+            owner_token.hash(),
+            vec!["introspect".into()],
+            vec![],
+        )
+        .await
+        .unwrap();
+    let caller = h.engine.get_oauth_resource(&h.resource_uri).await.unwrap().service_id;
+    h.resource_uri.push_str("-delegated");
+    let resp = register_resource(&h, &h.service_token, &h.resource_uri, Some(owner.id)).await;
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    assert_eq!(body_json(resp).await["service_id"], json!(owner.id));
+    {
+        use diesel::prelude::*;
+        use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
+        use surge_engine::schema::audit_log;
+        let mut conn = AsyncPgConnection::establish(&std::env::var("DATABASE_URL").unwrap())
+            .await.unwrap();
+        let (actor, subject) = audit_log::table
+            .filter(audit_log::action.eq("create_oauth_resource"))
+            .filter(audit_log::subject.contains(json!({"resource_uri": h.resource_uri})))
+            .select((audit_log::actor, audit_log::subject))
+            .first::<(serde_json::Value, serde_json::Value)>(&mut conn)
+            .await.unwrap();
+        assert_eq!(actor["id"], json!(caller));
+        assert_eq!(actor["type"], "service");
+        assert_eq!(subject["owner_service_id"], json!(owner.id));
+    }
     let session = h.sign_in().await;
     let client_id = h.client(true).await;
     let pkce = Pkce::generate();
@@ -167,25 +199,13 @@ async fn introspection_answers_the_owning_service_and_nobody_else() {
     .await;
     let access = tokens["access_token"].as_str().unwrap().to_string();
 
-    let body = body_json(h.introspect(&access, &h.service_token).await).await;
+    let body = body_json(h.introspect(&access, owner_token.expose_secret()).await).await;
     assert_eq!(body["active"], true);
     assert_eq!(body["aud"], h.resource_uri);
     assert_eq!(body["client_id"], client_id);
     assert_eq!(body["scope"], "mcp:read");
 
-    // A service token belonging to a service that owns no matching resource
-    // gets `active: false`, not someone else's token contents.
-    let other = surge_engine::types::ServiceToken::generate();
-    h.engine
-        .create_service(
-            &format!("other-svc-{}", h.suffix),
-            other.hash(),
-            vec!["introspect".to_string()],
-            vec![],
-        )
-        .await
-        .unwrap();
-    let body = body_json(h.introspect(&access, other.expose_secret()).await).await;
+    let body = body_json(h.introspect(&access, &h.service_token).await).await;
     assert_eq!(body["active"], false);
     assert!(body["sub"].is_null());
 }
@@ -270,4 +290,88 @@ fn decode_header(token: &str) -> serde_json::Value {
         .decode(header)
         .unwrap();
     serde_json::from_slice(&bytes).unwrap()
+}
+
+async fn register_resource(
+    h: &Harness,
+    token: &str,
+    uri: &str,
+    owner: Option<uuid::Uuid>,
+) -> axum::response::Response {
+    use tower::ServiceExt;
+    let mut body = json!({ "resource_uri": uri, "scopes": ["mcp:read"] });
+    if let Some(owner) = owner {
+        body["owner_service_id"] = json!(owner);
+    }
+    h.app
+        .clone()
+        .oneshot(
+            axum::http::Request::post("/v1/oauth/resources")
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+#[ignore = "requires a live Postgres via DATABASE_URL"]
+async fn registration_enforces_grants_and_preserves_the_first_owner() {
+    let h = harness().await;
+    let caller = h
+        .engine
+        .get_oauth_resource(&h.resource_uri)
+        .await
+        .unwrap()
+        .service_id;
+    let uri = format!("{}-registry", h.resource_uri);
+    let token = surge_engine::types::ServiceToken::generate();
+    let other = h
+        .engine
+        .create_service(
+            &format!("registry-{}", h.suffix),
+            token.hash(),
+            vec![],
+            vec![],
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        register_resource(&h, token.expose_secret(), &uri, Some(caller))
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        register_resource(&h, &h.service_token, &uri, Some(uuid::Uuid::nil()))
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    let resp = register_resource(&h, &h.service_token, &uri, None).await;
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    assert_eq!(body_json(resp).await["service_id"], json!(caller));
+
+    let contested = format!("{uri}-race");
+    let alias = format!("{contested}/");
+    let (first, second) = tokio::join!(
+        register_resource(&h, &h.service_token, &contested, None),
+        register_resource(&h, &h.service_token, &alias, Some(other.id)),
+    );
+    let winner = match (first.status(), second.status()) {
+        (StatusCode::CREATED, StatusCode::CONFLICT) => caller,
+        (StatusCode::CONFLICT, StatusCode::CREATED) => other.id,
+        statuses => panic!("unexpected registration responses {statuses:?}"),
+    };
+    assert_eq!(
+        h.engine
+            .get_oauth_resource(&contested)
+            .await
+            .unwrap()
+            .service_id,
+        winner
+    );
 }

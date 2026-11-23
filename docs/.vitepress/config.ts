@@ -73,6 +73,7 @@ export default defineConfig({
           {
             text: 'Service Endpoints',
             items: [
+              { text: 'OAuth Resources', link: '/api/service/oauth-resources' },
               { text: 'Session Verify', link: '/api/service/session-verify' },
               { text: 'Session Revoke', link: '/api/service/session-revoke' },
               { text: 'Identities', link: '/api/service/identity-crud' },
