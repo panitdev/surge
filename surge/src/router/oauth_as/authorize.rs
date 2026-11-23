@@ -371,11 +371,10 @@ async fn resolve_resource(
 
     match state.engine.get_oauth_resource(&canonical).await {
         Ok(resource) => Ok(resource),
-        Err(AuthError::NotFound) => Err((
-            OauthErrorCode::InvalidTarget,
-            "unknown resource; this audience is not registered with this authorization server"
-                .to_string(),
-        )),
+        // Indistinguishable from an ineligible target.
+        Err(AuthError::NotFound) => {
+            Err((OauthErrorCode::InvalidTarget, INELIGIBLE_TARGET.to_string()))
+        }
         Err(e) => Err((OauthErrorCode::ServerError, e.to_string())),
     }
 }

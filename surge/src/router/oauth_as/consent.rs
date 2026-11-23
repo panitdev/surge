@@ -116,11 +116,17 @@ pub(crate) async fn decide_consent_flow(
     // authorization request was validated. An ineligible flow is spent, not
     // left open for a retry that can never succeed.
     let client = state.engine.get_oauth_client(&flow.client_id).await?;
-    let registration = state
+    let eligible = match state
         .engine
         .get_oauth_registration(flow.registration_id)
-        .await?;
-    if !client_may_use_resource(&client, &registration) {
+        .await
+    {
+        Ok(registration) => client_may_use_resource(&client, &registration),
+        // Deleted since the flow began: the same answer as ineligible.
+        Err(AuthError::NotFound) => false,
+        Err(e) => return Err(e.into()),
+    };
+    if !eligible {
         state.engine.deny_consent_flow(&flow, &binding).await?;
         let redirect = build_redirect(&flow.redirect_uri, |q| {
             q.append_pair("error", OauthErrorCode::InvalidTarget.as_str());

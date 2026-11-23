@@ -9,13 +9,12 @@
 //!
 //! The rule, in order:
 //!
-//! 1. A client with an explicit audience list (`Some`) is restricted to it,
+//! 1. A client-ID-metadata-document (CIMD) client may use a resource only
+//!    if its exact client ID URL is in the resource's allowlist.
+//! 2. A client with an explicit audience list (`Some`) is restricted to it,
 //!    for every resource. An empty list grants nothing. Membership is by
 //!    registration, so an approval does not survive the resource being
 //!    deleted and registered again.
-//! 2. A client-ID-metadata-document (CIMD) client has no stored approvals
-//!    and may use a resource only if its exact client ID URL is in the
-//!    resource's allowlist.
 //! 3. A client with no list (`None`, the legacy default) keeps its existing
 //!    access to *service* resources, and has none to delegated resources
 //!    unless a dynamically registered client meets a resource that has opted
@@ -33,15 +32,17 @@ pub fn client_may_use_resource(client: &OauthClient, resource: &OauthResource) -
     let delegated = resource.registration_source == ResourceSource::Delegated;
     let dynamic = client.registration_source == RegistrationSource::Dynamic;
 
+    // First, so a CIMD client is always held to the allowlist whatever else
+    // is stored for it.
+    if is_cimd_client_id(&client.client_id) {
+        return resource.allowed_cimd_client_ids.contains(&client.client_id);
+    }
+
     if let Some(approved) = &client.audiences {
         if !approved.contains(&resource.resource_uri) {
             return false;
         }
         return !(delegated && dynamic && !resource.dcr_enabled);
-    }
-
-    if is_cimd_client_id(&client.client_id) {
-        return resource.allowed_cimd_client_ids.contains(&client.client_id);
     }
 
     if !delegated {
@@ -92,7 +93,7 @@ mod tests {
 
     fn resource(source: ResourceSource, dcr: bool, cimd: Vec<&str>) -> OauthResource {
         OauthResource {
-            registration_id: Uuid::new_v4(),
+            registration_id: Uuid::now_v7(),
             resource_uri: "https://rs.example/mcp".into(),
             registration_source: source,
             service_id: None,

@@ -269,7 +269,7 @@ async fn approve_audiences(
         .map_err(|e| AuthError::Internal(e.into()))?;
     if resources.len() != uris.len() {
         return Err(field(
-            "audiences",
+            "resources",
             "every audience must be a registered resource",
         ));
     }
@@ -279,7 +279,7 @@ async fn approve_audiences(
         .find(|resource| !super::client_may_use_resource(client, resource))
     {
         return Err(field(
-            "audiences",
+            "resources",
             format!(
                 "this client may not be bound to {}: it is delegated and has not opted in to \
                  dynamic registration",

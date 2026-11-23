@@ -388,15 +388,15 @@ async fn a_dynamic_client_cannot_bind_itself_to_a_resource_that_has_not_opted_in
 
     let resp = register(json!(["https://nowhere.oauth.test/mcp"])).await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_json(resp).await["error"], "invalid_client_metadata");
 
     let resp = register(json!([open])).await;
     assert_eq!(resp.status(), StatusCode::CREATED);
-    let client_id = body_json(resp).await["client_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let registered = body_json(resp).await;
+    assert_eq!(registered["resources"], json!([open]));
+    let client_id = registered["client_id"].as_str().unwrap().to_string();
     let stored = h.engine.get_oauth_client(&client_id).await.unwrap();
-    assert_eq!(stored.audiences, Some(vec![open]));
+    assert_eq!(stored.audiences, Some(vec![open.clone()]));
 
     // Service resources can be listed, which restricts the client to them.
     let resp = register(json!([h.resource_uri])).await;
@@ -451,4 +451,132 @@ async fn introspection_never_answers_for_a_delegated_registration() {
     // not ownership: delegated registrations are owned by no service.
     let body = body_json(h.introspect(access, &h.service_token).await).await;
     assert_eq!(body["active"], false);
+}
+
+#[tokio::test]
+#[ignore = "requires a live Postgres via DATABASE_URL"]
+async fn an_ineligible_refresh_ends_the_grant() {
+    let h = harness().await;
+    let session = h.sign_in().await;
+    let client_id = client(
+        &h,
+        true,
+        RegistrationSource::Admin,
+        Some(vec![h.resource_uri.clone()]),
+    )
+    .await;
+    let (pkce, target) = authorize(&h, &client_id, &session, &h.resource_uri).await;
+    let code = query_param(&target, "code").unwrap();
+    let (_, tokens) = redeem(&h, &client_id, &code, &pkce).await;
+    let access = tokens["access_token"].as_str().unwrap();
+    let refresh = tokens["refresh_token"].as_str().unwrap();
+    let live = body_json(h.introspect(access, &h.service_token).await).await;
+    assert_eq!(live["active"], true);
+
+    drop_approvals(&client_id).await;
+
+    let resp = h
+        .post_form(
+            "/oauth2/token",
+            &[
+                ("grant_type", "refresh_token"),
+                ("refresh_token", refresh),
+                ("client_id", &client_id),
+            ],
+        )
+        .await;
+    assert_eq!(body_json(resp).await["error"], "invalid_target");
+
+    // No live successor is left behind: the grant is not live, so the access
+    // token already issued stops introspecting as active.
+    let after = body_json(h.introspect(access, &h.service_token).await).await;
+    assert_eq!(after["active"], false);
+}
+
+#[tokio::test]
+#[ignore = "requires a live Postgres via DATABASE_URL"]
+async fn an_unknown_resource_looks_like_an_ineligible_one() {
+    let h = harness().await;
+    let session = h.sign_in().await;
+    let client_id = client(&h, true, RegistrationSource::Admin, Some(vec![])).await;
+    let pkce = Pkce::generate();
+
+    let unknown = location(
+        &h.get(
+            &h.authorize_uri(&client_id, &pkce, Some("https://nope.oauth.test/mcp"), None),
+            Some(&session),
+        )
+        .await,
+    );
+    let (_, ineligible) = authorize(&h, &client_id, &session, &h.resource_uri).await;
+    assert_invalid_target(&unknown);
+    assert_eq!(
+        query_param(&unknown, "error_description"),
+        query_param(&ineligible, "error_description")
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires a live Postgres via DATABASE_URL"]
+async fn tokens_without_the_access_token_type_or_from_the_future_are_refused() {
+    let h = harness().await;
+    let _session = h.sign_in().await;
+    let sub = h.identity_id().await.to_string();
+    let claims = |iat| access_claims(ISSUER, &sub, &h.resource_uri, "openid mcp:read", iat);
+
+    let good = forge_jwt(&h.engine, Some("at+jwt"), claims(0)).await;
+    assert_eq!(
+        h.bearer_get("/oauth2/userinfo", &good).await.status(),
+        StatusCode::OK
+    );
+
+    let mut refused = vec![
+        forge_jwt(&h.engine, None, claims(0)).await,
+        forge_jwt(&h.engine, Some("JWT"), claims(0)).await,
+        forge_jwt(&h.engine, Some("at+jwt"), claims(3600)).await,
+    ];
+    // An ID token as the AS signs it: no typ, audience is the client.
+    let mut id_token = claims(0);
+    id_token["aud"] = json!("aeg_cid_someclient");
+    refused.push(forge_jwt(&h.engine, None, id_token).await);
+
+    for token in refused {
+        let resp = h.bearer_get("/oauth2/userinfo", &token).await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let body = body_json(h.introspect(&token, &h.service_token).await).await;
+        assert_eq!(body["active"], false);
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires a live Postgres via DATABASE_URL"]
+async fn the_service_api_binds_a_new_client_to_resources() {
+    use tower::ServiceExt;
+    let h = harness().await;
+    let create = |resources: Value| {
+        h.app.clone().oneshot(
+            axum::http::Request::post("/v1/oauth/clients")
+                .header("authorization", format!("Bearer {}", h.service_token))
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(
+                    json!({
+                        "client_name": "Bound",
+                        "redirect_uris": [CLIENT_REDIRECT],
+                        "scopes": ["mcp:read"],
+                        "resources": resources,
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+    };
+
+    let resp = create(json!([h.resource_uri])).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let client_id = body_json(resp).await["client_id"].as_str().unwrap().to_string();
+    let stored = h.engine.get_oauth_client(&client_id).await.unwrap();
+    assert_eq!(stored.audiences, Some(vec![h.resource_uri.clone()]));
+
+    let resp = create(json!(["https://nowhere.oauth.test/mcp"])).await.unwrap();
+    assert!(resp.status().is_client_error(), "{}", resp.status());
 }

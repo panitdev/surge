@@ -170,6 +170,10 @@ pub(crate) fn verify_access_token(
             continue;
         };
         if let Ok(data) = jsonwebtoken::decode::<AccessClaims>(token, &decoding, &validation) {
+            // Same skew allowance as `exp` (jsonwebtoken's default leeway).
+            if data.claims.iat > chrono::Utc::now().timestamp() + validation.leeway as i64 {
+                continue;
+            }
             return Ok(data.claims);
         }
     }

@@ -246,6 +246,14 @@ impl ResourceServer {
             if let Ok(data) =
                 jsonwebtoken::decode::<ResourceClaims>(token, &decoding, &validation)
             {
+                // A token from the future: same skew allowance as `exp`.
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or_default();
+                if data.claims.iat > now + validation.leeway as i64 {
+                    continue;
+                }
                 return Ok(data.claims);
             }
         }

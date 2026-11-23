@@ -486,7 +486,7 @@ pub(crate) async fn create_oauth_client(
                 name: auth.service_name,
             },
             "create_oauth_client",
-            json!({"client_id": client.client_id, "first_party": client.first_party}),
+            json!({"client_id": client.client_id, "first_party": client.first_party, "resources": client.audiences}),
             None,
         )
         .await?;

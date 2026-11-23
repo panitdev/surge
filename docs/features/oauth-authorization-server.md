@@ -81,10 +81,12 @@ Startup requires a registered return origin for the issuer and requires `https` 
 
 One rule decides whether a client may be issued tokens for a resource, and it is applied to current state at every point a token can come into being: `GET /oauth2/authorize`, consent completion, code redemption and refresh. A grant that was eligible on the day of consent is checked again each time. Ineligible requests fail with `invalid_target`, and the error never says whether the resource exists.
 
-1. **A client with an explicit audience list is restricted to it, for every resource, service or delegated.** An empty list grants nothing. The list names registrations, not URIs, so it does not survive the resource being deleted and registered again.
-2. **A client with no list (the default for existing clients) keeps its access to service resources.** It has none to delegated resources, with the exception in rule 4.
-3. **A CIMD client** (its client ID is an `https` URL) has no stored list and may use a resource only if its exact client ID is in that resource's `allowed_cimd_client_ids`.
+1. **A CIMD client** (its client ID is an `https` URL) may use a resource only if its exact client ID is in that resource's `allowed_cimd_client_ids`. This is checked first, so a CIMD client is always held to the allowlist.
+2. **A client with an explicit audience list is restricted to it, for every resource, service or delegated.** An empty list grants nothing. The list names registrations, not URIs, so it does not survive the resource being deleted and registered again.
+3. **A client with no list (the default for existing clients) keeps its access to service resources.** It has none to delegated resources, with the exception in rule 4.
 4. **A dynamically registered client without a list** may use a delegated resource that has set `dcr_enabled`. A dynamic client's explicit list is honoured for a delegated resource only if that resource has also opted in, so an anonymous registration cannot bind itself to someone else's resource.
+
+If a refresh fails this check, the whole grant is ended: the family is revoked, so no live refresh token remains and introspection stops reporting the earlier access tokens as active. An unknown resource and an ineligible one return the identical error.
 
 Scopes are then narrowed per resource, so two resources that both define `mcp:read` stay separate: consent, codes, refresh tokens and the access token's `aud` are all bound to one registration.
 

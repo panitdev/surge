@@ -161,6 +161,9 @@ async fn run(
         "token_endpoint_auth_method": client.token_endpoint_auth_method,
         "client_id_issued_at": client.created_at.timestamp(),
     });
+    if let Some(resources) = &client.audiences {
+        response["resources"] = json!(resources);
+    }
 
     if let Some(secret) = secret {
         response["client_secret"] = json!(secret.expose_secret());

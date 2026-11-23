@@ -152,6 +152,7 @@ async fn client(cmd: ClientCommand, engine: Arc<Engine>) -> anyhow::Result<()> {
                     serde_json::json!({
                         "client_id": client.client_id,
                         "first_party": client.first_party,
+                        "resources": client.audiences,
                     }),
                     None,
                 )

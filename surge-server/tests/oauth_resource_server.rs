@@ -350,3 +350,43 @@ async fn a_token_without_the_required_scope_is_forbidden_not_unauthorized() {
         .to_string();
     assert!(challenge.contains("insufficient_scope"));
 }
+
+/// The token's header says what it is. A JWT this issuer signed that does not
+/// declare `at+jwt` (an ID token, say), or that claims to have been issued in
+/// the future, is not a bearer credential -- even with the right audience.
+#[tokio::test]
+#[ignore = "requires a live Postgres via DATABASE_URL"]
+async fn a_resource_server_refuses_a_jwt_that_is_not_a_current_access_token() {
+    let (issuer, engine, _app, resource_uri, _suffix) = listening_as().await;
+    let server = ResourceServer::new(ResourceServerConfig {
+        issuer: issuer.clone(),
+        resource_uri: resource_uri.clone(),
+        required_scopes: vec![],
+        jwks_cache_ttl: Duration::from_secs(60),
+    })
+    .unwrap();
+    let rs = resource_app(&server);
+    let get = |token: String| {
+        rs.clone().oneshot(
+            axum::http::Request::builder()
+                .uri("/mcp")
+                .header("authorization", format!("Bearer {token}"))
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+    };
+    let claims = |iat| access_claims(&issuer, "sub", &resource_uri, "mcp:read", iat);
+
+    let ok = get(forge_jwt(&engine, Some("at+jwt"), claims(0)).await)
+        .await
+        .unwrap();
+    assert_eq!(ok.status(), StatusCode::OK);
+
+    for token in [
+        forge_jwt(&engine, None, claims(0)).await,
+        forge_jwt(&engine, Some("JWT"), claims(0)).await,
+        forge_jwt(&engine, Some("at+jwt"), claims(3600)).await,
+    ] {
+        assert_eq!(get(token).await.unwrap().status(), StatusCode::UNAUTHORIZED);
+    }
+}

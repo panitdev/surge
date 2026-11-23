@@ -241,7 +241,15 @@ async fn refresh_token_grant(
 
     // Eligibility is current-state, not a fact about the day of consent: a
     // client dropped from a resource's audience list stops refreshing there.
-    ensure_eligible(state, &client, rotated.grant.registration_id).await?;
+    //
+    // The rotation has already spent the presented token and minted its
+    // successor, so a failure here must end the grant: the whole family is
+    // revoked, leaving no live refresh token behind to keep
+    // `oauth_grant_is_live` (and so introspection) answering for it.
+    if let Err(e) = ensure_eligible(state, &client, rotated.grant.registration_id).await {
+        end_grant(state, &client, &rotated.token).await;
+        return Err(e);
+    }
 
     // The grant is bound to the identity, so this is the check that matters:
     // a disabled account stops refreshing within one access-token lifetime,
@@ -249,11 +257,16 @@ async fn refresh_token_grant(
     let identity = state
         .provider
         .identity(rotated.grant.identity_id)
-        .await
-        .map_err(|_| {
-            OauthError::new(OauthErrorCode::InvalidGrant, "the account is no longer active")
-        })?;
+        .await;
+    let Ok(identity) = identity else {
+        end_grant(state, &client, &rotated.token).await;
+        return Err(OauthError::new(
+            OauthErrorCode::InvalidGrant,
+            "the account is no longer active",
+        ));
+    };
     if identity.state != surge_engine::IdentityState::Active {
+        end_grant(state, &client, &rotated.token).await;
         return Err(OauthError::new(
             OauthErrorCode::InvalidGrant,
             "the account is disabled",
@@ -271,6 +284,18 @@ async fn refresh_token_grant(
 
     let response = build_token_body(state, &client, &grant, None, false).await?;
     Ok(Json(with_refresh(response, rotated.token.expose_secret())).into_response())
+}
+
+/// Revokes the whole refresh family `successor` belongs to. Best-effort: the
+/// request is failing regardless, and a failure to revoke is logged.
+async fn end_grant(state: &AsState, client: &OauthClient, successor: &RefreshToken) {
+    if let Err(e) = state
+        .engine
+        .revoke_refresh_token(successor, &client.client_id)
+        .await
+    {
+        tracing::warn!(error = %e, client_id = %client.client_id, "failed to end a refused grant");
+    }
 }
 
 /// The shared eligibility rule, applied to the registration a grant is bound
