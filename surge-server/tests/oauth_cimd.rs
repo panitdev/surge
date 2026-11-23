@@ -593,8 +593,8 @@ async fn the_database_refuses_a_first_party_or_confidential_cimd_row() {
         diesel::sql_query(
             "INSERT INTO surge.oauth_client \
              (client_id, client_name, redirect_uris, token_endpoint_auth_method, \
-              registration_source, first_party, trust_state) \
-             VALUES ($1, 'x', ARRAY['https://a.test/cb'], $2, $3, $4, 'untrusted')",
+              registration_source, first_party, trust_state, scope_ceiling_explicit) \
+             VALUES ($1, 'x', ARRAY['https://a.test/cb'], $2, $3, $4, 'untrusted', true)",
         )
         .bind::<diesel::sql_types::Text, _>(id)
         .bind::<diesel::sql_types::Text, _>(auth)
