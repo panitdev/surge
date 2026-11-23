@@ -497,7 +497,9 @@ fn row_to_client(row: OauthClientRow, audiences: Option<Vec<String>>) -> OauthCl
         scopes: row.scopes,
         token_endpoint_auth_method: row.token_endpoint_auth_method,
         registration_source: RegistrationSource::from_db(&row.registration_source),
-        first_party: row.first_party,
+        // An unrecognised source is never trusted to skip consent.
+        first_party: row.first_party
+            && RegistrationSource::from_db(&row.registration_source) != RegistrationSource::Unknown,
         trust_state: row.trust_state,
         confidential: row.client_secret_hash.is_some(),
         audiences,

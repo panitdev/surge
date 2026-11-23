@@ -54,6 +54,12 @@ pub enum RegistrationSource {
     /// Third-party and untrusted, and never swept: an administrator revokes it
     /// (registrar revoke is future work).
     Platform,
+    /// A stored value this build does not recognise (the database constrains
+    /// it, so this is a newer or corrupted row). Fails closed: untrusted
+    /// metadata, never first-party, and eligible for no resource. Never
+    /// accepted from, or created by, a request.
+    #[serde(skip_deserializing)]
+    Unknown,
 }
 
 impl RegistrationSource {
@@ -68,6 +74,7 @@ impl RegistrationSource {
             Self::Admin => "admin",
             Self::Dynamic => "dynamic",
             Self::Platform => "platform",
+            Self::Unknown => "unknown",
         }
     }
 
@@ -76,10 +83,8 @@ impl RegistrationSource {
             "dynamic" => Self::Dynamic,
             "platform" => Self::Platform,
             "admin" => Self::Admin,
-            // Unknown must not fail open to the trusted variant. `Dynamic`
-            // is the most restricted: untrusted metadata, never first-party,
-            // and held to the DCR opt-in at issuance.
-            _ => Self::Dynamic,
+            // Must not fail open: `Unknown` is untrusted and has no access.
+            _ => Self::Unknown,
         }
     }
 }
@@ -145,6 +150,11 @@ pub enum ResourceSource {
     /// Registered on a developer's behalf by a delegated registrar. Owned by
     /// no service.
     Delegated,
+    /// A stored value this build does not recognise. Fails closed: no client
+    /// is eligible, no registrar manages it, no service introspects for it.
+    /// Never accepted from a request.
+    #[serde(skip_deserializing)]
+    Unknown,
 }
 
 impl ResourceSource {
@@ -152,13 +162,15 @@ impl ResourceSource {
         match self {
             Self::Service => "service",
             Self::Delegated => "delegated",
+            Self::Unknown => "unknown",
         }
     }
 
     pub(crate) fn from_db(s: &str) -> Self {
         match s {
+            "service" => Self::Service,
             "delegated" => Self::Delegated,
-            _ => Self::Service,
+            _ => Self::Unknown,
         }
     }
 }

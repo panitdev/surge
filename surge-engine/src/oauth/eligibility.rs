@@ -29,6 +29,12 @@ use super::{OauthClient, OauthResource, RegistrationSource, ResourceSource};
 
 /// True when `client` may be issued tokens for `resource`.
 pub fn client_may_use_resource(client: &OauthClient, resource: &OauthResource) -> bool {
+    // A source this build does not recognise grants nothing to anyone.
+    if resource.registration_source == ResourceSource::Unknown
+        || client.registration_source == RegistrationSource::Unknown
+    {
+        return false;
+    }
     let delegated = resource.registration_source == ResourceSource::Delegated;
     // Only `Dynamic` gets DCR opt-in admission. A `Platform` client is bound
     // by its registrar to specific registrations and relies on that explicit
@@ -111,6 +117,24 @@ mod tests {
     }
 
     const URI: &str = "https://rs.example/mcp";
+
+    #[test]
+    fn an_unrecognised_source_grants_nothing() {
+        let resource = resource(ResourceSource::Unknown, true, vec![]);
+        assert!(!client_may_use_resource(
+            &client(RegistrationSource::Admin, None),
+            &resource
+        ));
+        let service = self::resource(ResourceSource::Service, false, vec![]);
+        assert!(!client_may_use_resource(
+            &client(RegistrationSource::Unknown, None),
+            &service
+        ));
+        assert!(!client_may_use_resource(
+            &client(RegistrationSource::Unknown, Some(vec![URI])),
+            &service
+        ));
+    }
 
     #[test]
     fn an_empty_list_grants_nothing() {

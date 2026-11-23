@@ -96,6 +96,8 @@ A caller holding neither grant, or a Platform credential asking for a service re
 
 The client is recorded with `registration_source` `platform` and `registrar_service_id` set to the authenticated service, and the response carries both, along with `audiences` (the canonical URIs bound). Consent and the connections list mark it `dynamically_registered: true`, meaning its name and logo are supplied by a developer and are untrusted, as for a dynamically registered client. Unlike dynamic clients, platform clients are not removed by the unused-client sweep (`SURGE_OAUTH_DCR_TTL_DAYS`); an administrator revokes them. (Registrar-scoped listing and revocation of its own clients are not implemented yet.)
 
-The audit entry `create_oauth_client` records the client, `registration_source`, `registrar_service_id` and the requested `resources` for both grants.
+The audit entry `create_oauth_client` records the client, `registration_source`, `registrar_service_id` and the canonical URIs of the resources the client was bound to, for both grants.
 
-Restricting a client to its `resources` is enforced when tokens are issued. That enforcement ships in the same release as this endpoint, so treat `resources` as the stored approval list until you deploy that release.
+`resources` is enforced at every issuance point: authorization, consent completion, code redemption and refresh. See [Audience and scope policy](../../features/oauth-authorization-server.md#audience-and-scope-policy).
+
+**Rollout.** Do not grant `oauth_client_register` until every node runs this release. An older binary reads a `platform` client as `admin` and does not enforce eligibility.

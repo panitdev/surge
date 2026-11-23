@@ -695,6 +695,13 @@ pub(crate) async fn create_oauth_resource(
             }
             None
         }
+        (_, ResourceSource::Unknown) => {
+            return Err(AuthError::Validation(ValidationError::Field {
+                field: "registration_source",
+                message: "must be `service` or `delegated`".into(),
+            })
+            .into());
+        }
         // Service registrations and owner assignment stay with administration.
         (ResourceAuthority::Registrar(_), ResourceSource::Service) => {
             return Err(AuthError::Forbidden.into());
