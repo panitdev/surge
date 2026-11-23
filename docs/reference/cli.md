@@ -138,7 +138,7 @@ Store this token securely — it cannot be retrieved again.
 | Flag | Required | Description |
 |---|---|---|
 | `--name` | Yes | Human-readable name for the service (used in audit logs) |
-| `--grant` | Yes | Repeatable flag for each grant: `introspect`, `identity_read`, `identity_write`, `direct_auth`, `revoke`, `browser_proxy`, `account_list`, `external_auth`, `external_link`, `oauth_admin` |
+| `--grant` | Yes | Repeatable flag for each grant: `introspect`, `identity_read`, `identity_write`, `direct_auth`, `revoke`, `browser_proxy`, `account_list`, `external_auth`, `external_link`, `oauth_admin`, `oauth_resource_register`, `oauth_client_register` |
 | `--origin` | No | Repeatable flag registering a return origin for browser login and, with `account_list`, an exact origin allowed to list browser accounts |
 
 The raw token is printed to stdout once. Store it immediately in a secrets manager or environment variable. The token hash is stored in the database — the raw token cannot be recovered.

@@ -8,7 +8,9 @@ use axum::routing::{delete, get, patch, post};
 use axum::{Extension, Json, Router};
 use serde::Deserialize;
 use serde_json::json;
+use surge_engine::oauth::{OauthResource, ResourceSource};
 use surge_engine::types::*;
+use uuid::Uuid;
 
 use super::error::ApiError;
 use super::middleware::{require_grant, service_auth, ServiceAuth};
@@ -42,6 +44,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             "/oauth/resources",
             get(list_oauth_resources).post(create_oauth_resource),
+        )
+        .route(
+            "/oauth/resources/{registration_id}",
+            get(get_oauth_resource),
         )
         .layer(middleware::from_fn_with_state(state.clone(), service_auth))
         .with_state(state)
@@ -436,6 +442,7 @@ pub(crate) async fn unlink_identity(
 // that can set it is deliberately narrow.
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct CreateOauthClientBody {
     client_name: String,
     #[serde(default)]
@@ -449,6 +456,54 @@ pub(crate) struct CreateOauthClientBody {
     confidential: bool,
     #[serde(default)]
     first_party: bool,
+    /// Resources the client is approved for. Absent means no list.
+    #[serde(default)]
+    resources: Option<Vec<String>>,
+}
+
+/// How a caller may register a client. `oauth_admin` is trusted
+/// administration. `oauth_client_register` is the Platform's separately
+/// bounded authority: it can only mint third-party clients, and only ones
+/// approved for resources that same service registered as a delegated
+/// registrar. The Platform variant carries the registration IDs that passed
+/// this check; the engine re-checks them under lock when it binds them.
+enum ClientAuthority {
+    Admin,
+    Platform(Vec<Uuid>),
+}
+
+async fn authorize_client_registration(
+    state: &AppState,
+    auth: &ServiceAuth,
+    body: &CreateOauthClientBody,
+) -> Result<ClientAuthority, AuthError> {
+    if require_grant(auth, "oauth_admin").is_ok() {
+        return Ok(ClientAuthority::Admin);
+    }
+    require_grant(auth, "oauth_client_register").map_err(|_| AuthError::Forbidden)?;
+    if body.first_party {
+        return Err(AuthError::Forbidden);
+    }
+    let resources = body.resources.as_deref().unwrap_or_default();
+    if resources.is_empty() {
+        return Err(AuthError::Validation(ValidationError::Field {
+            field: "resources",
+            message: "a delegated registrar must name the resources the client is for".into(),
+        }));
+    }
+    let mut ids = Vec::with_capacity(resources.len());
+    for uri in resources {
+        let resource = state.engine.get_oauth_resource(uri).await.map_err(|e| match e {
+            // An unknown resource and another registrar's look the same.
+            AuthError::NotFound => AuthError::Forbidden,
+            other => other,
+        })?;
+        if !ResourceAuthority::Registrar(auth.service_id).can_manage(&resource) {
+            return Err(AuthError::Forbidden);
+        }
+        ids.push(resource.registration_id);
+    }
+    Ok(ClientAuthority::Platform(ids))
 }
 
 pub(crate) async fn create_oauth_client(
@@ -456,33 +511,45 @@ pub(crate) async fn create_oauth_client(
     Extension(auth): Extension<ServiceAuth>,
     Json(body): Json<CreateOauthClientBody>,
 ) -> Result<impl IntoResponse, ApiError> {
-    require_grant(&auth, "oauth_admin").map_err(|_| AuthError::Forbidden)?;
+    let authority = authorize_client_registration(&state, &auth, &body).await?;
 
-    let (client, secret) = state
-        .engine
-        .create_oauth_client(surge_engine::oauth::NewOauthClient {
-            client_name: body.client_name,
-            client_uri: body.client_uri,
-            logo_uri: body.logo_uri,
-            redirect_uris: body.redirect_uris,
-            grant_types: vec!["authorization_code".to_string(), "refresh_token".to_string()],
-            scopes: body.scopes,
-            confidential: body.confidential,
-            first_party: body.first_party,
-            registration_source: surge_engine::oauth::RegistrationSource::Admin,
-            audiences: None,
-        })
-        .await?;
+    let spec = surge_engine::oauth::NewOauthClient {
+        client_name: body.client_name,
+        client_uri: body.client_uri,
+        logo_uri: body.logo_uri,
+        redirect_uris: body.redirect_uris,
+        grant_types: vec!["authorization_code".to_string(), "refresh_token".to_string()],
+        scopes: body.scopes,
+        confidential: body.confidential,
+        first_party: body.first_party,
+        registration_source: surge_engine::oauth::RegistrationSource::Admin,
+        audiences: body.resources,
+    };
+    let (client, secret) = match authority {
+        ClientAuthority::Admin => state.engine.create_oauth_client(spec).await?,
+        ClientAuthority::Platform(ids) => {
+            state
+                .engine
+                .create_platform_oauth_client(auth.service_id, spec, ids)
+                .await?
+        }
+    };
 
     state
         .engine
         .audit(
             surge_engine::audit::AuditActor::Service {
                 id: auth.service_id.to_string(),
-                name: auth.service_name,
+                name: auth.service_name.clone(),
             },
             "create_oauth_client",
-            json!({"client_id": client.client_id, "first_party": client.first_party}),
+            json!({
+                "client_id": client.client_id,
+                "first_party": client.first_party,
+                "registration_source": client.registration_source,
+                "registrar_service_id": client.registrar_service_id,
+                "resources": client.audiences,
+            }),
             None,
         )
         .await?;
@@ -531,10 +598,53 @@ pub(crate) async fn revoke_oauth_client(
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
+/// Who a service is when it touches the audience registry.
+///
+/// `oauth_admin` is trusted administration: any registration, including
+/// legacy ones whose registrar is unknown, and the only way to create a
+/// service registration or name an owner. `oauth_resource_register` is the
+/// Platform grant: it creates delegated resources and sees or manages only
+/// those it registered itself. The registrar is always the authenticated
+/// service, never a request field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResourceAuthority {
+    Admin,
+    Registrar(Uuid),
+}
+
+impl ResourceAuthority {
+    pub(crate) fn of(auth: &ServiceAuth) -> Result<Self, AuthError> {
+        if require_grant(auth, "oauth_admin").is_ok() {
+            Ok(Self::Admin)
+        } else if require_grant(auth, "oauth_resource_register").is_ok() {
+            Ok(Self::Registrar(auth.service_id))
+        } else {
+            Err(AuthError::Forbidden)
+        }
+    }
+
+    /// Whether this authority may read or change a registration. A
+    /// registrar owns only delegated registrations it created; one with an
+    /// unknown registrar, or another's, is administration's alone.
+    pub(crate) fn can_manage(self, resource: &OauthResource) -> bool {
+        match self {
+            Self::Admin => true,
+            Self::Registrar(id) => {
+                resource.registration_source == ResourceSource::Delegated
+                    && resource.registrar_service_id == Some(id)
+            }
+        }
+    }
+}
+
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct CreateOauthResourceBody {
     resource_uri: String,
-    owner_service_id: Option<uuid::Uuid>,
+    owner_service_id: Option<Uuid>,
+    /// `service` (the default, for existing administrators) or `delegated`.
+    #[serde(default)]
+    registration_source: Option<ResourceSource>,
     scopes: Vec<String>,
     #[serde(default)]
     scope_descriptions: Option<serde_json::Value>,
@@ -545,7 +655,34 @@ pub(crate) async fn create_oauth_resource(
     Extension(auth): Extension<ServiceAuth>,
     Json(body): Json<CreateOauthResourceBody>,
 ) -> Result<impl IntoResponse, ApiError> {
-    require_grant(&auth, "oauth_admin").map_err(|_| AuthError::Forbidden)?;
+    let authority = ResourceAuthority::of(&auth)?;
+    let source = body.registration_source.unwrap_or(match authority {
+        ResourceAuthority::Admin => ResourceSource::Service,
+        ResourceAuthority::Registrar(_) => ResourceSource::Delegated,
+    });
+    let owner = match (authority, source) {
+        (ResourceAuthority::Admin, ResourceSource::Service) => {
+            Some(body.owner_service_id.unwrap_or(auth.service_id))
+        }
+        // A delegated resource belongs to no service.
+        (_, ResourceSource::Delegated) => {
+            if body.owner_service_id.is_some() {
+                return Err(match authority {
+                    ResourceAuthority::Admin => AuthError::Validation(ValidationError::Field {
+                        field: "owner_service_id",
+                        message: "a delegated resource has no owning service".into(),
+                    }),
+                    ResourceAuthority::Registrar(_) => AuthError::Forbidden,
+                }
+                .into());
+            }
+            None
+        }
+        // Service registrations and owner assignment stay with administration.
+        (ResourceAuthority::Registrar(_), ResourceSource::Service) => {
+            return Err(AuthError::Forbidden.into());
+        }
+    };
 
     let resource = state
         .engine
@@ -556,7 +693,7 @@ pub(crate) async fn create_oauth_resource(
             },
             auth.service_id,
             &body.resource_uri,
-            body.owner_service_id.unwrap_or(auth.service_id),
+            owner,
             body.scopes,
             body.scope_descriptions
                 .unwrap_or_else(|| json!({})),
@@ -573,8 +710,29 @@ pub(crate) async fn list_oauth_resources(
     State(state): State<Arc<AppState>>,
     Extension(auth): Extension<ServiceAuth>,
 ) -> Result<impl IntoResponse, ApiError> {
-    require_grant(&auth, "oauth_admin").map_err(|_| AuthError::Forbidden)?;
-
-    let resources = state.engine.list_oauth_resources().await?;
+    let resources = match ResourceAuthority::of(&auth)? {
+        ResourceAuthority::Admin => state.engine.list_oauth_resources().await?,
+        ResourceAuthority::Registrar(id) => state
+            .engine
+            .oauth_resources_for_registrar(id)
+            .await?
+            .into_iter()
+            .filter(|r| ResourceAuthority::Registrar(id).can_manage(r))
+            .collect(),
+    };
     Ok(Json(json!({ "resources": resources })))
+}
+
+pub(crate) async fn get_oauth_resource(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<ServiceAuth>,
+    Path(registration_id): Path<Uuid>,
+) -> Result<impl IntoResponse, ApiError> {
+    let authority = ResourceAuthority::of(&auth)?;
+    let resource = state.engine.get_oauth_registration(registration_id).await?;
+    // Another registrar's resource is indistinguishable from a missing one.
+    if !authority.can_manage(&resource) {
+        return Err(AuthError::NotFound.into());
+    }
+    Ok(Json(serde_json::to_value(&resource).unwrap()))
 }

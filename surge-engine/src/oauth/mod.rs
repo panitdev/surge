@@ -44,19 +44,30 @@ use crate::types::IdentityId;
 pub enum RegistrationSource {
     Admin,
     Dynamic,
+    /// Registered by a Platform service holding `oauth_client_register`.
+    /// Third-party and untrusted, and never swept: its registrar manages it.
+    Platform,
 }
 
 impl RegistrationSource {
+    /// Whether the client's name and logo are supplied by someone other
+    /// than the operator, so consent must not present them as verified.
+    pub fn metadata_is_untrusted(self) -> bool {
+        !matches!(self, Self::Admin)
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Admin => "admin",
             Self::Dynamic => "dynamic",
+            Self::Platform => "platform",
         }
     }
 
     fn from_db(s: &str) -> Self {
         match s {
             "dynamic" => Self::Dynamic,
+            "platform" => Self::Platform,
             _ => Self::Admin,
         }
     }
@@ -87,6 +98,9 @@ pub struct OauthClient {
     /// `None` is the legacy default: no explicit list. `Some(vec![])` is an
     /// explicit list that approves nothing.
     pub audiences: Option<Vec<String>>,
+    /// The service that registered a [`RegistrationSource::Platform`]
+    /// client. `None` for every other source.
+    pub registrar_service_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
 }
 

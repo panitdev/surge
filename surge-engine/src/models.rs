@@ -222,6 +222,7 @@ pub struct OauthClientRow {
     pub last_used_at: Option<DateTime<Utc>>,
     pub revoked_at: Option<DateTime<Utc>>,
     pub audience_restricted: bool,
+    pub registrar_service_id: Option<Uuid>,
 }
 
 #[derive(Insertable)]
@@ -241,6 +242,7 @@ pub struct NewOauthClient<'a> {
     pub trust_state: &'a str,
     pub created_at: DateTime<Utc>,
     pub audience_restricted: bool,
+    pub registrar_service_id: Option<Uuid>,
 }
 
 #[derive(Queryable, Selectable, Clone)]

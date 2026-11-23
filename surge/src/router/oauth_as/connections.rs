@@ -37,7 +37,7 @@ pub(crate) async fn list_connections(
                 "client_uri": c.client_uri,
                 "logo_uri": c.logo_uri,
                 "dynamically_registered":
-                    c.registration_source == surge_engine::oauth::RegistrationSource::Dynamic,
+                    c.registration_source.metadata_is_untrusted(),
                 "resource_uri": c.resource_uri,
                 "scopes": c.scopes,
                 "granted_at": c.granted_at,
