@@ -11,18 +11,16 @@
 //!
 //! 1. A client-ID-metadata-document (CIMD) client may use a resource only
 //!    if its exact client ID URL is in the resource's allowlist.
-//! 2. A client with an explicit audience list (`Some`) is restricted to it,
+//! 2. With the global DCR switch off, a dynamically registered client is
+//!    ineligible for every resource.
+//! 3. A client with an explicit audience list (`Some`) is restricted to it,
 //!    for every resource. An empty list grants nothing. Membership is by
 //!    registration, so an approval does not survive the resource being
 //!    deleted and registered again.
-//! 3. A client with no list (`None`, the legacy default) keeps its existing
+//! 4. A client with no list (`None`, the legacy default) keeps its existing
 //!    access to *service* resources, and has none to delegated resources
 //!    unless a dynamically registered client meets a resource that has opted
 //!    in to DCR.
-//!
-//! 0. The global DCR switch is a kill switch: with it off, a dynamically
-//!    registered client is ineligible for every resource (after rule 1, which
-//!    governs CIMD clients).
 //!
 //! One further condition applies to dynamically registered clients, because
 //! their registration is unauthenticated: an explicit binding to a delegated

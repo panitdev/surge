@@ -533,8 +533,12 @@ async fn a_revoked_row_stays_a_tombstone() {
 }
 
 async fn backdate(id: &str) {
+    let old = chrono::Utc::now() - chrono::Duration::hours(2);
     diesel::update(oauth_client::table.find(id))
-        .set(oauth_client::created_at.eq(chrono::Utc::now() - chrono::Duration::hours(2)))
+        .set((
+            oauth_client::created_at.eq(old),
+            oauth_client::last_used_at.eq(old),
+        ))
         .execute(&mut db().await)
         .await
         .unwrap();
