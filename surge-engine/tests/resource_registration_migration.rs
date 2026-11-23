@@ -119,8 +119,8 @@ fn seed_legacy(conn: &mut PgConnection) {
             ('{OWNER}', 'owner', sha256('owner'::bytea), now());
         INSERT INTO surge.identity (id, username, display_name, created_at, updated_at)
             VALUES ('{IDENTITY}', 'migration-user', 'Migration User', now(), now());
-        INSERT INTO surge.oauth_client (client_id, client_name, redirect_uris)
-            VALUES ('{CLIENT}', 'Legacy', ARRAY['https://client.migration.test/cb']);
+        INSERT INTO surge.oauth_client (client_id, client_name, redirect_uris, scopes)
+            VALUES ('{CLIENT}', 'Legacy', ARRAY['https://client.migration.test/cb'], ARRAY['mcp:read']);
 
         -- Registered by CREATOR for OWNER two days ago.
         INSERT INTO surge.oauth_resource (resource_uri, service_id, scopes, created_at)
@@ -443,6 +443,7 @@ async fn exercise(url: String) {
     drop(engine);
 
     // And the migration reverses cleanly.
+    conn.revert_last_migration(MIGRATIONS).unwrap(); // 16, scope ceiling
     conn.revert_last_migration(MIGRATIONS).unwrap(); // 14, resource lifecycle
     conn.revert_last_migration(MIGRATIONS).unwrap(); // 13, client registrar
     conn.revert_last_migration(MIGRATIONS).unwrap();
