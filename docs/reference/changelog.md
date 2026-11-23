@@ -17,6 +17,8 @@ Surge can now issue audience-scoped OAuth tokens. Enable the authorization serve
 - **Refresh-token rotation with reuse detection**: replaying a consumed token revokes its whole family.
 - **ES256 signing keys encrypted under the pepper**, rotated by the background sweep, with retired keys published until the tokens they signed expire.
 - **`surge::resource`** (feature `resource-server`) ships the resource-server half: RFC 9728 metadata, the `WWW-Authenticate` challenge MCP clients discover the AS through, and an offline bearer-token guard.
+- **One audience eligibility rule** applied at authorize, consent completion, code redemption and refresh. Explicit client audience lists restrict every resource, an empty list grants nothing, and delegated resources require a binding, an allowed CIMD client ID or a DCR opt-in. Ineligible targets return `invalid_target`. Issuer discovery lists only scopes defined by service resources. See [Audience and scope policy](/features/oauth-authorization-server#audience-and-scope-policy).
+- **Resource servers now require `typ: at+jwt`**, both in `surge::resource` and at `userinfo`/introspection.
 - **New grant `oauth_admin`** and new CLI group `surge-server oauth {client,resource,key}`.
 - **New token prefixes** `aeg_cid_`, `aeg_cs_`, `aeg_ac_`, `aeg_rt_`.
 

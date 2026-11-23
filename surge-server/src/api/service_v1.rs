@@ -449,6 +449,10 @@ pub(crate) struct CreateOauthClientBody {
     confidential: bool,
     #[serde(default)]
     first_party: bool,
+    /// Optional canonical resource URIs to bind the client to. Absent stores
+    /// no list; an empty list approves nothing.
+    #[serde(default)]
+    resources: Option<Vec<String>>,
 }
 
 pub(crate) async fn create_oauth_client(
@@ -470,7 +474,7 @@ pub(crate) async fn create_oauth_client(
             confidential: body.confidential,
             first_party: body.first_party,
             registration_source: surge_engine::oauth::RegistrationSource::Admin,
-            audiences: None,
+            audiences: body.resources,
         })
         .await?;
 

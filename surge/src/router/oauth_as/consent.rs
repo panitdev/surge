@@ -16,10 +16,10 @@ use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::json;
 use surge_engine::AuthError;
-use surge_engine::oauth::{AuthorizationGrant, RegistrationSource};
+use surge_engine::oauth::{AuthorizationGrant, RegistrationSource, client_may_use_resource};
 
 use super::AsState;
-use super::authorize::{issue_code_redirect, resolve_authorization_session};
+use super::authorize::{INELIGIBLE_TARGET, issue_code_redirect, resolve_authorization_session};
 use super::error::{OauthErrorCode, build_redirect};
 use crate::router::error::ApiError;
 
@@ -108,6 +108,28 @@ pub(crate) async fn decide_consent_flow(
         })
         .ok_or_else(|| AuthError::Internal(anyhow::anyhow!("unparseable redirect_uri")))?;
 
+        return Ok(Json(json!({ "redirect_to": redirect })).into_response());
+    }
+
+    // Eligibility is evaluated again against current state: the client's
+    // audience list or the resource's allowlist may have changed since the
+    // authorization request was validated. An ineligible flow is spent, not
+    // left open for a retry that can never succeed.
+    let client = state.engine.get_oauth_client(&flow.client_id).await?;
+    let registration = state
+        .engine
+        .get_oauth_registration(flow.registration_id)
+        .await?;
+    if !client_may_use_resource(&client, &registration) {
+        state.engine.deny_consent_flow(&flow, &binding).await?;
+        let redirect = build_redirect(&flow.redirect_uri, |q| {
+            q.append_pair("error", OauthErrorCode::InvalidTarget.as_str());
+            q.append_pair("error_description", INELIGIBLE_TARGET);
+            if let Some(state) = flow.state.as_deref() {
+                q.append_pair("state", state);
+            }
+        })
+        .ok_or_else(|| AuthError::Internal(anyhow::anyhow!("unparseable redirect_uri")))?;
         return Ok(Json(json!({ "redirect_to": redirect })).into_response());
     }
 

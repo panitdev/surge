@@ -222,6 +222,7 @@ surge-server oauth client create \
 | `--confidential` | Issue a client secret (`aeg_cs_…`), shown once |
 | `--first-party` | Skip the consent screen. Only for clients you operate |
 | `--client-uri`, `--logo-uri` | Optional, rendered on the consent screen |
+| `--resource` | Bind the client to these resource URIs. It is then restricted to exactly these audiences. Omit to keep default access to service resources |
 
 `oauth client list` shows every live client with its registration source. `oauth client revoke <client_id>` revokes the client **and its outstanding refresh tokens** in one transaction — a client that could no longer authorize but whose tokens kept working would not be revoked in any sense a user would recognize.
 

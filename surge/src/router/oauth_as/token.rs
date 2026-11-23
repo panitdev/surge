@@ -13,7 +13,7 @@ use axum::response::{IntoResponse, Response};
 use axum::{Form, Json};
 use serde::Deserialize;
 use serde_json::json;
-use surge_engine::oauth::{verify_pkce, OauthClient, RefreshGrant};
+use surge_engine::oauth::{client_may_use_resource, verify_pkce, OauthClient, RefreshGrant};
 use surge_engine::{AuthError, AuthorizationCode, ClientSecret, RefreshToken};
 
 use super::error::{OauthError, OauthErrorCode};
@@ -181,6 +181,8 @@ async fn authorization_code_grant(
         }
     }
 
+    ensure_eligible(state, &client, grant.registration_id).await?;
+
     let refresh_grant = RefreshGrant {
         client_id: grant.client_id.clone(),
         identity_id: grant.identity_id,
@@ -237,6 +239,10 @@ async fn refresh_token_grant(
             ),
         })?;
 
+    // Eligibility is current-state, not a fact about the day of consent: a
+    // client dropped from a resource's audience list stops refreshing there.
+    ensure_eligible(state, &client, rotated.grant.registration_id).await?;
+
     // The grant is bound to the identity, so this is the check that matters:
     // a disabled account stops refreshing within one access-token lifetime,
     // with no resource server changing anything (internal/oauth-as.md §7).
@@ -265,6 +271,35 @@ async fn refresh_token_grant(
 
     let response = build_token_body(state, &client, &grant, None, false).await?;
     Ok(Json(with_refresh(response, rotated.token.expose_secret())).into_response())
+}
+
+/// The shared eligibility rule, applied to the registration a grant is bound
+/// to. A registration that no longer exists is a dead grant (`invalid_grant`);
+/// one the client may no longer use is an `invalid_target`.
+async fn ensure_eligible(
+    state: &AsState,
+    client: &OauthClient,
+    registration_id: uuid::Uuid,
+) -> Result<(), OauthError> {
+    let registration = state
+        .engine
+        .get_oauth_registration(registration_id)
+        .await
+        .map_err(|e| match e {
+            AuthError::NotFound => OauthError::new(
+                OauthErrorCode::InvalidGrant,
+                "the resource this grant was issued for is no longer registered",
+            ),
+            other => OauthError::from(other),
+        })?;
+    if client_may_use_resource(client, &registration) {
+        Ok(())
+    } else {
+        Err(OauthError::new(
+            OauthErrorCode::InvalidTarget,
+            super::authorize::INELIGIBLE_TARGET,
+        ))
+    }
 }
 
 /// Mints the access token (and, when in play, the ID token) plus a fresh

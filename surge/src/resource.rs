@@ -184,8 +184,8 @@ impl ResourceServer {
         }
     }
 
-    /// Verifies a bearer token: signature against cached JWKS, `iss`, `aud`,
-    /// `exp`, and nothing else. Scope checking is the caller's, because what
+    /// Verifies a bearer token: `typ` is `at+jwt`, signature (ES256 only)
+    /// against cached JWKS, `iss`, exact `aud`, `exp`, and nothing else. Scope checking is the caller's, because what
     /// a given route requires is not something this type can know.
     pub async fn verify(&self, token: &str) -> Result<ResourceClaims, Response> {
         let unauthorized = |code: &str, description: &str| {
@@ -213,6 +213,16 @@ impl ResourceServer {
 
         let header = jsonwebtoken::decode_header(token)
             .map_err(|_| unauthorized("invalid_token", "malformed access token"))?;
+
+        // RFC 9068 §4: only a JWT that declares itself an access token is
+        // one. This is what stops an ID token, whose audience can be made to
+        // collide with a resource URI, from being presented as a bearer.
+        let is_access_token = header.typ.as_deref().is_some_and(|t| {
+            t.eq_ignore_ascii_case("at+jwt") || t.eq_ignore_ascii_case("application/at+jwt")
+        });
+        if !is_access_token {
+            return Err(unauthorized("invalid_token", "the token is not an access token"));
+        }
 
         let mut validation = Validation::new(Algorithm::ES256);
         validation.set_issuer(&[self.config.issuer.trim_end_matches('/')]);

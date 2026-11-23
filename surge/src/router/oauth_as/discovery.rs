@@ -11,17 +11,23 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::json;
 
+use surge_engine::oauth::ResourceSource;
+
 use super::error::OauthError;
 use super::AsState;
 
 pub(crate) async fn metadata(State(state): State<Arc<AsState>>) -> Response {
-    // Advertised scopes are the union of what registered resources define.
+    // Advertised scopes are the union of what *service* resources define.
     // Scopes belong to resources, so this is derived rather than configured —
-    // there is no list an operator could get out of sync.
+    // there is no list an operator could get out of sync. A delegated
+    // resource's scopes are its own business: they are advertised by that
+    // resource's protected-resource metadata, never by the issuer, even when
+    // the resource has opted in to dynamic client registration.
     let scopes = match state.engine.list_oauth_resources().await {
         Ok(resources) => {
             let mut scopes: Vec<String> = resources
                 .into_iter()
+                .filter(|r| r.registration_source == ResourceSource::Service)
                 .flat_map(|r| r.scopes)
                 .collect::<std::collections::BTreeSet<_>>()
                 .into_iter()

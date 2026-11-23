@@ -132,6 +132,15 @@ pub(crate) fn verify_access_token(
         OauthError::bearer(OauthErrorCode::InvalidToken, "malformed access token")
     })?;
 
+    // RFC 9068 §4: an ID token or any other JWT this issuer signs is not an
+    // access token, whatever its signature says.
+    if !is_access_token_type(header.typ.as_deref()) {
+        return Err(OauthError::bearer(
+            OauthErrorCode::InvalidToken,
+            "the token is not an access token",
+        ));
+    }
+
     // A `kid` selects the key; without one, every published key is tried,
     // which keeps tokens minted just before a rotation verifiable.
     let candidates: Vec<_> = match &header.kid {
@@ -169,6 +178,15 @@ pub(crate) fn verify_access_token(
         OauthErrorCode::InvalidToken,
         "the access token is expired, malformed, or not signed by this issuer",
     ))
+}
+
+/// `at+jwt`, or the full media type `application/at+jwt` (RFC 9068 §2.1),
+/// compared case-insensitively as media types are.
+fn is_access_token_type(typ: Option<&str>) -> bool {
+    typ.is_some_and(|t| {
+        t.eq_ignore_ascii_case(ACCESS_TOKEN_TYPE)
+            || t.eq_ignore_ascii_case(&format!("application/{ACCESS_TOKEN_TYPE}"))
+    })
 }
 
 /// Pulls a bearer token out of an `Authorization` header.

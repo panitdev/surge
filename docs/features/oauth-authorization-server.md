@@ -77,6 +77,34 @@ surge-server serve
 
 Startup requires a registered return origin for the issuer and requires `https` on a non-loopback bind. It warns when no resources are registered or when dynamic registration is enabled.
 
+## Audience and scope policy
+
+One rule decides whether a client may be issued tokens for a resource, and it is applied to current state at every point a token can come into being: `GET /oauth2/authorize`, consent completion, code redemption and refresh. A grant that was eligible on the day of consent is checked again each time. Ineligible requests fail with `invalid_target`, and the error never says whether the resource exists.
+
+1. **A client with an explicit audience list is restricted to it, for every resource, service or delegated.** An empty list grants nothing. The list names registrations, not URIs, so it does not survive the resource being deleted and registered again.
+2. **A client with no list (the default for existing clients) keeps its access to service resources.** It has none to delegated resources, with the exception in rule 4.
+3. **A CIMD client** (its client ID is an `https` URL) has no stored list and may use a resource only if its exact client ID is in that resource's `allowed_cimd_client_ids`.
+4. **A dynamically registered client without a list** may use a delegated resource that has set `dcr_enabled`. A dynamic client's explicit list is honoured for a delegated resource only if that resource has also opted in, so an anonymous registration cannot bind itself to someone else's resource.
+
+Scopes are then narrowed per resource, so two resources that both define `mcp:read` stay separate: consent, codes, refresh tokens and the access token's `aud` are all bound to one registration.
+
+Clients receive a list when they are registered: `--resource` on `surge-server oauth client create`, `resources` in the `POST /v1/oauth/clients` body, and `resources` in a `POST /oauth2/register` body. Each URI must resolve to a current registration the client is eligible for, or registration fails. Omit the field for no list.
+
+**Discovery.** `/.well-known/oauth-authorization-server` advertises the union of scopes defined by *service* resources. A scope that only delegated resources define is omitted, including when the resource enables DCR. A resource advertises its own scopes in its RFC 9728 metadata (`scopes_supported`). **Introspection** answers only for service registrations assigned to the calling service, and an `active: false` for everything else.
+
+## Validating access tokens offline
+
+A resource server that verifies tokens itself (`surge::resource` does all of this) must check, in this order, and reject on any failure:
+
+1. **Issuer.** `iss` equals the configured issuer exactly. Fetch the JWKS URI from the issuer's `/.well-known/oauth-authorization-server`, not from the token.
+2. **Signature.** Verify against a key in that JWKS, selected by `kid`. Permit `ES256` only, and never take the algorithm from the token header.
+3. **Type.** The JOSE header `typ` is `at+jwt` (RFC 9068). This refuses ID tokens, which this issuer also signs.
+4. **Expiry.** `exp` is in the future (allow a small clock skew), and `iat` is not.
+5. **Audience.** `aud` equals this resource's canonical URI exactly. No prefix or substring match, and no accepting a token minted for a sibling resource that shares scopes.
+6. **Scopes.** `scope` contains every scope the route requires. Treat it as a space-separated list.
+
+Offline checks cannot see revocation. The access-token lifetime is the revocation window; a service that cannot accept that calls introspection, which is only available for service resources it owns.
+
 ## Endpoints
 
 | Endpoint | Notes |
@@ -145,6 +173,7 @@ Surge's guarantee is that a minted session stays valid until it expires or is re
 - rate-limited per IP through the existing limiter;
 - registered clients are always `registration_source=dynamic`, `trust_state=untrusted`, and `first_party=false` — the database refuses any other combination, so no code path can promote one;
 - scope is capped by what registered resources declare: a client can ask for an existing scope, never invent one;
+- an optional `resources` list binds the client to specific audiences and restricts it to them; each must be a registered resource the client is eligible for (see [Audience and scope policy](#audience-and-scope-policy));
 - redirect URIs must be `https`, or `http` on a loopback host (`127.0.0.1`, `::1`, `localhost`, any port) for native clients. No wildcards, no plain `http` on a public host;
 - registrations that never complete an authorization are swept after `SURGE_OAUTH_DCR_TTL_DAYS`.
 
@@ -180,7 +209,7 @@ let app = axum::Router::new()
     .merge(protected);
 ```
 
-The guard validates the JWT against cached JWKS — checking `iss`, `aud`, `exp` and scope — and returns the RFC 9728 `WWW-Authenticate` challenge on failure, which is how an MCP client discovers where to authorize. Handlers read the verified claims with the `AccessToken` extractor. This mirrors what `AuthProvider` does for sessions: the service holds a config object and never learns the protocol.
+The guard validates the JWT against cached JWKS — checking `typ`, `iss`, `aud`, `exp` and scope — and returns the RFC 9728 `WWW-Authenticate` challenge on failure, which is how an MCP client discovers where to authorize. Handlers read the verified claims with the `AccessToken` extractor. This mirrors what `AuthProvider` does for sessions: the service holds a config object and never learns the protocol.
 
 Note the metadata path. A resource URI with a path is described at `https://host/.well-known/oauth-protected-resource/mcp`, **not** at `https://host/mcp/.well-known/...` (RFC 9728 §3). `ResourceServer::router()` mounts the right one; getting this backwards by hand is the most common way a resource server ends up undiscoverable.
 
