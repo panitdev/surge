@@ -311,3 +311,15 @@ diesel::table! {
         registration_id -> Uuid,
     }
 }
+
+diesel::table! {
+    surge.oauth_resource_reservation (resource_uri) {
+        resource_uri -> Text,
+        registration_id -> Uuid,
+        registration_source -> Text,
+        service_id -> Nullable<Uuid>,
+        registrar_service_id -> Nullable<Uuid>,
+        deleted_at -> Timestamptz,
+        reserved_until -> Timestamptz,
+    }
+}

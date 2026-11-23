@@ -36,8 +36,8 @@ Each grant unlocks a specific set of service API endpoints:
 | `browser_proxy` | The browser endpoints (`/v1/login`, `/v1/flows/...`, `/v1/whoami`, ...) — permits stating the end user's address in `X-Surge-Client-Ip` |
 | `external_auth` | `POST /v1/authenticate/link` — resolve a `(provider, subject)` pair to a session, creating the identity if the link is new |
 | `external_link` | `POST /v1/identities/{id}/links` — attach or confirm a link; `DELETE /v1/identities/{id}/links` — detach one |
-| `oauth_admin` | `POST /v1/oauth/clients` — register an OAuth client; `GET /v1/oauth/clients` — list them; `DELETE /v1/oauth/clients/{client_id}` — revoke one; `POST /v1/oauth/resources` — register an audience for any service; `GET /v1/oauth/resources` — list audiences; `GET /v1/oauth/resources/{registration_id}` — read one |
-| `oauth_resource_register` | `POST /v1/oauth/resources` — register a delegated audience; `GET /v1/oauth/resources` and `GET /v1/oauth/resources/{registration_id}` — only audiences this service registered |
+| `oauth_admin` | `POST /v1/oauth/clients` — register an OAuth client; `GET /v1/oauth/clients` — list them; `DELETE /v1/oauth/clients/{client_id}` — revoke one; `POST /v1/oauth/resources` — register an audience for any service; `GET /v1/oauth/resources` — list audiences; `GET /v1/oauth/resources/{registration_id or uri}` — read one; `PATCH` / `DELETE /v1/oauth/resources/{uri}` — change or delete any registration |
+| `oauth_resource_register` | `POST /v1/oauth/resources` — register a delegated audience; `GET /v1/oauth/resources`, `GET /v1/oauth/resources/{registration_id or uri}`, `PATCH` and `DELETE /v1/oauth/resources/{uri}` — only audiences this service registered |
 | `oauth_client_register` | `POST /v1/oauth/clients` — register a non-first-party client whose `resources` are all delegated registrations this service created; the client is recorded with `registration_source: platform` and this service as registrar |
 
 A request to an endpoint without the required grant returns `403 Forbidden`:

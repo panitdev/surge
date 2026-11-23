@@ -98,8 +98,15 @@ impl AuthorizationSession {
 }
 
 impl Engine {
-    /// Mints a code for an authorization that has already cleared every
-    /// check. Returns the plaintext exactly once — only its hash is stored.
+    /// Mints a code for an authorization. Returns the plaintext exactly once
+    /// — only its hash is stored.
+    ///
+    /// Eligibility and scopes are re-checked under a shared lock on the
+    /// registration, in the same transaction as the code and consent writes
+    /// (see `lifecycle`). `Forbidden`: the client may no longer use the
+    /// registration; `ScopeNotGranted`: it no longer offers a requested
+    /// scope; `NotFound`: it is gone. Nothing is written in those cases, a
+    /// consent flow included.
     pub async fn mint_authorization_code(
         &self,
         grant: &AuthorizationGrant,
@@ -111,6 +118,15 @@ impl Engine {
         let mut conn = self.conn().await?;
         conn.transaction::<_, AuthError, _>(|conn| {
             async move {
+                // First, before any grant-side row: see `lifecycle` for the
+                // locking scheme and the order it requires.
+                super::lifecycle::admit(
+                    conn,
+                    &grant.client_id,
+                    grant.registration_id,
+                    &grant.scopes,
+                )
+                .await?;
                 let session_expiry = binding
                     .validate(conn, grant.session_id, grant.identity_id)
                     .await?;

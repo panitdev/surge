@@ -24,6 +24,16 @@ pub enum AuthError {
     #[error("resource URI already registered")]
     ResourceAlreadyRegistered,
 
+    /// A deleted registration's URI is reserved until access tokens issued
+    /// for it have expired.
+    #[error("resource URI is reserved")]
+    ResourceReserved,
+
+    /// A lifecycle request named a registration other than the one that
+    /// holds the URI now.
+    #[error("precondition failed")]
+    PreconditionFailed,
+
     #[error("validation error: {0}")]
     Validation(ValidationError),
 

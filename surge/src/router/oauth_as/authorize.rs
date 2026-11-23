@@ -268,7 +268,12 @@ pub(super) async fn authorize_query(
             .await
         {
             Ok(flow) => flow,
-            Err(e) => return fail(OauthErrorCode::ServerError, &e.to_string()),
+            Err(e) => {
+                return match admission_refusal(&e) {
+                    Some((code, message)) => fail(code, message),
+                    None => fail(OauthErrorCode::ServerError, &e.to_string()),
+                };
+            }
         };
 
         let consent_url = format!(
@@ -299,7 +304,25 @@ pub(super) async fn authorize_query(
             OauthErrorCode::LoginRequired,
             "requested account is unavailable",
         ),
-        Err(error) => fail(OauthErrorCode::ServerError, &error.to_string()),
+        Err(error) => match admission_refusal(&error) {
+            Some((code, message)) => fail(code, message),
+            None => fail(OauthErrorCode::ServerError, &error.to_string()),
+        },
+    }
+}
+
+/// How the engine's under-lock eligibility re-check refuses (a policy change
+/// landed after the checks above): the same answers those checks give.
+pub(crate) fn admission_refusal(e: &AuthError) -> Option<(OauthErrorCode, &'static str)> {
+    match e {
+        AuthError::Forbidden | AuthError::NotFound => {
+            Some((OauthErrorCode::InvalidTarget, INELIGIBLE_TARGET))
+        }
+        AuthError::ScopeNotGranted => Some((
+            OauthErrorCode::InvalidScope,
+            "the resource no longer offers a requested scope",
+        )),
+        _ => None,
     }
 }
 

@@ -22,6 +22,10 @@ impl IntoResponse for ApiError {
             AuthError::RateLimited { .. } => (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
             AuthError::UsernameTaken => (StatusCode::CONFLICT, "username_taken"),
             AuthError::ResourceAlreadyRegistered => (StatusCode::CONFLICT, "resource_already_registered"),
+            AuthError::ResourceReserved => (StatusCode::CONFLICT, "resource_reserved"),
+            AuthError::PreconditionFailed => {
+                (StatusCode::PRECONDITION_FAILED, "precondition_failed")
+            }
             AuthError::Validation(_) => (StatusCode::UNPROCESSABLE_ENTITY, "validation_error"),
             AuthError::NotFound => (StatusCode::NOT_FOUND, "not_found"),
             AuthError::Forbidden => (StatusCode::FORBIDDEN, "forbidden"),

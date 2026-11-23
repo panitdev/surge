@@ -18,6 +18,7 @@ mod code;
 mod consent;
 mod eligibility;
 mod key;
+mod lifecycle;
 mod resource;
 mod token;
 
@@ -27,6 +28,9 @@ pub use code::{AuthorizationSession, verify_pkce, AUTHORIZATION_CODE_TTL_SECS};
 pub use consent::ConsentFlowRequest;
 pub use eligibility::client_may_use_resource;
 pub use key::ES256;
+pub use lifecycle::{
+    reuse_window, DeleteOutcome, ResourceManager, ResourcePatch, ACCESS_TOKEN_CLOCK_SKEW,
+};
 pub use resource::canonicalize_resource_uri;
 pub use token::RotatedRefresh;
 pub(crate) use token::revoke_identity_tokens;
@@ -48,7 +52,7 @@ pub enum RegistrationSource {
     Dynamic,
     /// Registered by a Platform service holding `oauth_client_register`.
     /// Third-party and untrusted, and never swept: an administrator revokes it
-    /// (registrar revoke is future work, surge-lll).
+    /// (registrar revoke is future work).
     Platform,
 }
 
@@ -337,6 +341,7 @@ impl crate::Engine {
         dcr_ttl: std::time::Duration,
     ) -> Result<(), crate::AuthError> {
         self.gc_expired_authorization_codes().await?;
+        self.gc_expired_resource_reservations().await?;
         self.gc_expired_consent_flows().await?;
         self.gc_expired_chooser_requests().await?;
         self.gc_expired_refresh_tokens().await?;

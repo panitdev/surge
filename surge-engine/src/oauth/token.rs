@@ -31,15 +31,49 @@ pub struct RotatedRefresh {
     pub grant: RefreshGrant,
 }
 
+/// How a rotation transaction ended. Anything but an `Err` commits: a
+/// replay's family revocation and an ineligible client's grant revocation
+/// must survive, so neither is reported as an error from inside the
+/// transaction.
+enum Rotation {
+    Rotated(RotatedRefresh),
+    Replayed(Uuid),
+    Ineligible,
+}
+
 impl Engine {
     /// Issues the first refresh token of a new grant (a fresh `family_id`).
+    ///
+    /// Eligibility and scopes are checked again under a shared lock on the
+    /// registration, in the transaction that writes the token (see
+    /// `lifecycle`): `Forbidden` if the client may no longer use it,
+    /// `ScopeNotGranted` if it no longer offers a scope of the grant,
+    /// `InvalidToken` if it is gone.
     pub async fn issue_refresh_token(
         &self,
         grant: &RefreshGrant,
         ttl: std::time::Duration,
     ) -> Result<RefreshToken, AuthError> {
         let mut conn = self.conn().await?;
-        insert_refresh_token(&mut conn, grant, None, ttl).await
+        conn.transaction::<_, AuthError, _>(|conn| {
+            async move {
+                super::lifecycle::admit(
+                    conn,
+                    &grant.client_id,
+                    grant.registration_id,
+                    &grant.scopes,
+                )
+                .await
+                // The registration went away under the grant; so did it.
+                .map_err(|e| match e {
+                    AuthError::NotFound => AuthError::InvalidToken,
+                    other => other,
+                })?;
+                insert_refresh_token(conn, grant, None, ttl).await
+            }
+            .scope_boxed()
+        })
+        .await
     }
 
     /// Rotates a refresh token: the presented token is consumed and a
@@ -59,6 +93,12 @@ impl Engine {
     /// token and strand the grant over what is only ever a client-side bug.
     /// The returned grant still carries the full scope set: narrowing shapes
     /// the access token, never the lineage.
+    ///
+    /// Eligibility is evaluated here, under a shared lock on the registration
+    /// and in the transaction that spends the token and writes its successor
+    /// (see `lifecycle`). A client the registration no longer admits gets
+    /// `Forbidden` and loses every grant it holds there; the presented token
+    /// is not spent. A deleted registration is `InvalidToken`.
     pub async fn rotate_refresh_token(
         &self,
         token: &RefreshToken,
@@ -79,6 +119,27 @@ impl Engine {
         let outcome = conn
             .transaction::<_, AuthError, _>(|conn| {
                 async move {
+                    // The registration is locked before the token row, never
+                    // after: see `lifecycle` for why the order matters.
+                    let registration_id: Uuid = oauth_refresh_token::table
+                        .find(&token_hash)
+                        .select(oauth_refresh_token::registration_id)
+                        .first(conn)
+                        .await
+                        .map_err(|e| match e {
+                            diesel::result::Error::NotFound => AuthError::InvalidToken,
+                            other => AuthError::Internal(other.into()),
+                        })?;
+                    // A registration deleted since the read took its tokens
+                    // with it.
+                    let admitted =
+                        match super::lifecycle::admit(conn, &client_id, registration_id, &[]).await {
+                            Ok(_) => true,
+                            Err(AuthError::Forbidden) => false,
+                            Err(AuthError::NotFound) => return Err(AuthError::InvalidToken),
+                            Err(other) => return Err(other),
+                        };
+
                     let row: OauthRefreshTokenRow = oauth_refresh_token::table
                         .find(&token_hash)
                         .select(OauthRefreshTokenRow::as_select())
@@ -94,7 +155,7 @@ impl Engine {
                         // Reuse. Kill the lineage in this same transaction so
                         // a racing replay cannot slip a rotation in between.
                         revoke_family(conn, row.family_id).await?;
-                        return Ok(Err(row.family_id));
+                        return Ok(Rotation::Replayed(row.family_id));
                     }
 
                     if row.client_id != client_id
@@ -102,6 +163,15 @@ impl Engine {
                         || row.expires_at < Utc::now()
                     {
                         return Err(AuthError::InvalidToken);
+                    }
+
+                    if !admitted {
+                        // The client may no longer use the registration at
+                        // all, so every grant it holds there ends, not only
+                        // this family: eligibility is per (client,
+                        // registration). Committed, not rolled back.
+                        revoke_client_grants(conn, &client_id, registration_id).await?;
+                        return Ok(Rotation::Ineligible);
                     }
 
                     // Before the token is spent, not after.
@@ -117,7 +187,7 @@ impl Engine {
                         .await
                         .map_err(|e| AuthError::Internal(e.into()))?;
 
-                    Ok(Ok(RefreshGrant {
+                    let grant = RefreshGrant {
                         client_id: row.client_id,
                         identity_id: IdentityId::from_uuid(row.identity_id),
                         session_id: row.session_id,
@@ -125,31 +195,33 @@ impl Engine {
                         resource_uri: row.resource_uri,
                         scopes: row.scopes,
                         family_id: row.family_id,
+                    };
+                    // The successor is written under the same registration
+                    // lock as the check above, so a policy change either
+                    // sees it (and ends it) or is seen by it.
+                    let successor =
+                        insert_refresh_token(conn, &grant, Some(token_hash.clone()), ttl).await?;
+                    Ok(Rotation::Rotated(RotatedRefresh {
+                        token: successor,
+                        grant,
                     }))
                 }
                 .scope_boxed()
             })
             .await?;
 
-        let grant = match outcome {
-            Ok(grant) => grant,
-            Err(family_id) => {
+        match outcome {
+            Rotation::Rotated(rotated) => Ok(rotated),
+            Rotation::Ineligible => Err(AuthError::Forbidden),
+            Rotation::Replayed(family_id) => {
                 tracing::warn!(
                     %family_id,
                     client_id = %owner,
                     "an already-consumed refresh token was replayed; the grant was revoked"
                 );
-                return Err(AuthError::InvalidToken);
+                Err(AuthError::InvalidToken)
             }
-        };
-
-        let mut conn = self.conn().await?;
-        let successor = insert_refresh_token(&mut conn, &grant, Some(token.hash()), ttl).await?;
-
-        Ok(RotatedRefresh {
-            token: successor,
-            grant,
-        })
+        }
     }
 
     /// Ends every grant a client holds at one registration, across all
@@ -163,17 +235,7 @@ impl Engine {
         registration_id: Uuid,
     ) -> Result<u64, AuthError> {
         let mut conn = self.conn().await?;
-        let affected = diesel::update(
-            oauth_refresh_token::table
-                .filter(oauth_refresh_token::client_id.eq(client_id))
-                .filter(oauth_refresh_token::registration_id.eq(registration_id))
-                .filter(oauth_refresh_token::revoked_at.is_null()),
-        )
-        .set(oauth_refresh_token::revoked_at.eq(Utc::now()))
-        .execute(&mut conn)
-        .await
-        .map_err(|e| AuthError::Internal(e.into()))?;
-        Ok(affected as u64)
+        revoke_client_grants(&mut conn, client_id, registration_id).await
     }
 
     /// RFC 7009 revocation. Takes down the whole family, not just the token
@@ -325,6 +387,24 @@ async fn insert_refresh_token(
         })?;
 
     Ok(token)
+}
+
+async fn revoke_client_grants(
+    conn: &mut AsyncPgConnection,
+    client_id: &str,
+    registration_id: Uuid,
+) -> Result<u64, AuthError> {
+    let affected = diesel::update(
+        oauth_refresh_token::table
+            .filter(oauth_refresh_token::client_id.eq(client_id))
+            .filter(oauth_refresh_token::registration_id.eq(registration_id))
+            .filter(oauth_refresh_token::revoked_at.is_null()),
+    )
+    .set(oauth_refresh_token::revoked_at.eq(Utc::now()))
+    .execute(conn)
+    .await
+    .map_err(|e| AuthError::Internal(e.into()))?;
+    Ok(affected as u64)
 }
 
 pub(crate) async fn revoke_family(

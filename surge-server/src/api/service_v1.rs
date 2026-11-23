@@ -2,13 +2,16 @@
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
+use axum::http::HeaderMap;
 use axum::middleware;
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, patch, post};
 use axum::{Extension, Json, Router};
 use serde::Deserialize;
 use serde_json::json;
-use surge_engine::oauth::{OauthResource, ResourceSource};
+use surge_engine::oauth::{
+    DeleteOutcome, OauthResource, ResourceManager, ResourcePatch, ResourceSource,
+};
 use surge_engine::types::*;
 use uuid::Uuid;
 
@@ -45,9 +48,13 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/oauth/resources",
             get(list_oauth_resources).post(create_oauth_resource),
         )
+        // One path segment: a registration ID (GET) or a canonical URI
+        // percent-encoded as a single segment (GET, PATCH, DELETE).
         .route(
-            "/oauth/resources/{registration_id}",
-            get(get_oauth_resource),
+            "/oauth/resources/{resource}",
+            get(get_oauth_resource)
+                .patch(update_oauth_resource)
+                .delete(delete_oauth_resource),
         )
         .layer(middleware::from_fn_with_state(state.clone(), service_auth))
         .with_state(state)
@@ -636,12 +643,13 @@ impl ResourceAuthority {
     /// registrar owns only delegated registrations it created; one with an
     /// unknown registrar, or another's, is administration's alone.
     pub(crate) fn can_manage(self, resource: &OauthResource) -> bool {
+        self.manager().can_manage(resource)
+    }
+
+    pub(crate) fn manager(self) -> ResourceManager {
         match self {
-            Self::Admin => true,
-            Self::Registrar(id) => {
-                resource.registration_source == ResourceSource::Delegated
-                    && resource.registrar_service_id == Some(id)
-            }
+            Self::Admin => ResourceManager::Admin,
+            Self::Registrar(id) => ResourceManager::Registrar(id),
         }
     }
 }
@@ -732,16 +740,171 @@ pub(crate) async fn list_oauth_resources(
     Ok(Json(json!({ "resources": resources })))
 }
 
+/// A path segment naming a registration: its ID, or its canonical URI
+/// (percent-encoded into one segment; the extractor has already decoded it).
+enum ResourceKey {
+    Id(Uuid),
+    Uri(String),
+}
+
+impl ResourceKey {
+    fn parse(segment: String) -> Self {
+        match Uuid::parse_str(&segment) {
+            Ok(id) => Self::Id(id),
+            Err(_) => Self::Uri(segment),
+        }
+    }
+}
+
 pub(crate) async fn get_oauth_resource(
     State(state): State<Arc<AppState>>,
     Extension(auth): Extension<ServiceAuth>,
-    Path(registration_id): Path<Uuid>,
+    Path(resource): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let authority = ResourceAuthority::of(&auth)?;
-    let resource = state.engine.get_oauth_registration(registration_id).await?;
+    let resource = match ResourceKey::parse(resource) {
+        ResourceKey::Id(id) => state.engine.get_oauth_registration(id).await?,
+        ResourceKey::Uri(uri) => state.engine.get_oauth_resource(&uri).await?,
+    };
     // Another registrar's resource is indistinguishable from a missing one.
     if !authority.can_manage(&resource) {
         return Err(AuthError::NotFound.into());
     }
     Ok(Json(serde_json::to_value(&resource).unwrap()))
+}
+
+fn audit_actor(auth: &ServiceAuth) -> surge_engine::audit::AuditActor {
+    surge_engine::audit::AuditActor::Service {
+        id: auth.service_id.to_string(),
+        name: auth.service_name.clone(),
+    }
+}
+
+/// `?registration_id=` and/or `If-Match: "<registration id>"`: the
+/// registration the caller means. When both are given they must agree.
+#[derive(Deserialize)]
+pub(crate) struct PreconditionQuery {
+    registration_id: Option<Uuid>,
+}
+
+fn precondition(
+    query: &PreconditionQuery,
+    headers: &HeaderMap,
+) -> Result<Option<Uuid>, AuthError> {
+    let bad = |message: &str| {
+        AuthError::Validation(ValidationError::Field {
+            field: "If-Match",
+            message: message.into(),
+        })
+    };
+    let header = match headers.get(axum::http::header::IF_MATCH) {
+        None => None,
+        Some(value) => {
+            let value = value.to_str().map_err(|_| bad("not a registration id"))?;
+            let id = value.trim().trim_matches('"');
+            Some(Uuid::parse_str(id).map_err(|_| bad("must be a registration id"))?)
+        }
+    };
+    match (query.registration_id, header) {
+        (Some(a), Some(b)) if a != b => Err(AuthError::Validation(ValidationError::Field {
+            field: "registration_id",
+            message: "the query parameter and If-Match name different registrations".into(),
+        })),
+        (a, b) => Ok(a.or(b)),
+    }
+}
+
+/// A lifecycle request names a registration by canonical URI only. A
+/// registration ID in the path is refused rather than guessed at: the URI is
+/// what a retry can re-derive, and the ID travels as the precondition.
+fn lifecycle_uri(segment: String) -> Result<String, AuthError> {
+    match ResourceKey::parse(segment) {
+        ResourceKey::Uri(uri) => Ok(uri),
+        ResourceKey::Id(_) => Err(AuthError::Validation(ValidationError::Field {
+            field: "resource",
+            message: "address the registration by its canonical URI; pass the registration id                       as registration_id or If-Match"
+                .into(),
+        })),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct UpdateOauthResourceBody {
+    #[serde(default)]
+    scopes: Option<Vec<String>>,
+    #[serde(default)]
+    scope_descriptions: Option<serde_json::Value>,
+    #[serde(default)]
+    allowed_cimd_client_ids: Option<Vec<String>>,
+    #[serde(default)]
+    dcr_enabled: Option<bool>,
+}
+
+pub(crate) async fn update_oauth_resource(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<ServiceAuth>,
+    Path(resource): Path<String>,
+    Query(query): Query<PreconditionQuery>,
+    headers: HeaderMap,
+    Json(body): Json<UpdateOauthResourceBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    let authority = ResourceAuthority::of(&auth)?;
+    let uri = lifecycle_uri(resource)?;
+    let updated = state
+        .engine
+        .update_oauth_resource(
+            audit_actor(&auth),
+            authority.manager(),
+            &uri,
+            precondition(&query, &headers)?,
+            ResourcePatch {
+                scopes: body.scopes,
+                scope_descriptions: body.scope_descriptions,
+                allowed_cimd_client_ids: body.allowed_cimd_client_ids,
+                dcr_enabled: body.dcr_enabled,
+            },
+        )
+        .await?;
+    Ok(Json(serde_json::to_value(&updated).unwrap()))
+}
+
+pub(crate) async fn delete_oauth_resource(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<ServiceAuth>,
+    Path(resource): Path<String>,
+    Query(query): Query<PreconditionQuery>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, ApiError> {
+    let authority = ResourceAuthority::of(&auth)?;
+    let uri = lifecycle_uri(resource)?;
+    let expected = precondition(&query, &headers)?;
+    // A registrar's delete must name the registration it means: the Platform
+    // retries deletions, possibly after the reservation has lapsed and
+    // someone has registered the URI again, and a delete by URI alone would
+    // take that successor down.
+    if expected.is_none() && matches!(authority, ResourceAuthority::Registrar(_)) {
+        return Err(AuthError::Validation(ValidationError::Field {
+            field: "registration_id",
+            message: "a registrar must name the registration to delete \
+                      (registration_id or If-Match)"
+                .into(),
+        })
+        .into());
+    }
+    let outcome = state
+        .engine
+        .delete_oauth_resource(
+            audit_actor(&auth),
+            authority.manager(),
+            &uri,
+            expected,
+            state.oauth_reuse_window,
+        )
+        .await?;
+    Ok(match outcome {
+        DeleteOutcome::Deleted(_) | DeleteOutcome::AlreadyDeleted => {
+            axum::http::StatusCode::NO_CONTENT
+        }
+    })
 }

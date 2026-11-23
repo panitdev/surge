@@ -226,28 +226,46 @@ impl Engine {
         let expires_at = created_at + Duration::minutes(CONSENT_FLOW_TTL_MINUTES);
 
         let mut conn = self.conn().await?;
-        diesel::insert_into(oauth_consent_flow::table)
+        let new_flow = &flow;
+        let (flow_id, csrf_str) = (id.as_str(), csrf.as_str());
+        conn.transaction::<_, AuthError, _>(|conn| {
+            async move {
+                // Under the registration's shared lock, so a flow cannot
+                // outlive a policy change that would have refused it.
+                super::lifecycle::admit(
+                    conn,
+                    &new_flow.client_id,
+                    new_flow.registration_id,
+                    &new_flow.scopes,
+                )
+                .await?;
+                diesel::insert_into(oauth_consent_flow::table)
             .values(&NewOauthConsentFlow {
-                id: id.as_str(),
-                client_id: &flow.client_id,
-                identity_id: *flow.identity_id.as_uuid(),
-                session_id: flow.session_id,
-                account_id: flow.account_id,
-                registration_id: flow.registration_id,
-                resource_uri: &flow.resource_uri,
-                scopes: flow.scopes.clone(),
-                redirect_uri: &flow.redirect_uri,
-                state: flow.state.as_deref(),
-                nonce: flow.nonce.as_deref(),
-                code_challenge: &flow.code_challenge,
-                code_challenge_method: &flow.code_challenge_method,
-                csrf_token: csrf.as_str(),
+                id: flow_id,
+                client_id: &new_flow.client_id,
+                identity_id: *new_flow.identity_id.as_uuid(),
+                session_id: new_flow.session_id,
+                account_id: new_flow.account_id,
+                registration_id: new_flow.registration_id,
+                resource_uri: &new_flow.resource_uri,
+                scopes: new_flow.scopes.clone(),
+                redirect_uri: &new_flow.redirect_uri,
+                state: new_flow.state.as_deref(),
+                nonce: new_flow.nonce.as_deref(),
+                code_challenge: &new_flow.code_challenge,
+                code_challenge_method: &new_flow.code_challenge_method,
+                csrf_token: csrf_str,
                 expires_at,
                 created_at,
             })
-            .execute(&mut conn)
+            .execute(conn)
             .await
             .map_err(super::stale_registration)?;
+                Ok(())
+            }
+            .scope_boxed()
+        })
+        .await?;
 
         Ok(ConsentFlow {
             id: id.as_str().to_string(),

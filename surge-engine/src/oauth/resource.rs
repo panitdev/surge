@@ -17,8 +17,9 @@ use crate::types::*;
 use crate::Engine;
 
 impl Engine {
-    /// Registers a service resource with no recorded registrar — the
-    /// operator path (`surge-server oauth resource create`).
+    /// Registers a service resource with no recorded registrar and writes no
+    /// audit entry: a bootstrap and test helper. The operator CLI uses
+    /// [`create_oauth_resource_as`](Self::create_oauth_resource_as).
     pub async fn create_oauth_resource(
         &self,
         resource_uri: &str,
@@ -27,14 +28,64 @@ impl Engine {
         scope_descriptions: serde_json::Value,
     ) -> Result<OauthResource, AuthError> {
         let mut conn = self.conn().await?;
-        insert_resource(
-            &mut conn,
-            resource_uri,
-            Some(service_id),
-            None,
-            scopes,
-            scope_descriptions,
-        )
+        conn.transaction(|conn| {
+            async move {
+                insert_resource(
+                    conn,
+                    resource_uri,
+                    Some(service_id),
+                    None,
+                    scopes,
+                    scope_descriptions,
+                )
+                .await
+            }
+            .scope_boxed()
+        })
+        .await
+    }
+
+    /// [`create_oauth_resource`](Self::create_oauth_resource) for the
+    /// operator CLI: audited with the operator as actor, in the same
+    /// transaction as the registration. The registrar stays unknown.
+    pub async fn create_oauth_resource_as(
+        &self,
+        actor: AuditActor,
+        resource_uri: &str,
+        service_id: Uuid,
+        scopes: Vec<String>,
+        scope_descriptions: serde_json::Value,
+    ) -> Result<OauthResource, AuthError> {
+        let mut conn = self.conn().await?;
+        conn.transaction(|conn| {
+            async move {
+                let resource = insert_resource(
+                    conn,
+                    resource_uri,
+                    Some(service_id),
+                    None,
+                    scopes,
+                    scope_descriptions,
+                )
+                .await?;
+                audit_conn(
+                    conn,
+                    actor,
+                    "create_oauth_resource",
+                    serde_json::json!({
+                        "registration_id": resource.registration_id,
+                        "resource_uri": resource.resource_uri,
+                        "registration_source": resource.registration_source,
+                        "owner_service_id": service_id,
+                        "registrar_service_id": null,
+                    }),
+                    None,
+                )
+                .await?;
+                Ok(resource)
+            }
+            .scope_boxed()
+        })
         .await
     }
 
@@ -159,23 +210,6 @@ impl Engine {
         Ok(rows.into_iter().map(row_to_resource).collect())
     }
 
-    /// Deletes the registration holding a URI. Every consent, pending flow,
-    /// code, refresh token and client approval bound to it goes with it.
-    pub async fn delete_oauth_resource(&self, resource_uri: &str) -> Result<(), AuthError> {
-        let canonical = canonicalize_resource_uri(resource_uri)?;
-        let mut conn = self.conn().await?;
-        let deleted = diesel::delete(
-            oauth_resource::table.filter(oauth_resource::resource_uri.eq(&canonical)),
-        )
-        .execute(&mut conn)
-        .await
-        .map_err(|e| AuthError::Internal(e.into()))?;
-        if deleted == 0 {
-            return Err(AuthError::NotFound);
-        }
-        Ok(())
-    }
-
     pub async fn count_oauth_resources(&self) -> Result<i64, AuthError> {
         let mut conn = self.conn().await?;
         oauth_resource::table
@@ -237,6 +271,10 @@ async fn insert_resource(
             Error::DatabaseError(DatabaseErrorKind::ForeignKeyViolation, _) => AuthError::NotFound,
             other => AuthError::Internal(other.into()),
         })?;
+
+    // After the insert, which waits for a concurrent delete of this URI to
+    // commit: see `check_reservation`.
+    super::lifecycle::check_reservation(conn, &canonical).await?;
 
     Ok(row_to_resource(row))
 }

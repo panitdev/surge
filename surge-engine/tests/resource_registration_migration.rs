@@ -369,7 +369,17 @@ async fn exercise(url: String) {
         Err(AuthError::Validation(_))
     ));
 
-    engine.delete_oauth_resource(KEPT).await.unwrap();
+    // A zero reuse window: this test is about what survives re-registering.
+    engine
+        .delete_oauth_resource(
+            surge_engine::audit::AuditActor::Operator { name: "test".into() },
+            surge_engine::oauth::ResourceManager::Admin,
+            KEPT,
+            None,
+            Duration::ZERO,
+        )
+        .await
+        .unwrap();
     let replacement = engine
         .create_oauth_resource(KEPT, creator, vec!["mcp:read".into()], serde_json::json!({}))
         .await
@@ -431,6 +441,7 @@ async fn exercise(url: String) {
     drop(engine);
 
     // And the migration reverses cleanly.
+    conn.revert_last_migration(MIGRATIONS).unwrap(); // 14, resource lifecycle
     conn.revert_last_migration(MIGRATIONS).unwrap(); // 13, client registrar
     conn.revert_last_migration(MIGRATIONS).unwrap();
     assert_eq!(

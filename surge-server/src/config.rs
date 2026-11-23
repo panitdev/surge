@@ -34,6 +34,8 @@ pub struct ServerConfig {
     pub oauth_as: Option<OauthAsSettings>,
 }
 
+const DEFAULT_ACCESS_TTL_SECS: u64 = 600;
+
 /// §8's table, parsed. Every default here is the MCP-correct one, and two of
 /// them are security parameters rather than preferences: `access_ttl` is the
 /// revocation window for any resource server verifying offline, and
@@ -51,6 +53,19 @@ pub struct OauthAsSettings {
 }
 
 impl ServerConfig {
+    /// How long a deleted OAuth resource's URI is reserved: the access-token
+    /// lifetime plus the clock skew verifiers accept. Without the
+    /// authorization server enabled no token is issued, but a deployment may
+    /// have issued some before it was switched off, so the default lifetime
+    /// stands in.
+    pub fn oauth_reuse_window(&self) -> Duration {
+        surge_engine::oauth::reuse_window(
+            self.oauth_as
+                .as_ref()
+                .map_or(Duration::from_secs(DEFAULT_ACCESS_TTL_SECS), |o| o.access_ttl),
+        )
+    }
+
     pub fn from_env() -> anyhow::Result<Self> {
         let database_url = SecretString::from(
             std::env::var("DATABASE_URL")
@@ -107,7 +122,7 @@ impl ServerConfig {
                 }
                 Some(OauthAsSettings {
                     issuer: issuer.trim_end_matches('/').to_string(),
-                    access_ttl: Duration::from_secs(env_u64("SURGE_OAUTH_ACCESS_TTL_SECS", 600)),
+                    access_ttl: Duration::from_secs(env_u64("SURGE_OAUTH_ACCESS_TTL_SECS", DEFAULT_ACCESS_TTL_SECS)),
                     refresh_ttl: Duration::from_secs(
                         env_u64("SURGE_OAUTH_REFRESH_TTL_DAYS", 30) * 86_400,
                     ),

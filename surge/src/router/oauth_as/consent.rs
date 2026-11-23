@@ -19,7 +19,9 @@ use surge_engine::AuthError;
 use surge_engine::oauth::{AuthorizationGrant, client_may_use_resource};
 
 use super::AsState;
-use super::authorize::{INELIGIBLE_TARGET, issue_code_redirect, resolve_authorization_session};
+use super::authorize::{
+    INELIGIBLE_TARGET, admission_refusal, issue_code_redirect, resolve_authorization_session,
+};
 use super::error::{OauthErrorCode, build_redirect};
 use crate::router::error::ApiError;
 
@@ -127,16 +129,8 @@ pub(crate) async fn decide_consent_flow(
         Err(e) => return Err(e.into()),
     };
     if !eligible {
-        state.engine.deny_consent_flow(&flow, &binding).await?;
-        let redirect = build_redirect(&flow.redirect_uri, |q| {
-            q.append_pair("error", OauthErrorCode::InvalidTarget.as_str());
-            q.append_pair("error_description", INELIGIBLE_TARGET);
-            if let Some(state) = flow.state.as_deref() {
-                q.append_pair("state", state);
-            }
-        })
-        .ok_or_else(|| AuthError::Internal(anyhow::anyhow!("unparseable redirect_uri")))?;
-        return Ok(Json(json!({ "redirect_to": redirect })).into_response());
+        return refuse_flow(&state, &flow, &binding, OauthErrorCode::InvalidTarget, INELIGIBLE_TARGET)
+            .await;
     }
 
     let approved = match decision.scopes {
@@ -168,14 +162,25 @@ pub(crate) async fn decide_consent_flow(
 
     // The UI navigates the browser itself, so the redirect target comes back
     // as JSON rather than as a 303 the fetch() would have to follow.
-    let response = issue_code_redirect(
+    let response = match issue_code_redirect(
         &state,
         &grant,
         &binding,
         Some(&flow.id),
         flow.state.as_deref(),
     )
-    .await?;
+    .await
+    {
+        Ok(response) => response,
+        // A policy change landed between the check above and the write; the
+        // engine refused under the registration's lock and wrote nothing.
+        Err(e) => match admission_refusal(&e) {
+            Some((code, message)) => {
+                return refuse_flow(&state, &flow, &binding, code, message).await;
+            }
+            None => return Err(e.into()),
+        },
+    };
 
     let redirect_to = response
         .headers()
@@ -185,6 +190,31 @@ pub(crate) async fn decide_consent_flow(
         .ok_or_else(|| AuthError::Internal(anyhow::anyhow!("no redirect target was built")))?;
 
     Ok(Json(json!({ "redirect_to": redirect_to })).into_response())
+}
+
+/// Ends a consent flow with an authorization error instead of a code. The
+/// flow is spent, not left open for a retry that can never succeed.
+async fn refuse_flow(
+    state: &AsState,
+    flow: &surge_engine::oauth::ConsentFlow,
+    binding: &surge_engine::oauth::AuthorizationSession,
+    code: OauthErrorCode,
+    message: &str,
+) -> Result<Response, ApiError> {
+    // The flow may already be gone if a policy change removed it.
+    match state.engine.deny_consent_flow(flow, binding).await {
+        Ok(()) | Err(AuthError::SessionExpired) => {}
+        Err(e) => return Err(e.into()),
+    }
+    let redirect = build_redirect(&flow.redirect_uri, |q| {
+        q.append_pair("error", code.as_str());
+        q.append_pair("error_description", message);
+        if let Some(state) = flow.state.as_deref() {
+            q.append_pair("state", state);
+        }
+    })
+    .ok_or_else(|| AuthError::Internal(anyhow::anyhow!("unparseable redirect_uri")))?;
+    Ok(Json(json!({ "redirect_to": redirect })).into_response())
 }
 
 async fn verify_flow_session(

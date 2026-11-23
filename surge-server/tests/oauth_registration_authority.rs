@@ -406,7 +406,16 @@ async fn a_platform_client_cannot_bind_a_registration_it_no_longer_holds() {
         )
         .await
         .unwrap();
-    h.engine.delete_oauth_resource(&uri).await.unwrap();
+    h.engine
+        .delete_oauth_resource(
+            surge_engine::audit::AuditActor::Operator { name: "test".into() },
+            surge_engine::oauth::ResourceManager::Admin,
+            &uri,
+            None,
+            std::time::Duration::ZERO,
+        )
+        .await
+        .unwrap();
     // The URI is re-registered by an administrator after the check passed.
     h.engine
         .register_oauth_resource(

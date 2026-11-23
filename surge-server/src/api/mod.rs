@@ -15,6 +15,9 @@ use crate::config::ServerConfig;
 pub struct AppState {
     pub engine: Arc<surge_engine::Engine>,
     pub provider: Arc<dyn AuthProvider>,
+    /// How long a deleted OAuth resource's URI stays reserved: the longest
+    /// an access token issued for it can still verify.
+    pub oauth_reuse_window: std::time::Duration,
 }
 
 /// Central startup coherence (architecture.md §5): refuse to start, or
@@ -105,6 +108,7 @@ pub async fn router(
     let state = Arc::new(AppState {
         engine: Arc::clone(&engine),
         provider: Arc::clone(&provider),
+        oauth_reuse_window: config.oauth_reuse_window(),
     });
 
     let return_origins = engine.all_return_origins().await?;

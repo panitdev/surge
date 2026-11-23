@@ -80,8 +80,14 @@ pub enum ResourceCommand {
         describe: Vec<String>,
     },
     List,
+    /// Delete a registration, ending every grant bound to it, and reserve its
+    /// URI until access tokens already issued for it have expired.
     Delete {
         uri: String,
+        /// Refuse unless this is the registration that holds the URI now
+        /// (see `list`). Lets a scripted retry avoid deleting a successor.
+        #[arg(long)]
+        registration_id: Option<uuid::Uuid>,
     },
 }
 
@@ -93,10 +99,14 @@ pub enum KeyCommand {
     Rotate,
 }
 
-pub async fn oauth(cmd: OauthCommand, engine: Arc<Engine>) -> anyhow::Result<()> {
+pub async fn oauth(
+    cmd: OauthCommand,
+    engine: Arc<Engine>,
+    reuse_window: std::time::Duration,
+) -> anyhow::Result<()> {
     match cmd {
         OauthCommand::Client(cmd) => client(cmd, engine).await,
-        OauthCommand::Resource(cmd) => resource(cmd, engine).await,
+        OauthCommand::Resource(cmd) => resource(cmd, engine, reuse_window).await,
         OauthCommand::Key(cmd) => key(cmd, engine).await,
     }
 }
@@ -192,7 +202,11 @@ async fn client(cmd: ClientCommand, engine: Arc<Engine>) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn resource(cmd: ResourceCommand, engine: Arc<Engine>) -> anyhow::Result<()> {
+async fn resource(
+    cmd: ResourceCommand,
+    engine: Arc<Engine>,
+    reuse_window: std::time::Duration,
+) -> anyhow::Result<()> {
     match cmd {
         ResourceCommand::Create {
             uri,
@@ -218,7 +232,8 @@ async fn resource(cmd: ResourceCommand, engine: Arc<Engine>) -> anyhow::Result<(
             }
 
             let resource = engine
-                .create_oauth_resource(
+                .create_oauth_resource_as(
+                    operator(),
                     &uri,
                     owner.id,
                     scope,
@@ -231,19 +246,6 @@ async fn resource(cmd: ResourceCommand, engine: Arc<Engine>) -> anyhow::Result<(
             println!("  ID:       {}", resource.registration_id);
             println!("  Service:  {} ({})", owner.name, owner.id);
             println!("  Scopes:   {:?}", resource.scopes);
-
-            engine
-                .audit(
-                    operator(),
-                    "create_oauth_resource",
-                    serde_json::json!({
-                        "registration_id": resource.registration_id,
-                        "resource_uri": resource.resource_uri,
-                        "service_id": owner.id.to_string(),
-                    }),
-                    None,
-                )
-                .await?;
         }
         ResourceCommand::List => {
             let resources = engine.list_oauth_resources().await?;
@@ -264,18 +266,34 @@ async fn resource(cmd: ResourceCommand, engine: Arc<Engine>) -> anyhow::Result<(
                 );
             }
         }
-        ResourceCommand::Delete { uri } => {
-            engine.delete_oauth_resource(&uri).await?;
-            println!("Resource {uri} deleted.");
-
-            engine
-                .audit(
+        ResourceCommand::Delete {
+            uri,
+            registration_id,
+        } => {
+            // The same lifecycle logic as the service API, with the
+            // operator as actor and administrative authority.
+            match engine
+                .delete_oauth_resource(
                     operator(),
-                    "delete_oauth_resource",
-                    serde_json::json!({ "resource_uri": uri }),
-                    None,
+                    surge_engine::oauth::ResourceManager::Admin,
+                    &uri,
+                    registration_id,
+                    reuse_window,
                 )
-                .await?;
+                .await?
+            {
+                surge_engine::oauth::DeleteOutcome::Deleted(resource) => {
+                    println!("Resource {uri} deleted (registration {}).", resource.registration_id);
+                    println!(
+                        "The URI is reserved for {}s: access tokens already issued for it \
+                         stay valid that long.",
+                        reuse_window.as_secs()
+                    );
+                }
+                surge_engine::oauth::DeleteOutcome::AlreadyDeleted => {
+                    println!("Registration already deleted; nothing to do.");
+                }
+            }
         }
     }
     Ok(())
