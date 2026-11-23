@@ -570,34 +570,17 @@ async fn description_only_edits_preserve_every_grant() {
     assert_eq!(before, after);
 }
 
-/// A CIMD client has no registry row until surge-bcc resolves it, so one is
-/// inserted directly.
-async fn cimd_client(client_id: &str) {
-    let mut conn = db().await;
-    diesel::sql_query(
-        "INSERT INTO surge.oauth_client \
-         (client_id, client_name, redirect_uris, grant_types, scopes, \
-          token_endpoint_auth_method, registration_source, first_party, trust_state) \
-         VALUES ($1, 'CIMD app', ARRAY[$2], ARRAY['authorization_code','refresh_token'], \
-                 ARRAY['mcp:read','mcp:write'], 'none', 'dynamic', false, 'untrusted')",
-    )
-    .bind::<diesel::sql_types::Text, _>(client_id)
-    .bind::<diesel::sql_types::Text, _>(CLIENT_REDIRECT)
-    .execute(&mut conn)
-    .await
-    .unwrap();
-}
-
 #[tokio::test]
 #[ignore = "requires a live Postgres via DATABASE_URL"]
 async fn removing_a_cimd_client_ends_its_grants_and_restoring_it_needs_fresh_consent() {
-    let h = harness().await;
+    let docs = CimdDocs::new();
+    let h = harness_cimd(&docs).await;
     let session = h.sign_in().await;
     let (_, token) = registrar(&h, "cimd").await;
     let rs = uri(&h, "cimd");
     let reg = register(&h, &token, &rs, &["mcp:read"]).await;
     let cimd = format!("https://app.lifecycle.test/client-{}.json", h.suffix);
-    cimd_client(&cimd).await;
+    docs.publish_default(&cimd);
     let bystander = client(&h, RegistrationSource::Admin, Some(vec![rs.clone()])).await;
 
     let resp = patch(&h, &token, &rs, json!({ "allowed_cimd_client_ids": [cimd, cimd] })).await;
@@ -623,7 +606,10 @@ async fn removing_a_cimd_client_ends_its_grants_and_restoring_it_needs_fresh_con
     let resp = h
         .get(&h.authorize_uri(&cimd, &pkce2, Some(&rs), Some("mcp:read")), Some(&session))
         .await;
-    assert_eq!(query_param(&location(&resp), "error").as_deref(), Some("invalid_target"));
+    // No allowlist entry, so no document is fetched and nothing is trusted
+    // enough to redirect to: an error page.
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert!(body_text(resp).await.contains("invalid_target"));
 
     // Restoring eligibility restores nothing: the old refresh token stays
     // dead and the user is asked again.

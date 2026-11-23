@@ -13,6 +13,7 @@
 //! identity/service half in a single query.
 
 mod chooser;
+mod cimd;
 mod client;
 mod code;
 mod consent;
@@ -23,6 +24,9 @@ mod resource;
 mod token;
 
 pub use chooser::ChooserCredential;
+pub use cimd::{
+    parse_cimd_document, validate_cimd_client_id, CimdMetadata, MAX_CIMD_DOCUMENT_BYTES,
+};
 pub use client::{validate_redirect_uri, MAX_PLATFORM_RESOURCES};
 pub use code::{AuthorizationSession, verify_pkce, AUTHORIZATION_CODE_TTL_SECS};
 pub use consent::ConsentFlowRequest;
@@ -54,6 +58,12 @@ pub enum RegistrationSource {
     /// Third-party and untrusted, and never swept: an administrator revokes it
     /// (registrar revoke is future work).
     Platform,
+    /// Published by the client itself as a client-ID metadata document at its
+    /// client ID URL (surge-bcc). Its name, logo and redirect URIs are
+    /// self-declared, so it is untrusted and never first-party; the row is a
+    /// cache of the last document validated for a consent flow, and is
+    /// admitted to a resource only by that resource's exact allowlist.
+    Cimd,
     /// A stored value this build does not recognise (the database constrains
     /// it, so this is a newer or corrupted row). Fails closed: untrusted
     /// metadata, never first-party, and eligible for no resource. Never
@@ -74,6 +84,7 @@ impl RegistrationSource {
             Self::Admin => "admin",
             Self::Dynamic => "dynamic",
             Self::Platform => "platform",
+            Self::Cimd => "cimd",
             Self::Unknown => "unknown",
         }
     }
@@ -82,6 +93,7 @@ impl RegistrationSource {
         match s {
             "dynamic" => Self::Dynamic,
             "platform" => Self::Platform,
+            "cimd" => Self::Cimd,
             "admin" => Self::Admin,
             // Must not fail open: `Unknown` is untrusted and has no access.
             _ => Self::Unknown,
@@ -358,6 +370,8 @@ impl crate::Engine {
         self.gc_expired_chooser_requests().await?;
         self.gc_expired_refresh_tokens().await?;
         self.gc_unused_dynamic_clients(dcr_ttl).await?;
+        // The same idle window governs unreferenced CIMD rows.
+        self.gc_unused_cimd_clients(dcr_ttl).await?;
         self.rotate_oauth_signing_keys(key_rotation, access_ttl * 2)
             .await?;
         Ok(())

@@ -22,7 +22,10 @@ pub(crate) use proxy::{proxy_browser_router, ProxyConfig};
 #[cfg(feature = "test-provider")]
 pub(crate) use test::test_browser_router;
 #[cfg(feature = "oauth-as")]
-pub use oauth_as::OauthAsConfig;
+pub use oauth_as::{
+    is_public_ip, CimdDocumentFetcher, CimdError, CimdLimits, CimdResolver, FetchError,
+    FetchedDocument, HttpDocumentFetcher, OauthAsConfig,
+};
 pub use rate_limit::{PostgresRateLimiter, RateLimitConfig, RateLimitPolicy, RateLimiter};
 
 async fn no_store(mut response: axum::response::Response) -> axum::response::Response {

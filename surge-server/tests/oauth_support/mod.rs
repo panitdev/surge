@@ -126,6 +126,7 @@ pub async fn harness_mode(multi_account: bool, tune: impl FnOnce(OauthAsSettings
         default_resource: None,
         dcr_ttl: Duration::from_secs(30 * 86_400),
         enable_oidc: true,
+        cimd_fetcher: None,
     });
 
     let config = Arc::new(ServerConfig {
@@ -436,6 +437,82 @@ impl Harness {
         }
         uri
     }
+}
+
+/// Serves client-ID metadata documents from memory, so no test touches the
+/// network. Each document is published for one exact URL; an unpublished URL
+/// fails like an unreachable host. Documents carry no freshness information,
+/// so the resolver caches them for its default window: publish a distinct URL
+/// per scenario instead of expecting an edit to show through.
+#[derive(Default)]
+pub struct CimdDocs {
+    docs: std::sync::Mutex<std::collections::HashMap<String, Vec<u8>>>,
+    fetches: std::sync::atomic::AtomicUsize,
+}
+
+impl CimdDocs {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    /// A valid public-client document for `url`, redirecting to
+    /// [`CLIENT_REDIRECT`].
+    pub fn default_doc(url: &str) -> Value {
+        json!({
+            "client_id": url,
+            "client_name": "CIMD app",
+            "redirect_uris": [CLIENT_REDIRECT],
+            "grant_types": ["authorization_code", "refresh_token"],
+            "token_endpoint_auth_method": "none",
+        })
+    }
+
+    pub fn publish(&self, url: &str, doc: Value) {
+        self.docs
+            .lock()
+            .unwrap()
+            .insert(url.to_string(), doc.to_string().into_bytes());
+    }
+
+    pub fn publish_default(&self, url: &str) {
+        self.publish(url, Self::default_doc(url));
+    }
+
+    pub fn unpublish(&self, url: &str) {
+        self.docs.lock().unwrap().remove(url);
+    }
+
+    /// How many fetches reached the "network" so far.
+    pub fn fetches(&self) -> usize {
+        self.fetches.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+#[async_trait::async_trait]
+impl surge::router::CimdDocumentFetcher for CimdDocs {
+    async fn fetch(
+        &self,
+        url: &url::Url,
+    ) -> Result<surge::router::FetchedDocument, surge::router::FetchError> {
+        self.fetches.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        match self.docs.lock().unwrap().get(url.as_str()) {
+            Some(body) => Ok(surge::router::FetchedDocument {
+                body: body.clone(),
+                max_age: None,
+            }),
+            None => Err(surge::router::FetchError("no such document".into())),
+        }
+    }
+}
+
+/// The harness with `docs` serving client-ID metadata documents.
+pub async fn harness_cimd(docs: &Arc<CimdDocs>) -> Harness {
+    let docs = Arc::clone(docs);
+    harness_with(move |mut settings| {
+        settings.cimd_fetcher = Some(docs);
+        settings
+    })
+    .await
 }
 
 /// An RFC 7636 verifier/challenge pair.

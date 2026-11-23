@@ -42,8 +42,11 @@ pub fn client_may_use_resource(client: &OauthClient, resource: &OauthResource) -
     let dynamic = client.registration_source == RegistrationSource::Dynamic;
 
     // First, so a CIMD client is always held to the allowlist whatever else
-    // is stored for it.
-    if is_cimd_client_id(&client.client_id) {
+    // is stored for it. The `https://` check is belt and braces: the
+    // database ties that prefix to the `cimd` source.
+    if client.registration_source == RegistrationSource::Cimd
+        || is_cimd_client_id(&client.client_id)
+    {
         return resource.allowed_cimd_client_ids.contains(&client.client_id);
     }
 
@@ -61,8 +64,8 @@ pub fn client_may_use_resource(client: &OauthClient, resource: &OauthResource) -
 }
 
 /// A CIMD client's identifier is the HTTPS URL of its metadata document;
-/// every client registered here gets a generated `aeg_cid_…` identifier, so
-/// the two cannot be confused.
+/// every other client gets a generated `aeg_cid_…` identifier, so the two
+/// cannot be confused.
 fn is_cimd_client_id(client_id: &str) -> bool {
     client_id.starts_with("https://")
 }
@@ -206,20 +209,18 @@ mod tests {
     #[test]
     fn a_cimd_client_needs_an_exact_allowlist_entry() {
         let id = "https://app.example/client.json";
-        let c = client_id(id, RegistrationSource::Dynamic, None);
-        for source in [ResourceSource::Service, ResourceSource::Delegated] {
-            assert!(!client_may_use_resource(
-                &c,
-                &resource(source, true, vec![])
-            ));
-            assert!(!client_may_use_resource(
-                &c,
-                &resource(source, true, vec!["https://app.example/client.json/"])
-            ));
-            assert!(client_may_use_resource(
-                &c,
-                &resource(source, false, vec![id])
-            ));
+        // A stored `cimd` row, and an `https://` ID under any other source
+        // (which the database forbids) alike: held to the allowlist.
+        for kind in [RegistrationSource::Cimd, RegistrationSource::Dynamic] {
+            let c = client_id(id, kind, None);
+            for source in [ResourceSource::Service, ResourceSource::Delegated] {
+                assert!(!client_may_use_resource(&c, &resource(source, true, vec![])));
+                assert!(!client_may_use_resource(
+                    &c,
+                    &resource(source, true, vec!["https://app.example/client.json/"])
+                ));
+                assert!(client_may_use_resource(&c, &resource(source, false, vec![id])));
+            }
         }
     }
 }

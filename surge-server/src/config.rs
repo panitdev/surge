@@ -50,6 +50,11 @@ pub struct OauthAsSettings {
     pub default_resource: Option<String>,
     pub dcr_ttl: Duration,
     pub enable_oidc: bool,
+    /// Replaces the HTTPS document fetcher for client-ID metadata documents.
+    /// Not configurable from the environment: production always uses the
+    /// SSRF-hardened fetcher, and this exists so tests can serve documents
+    /// without the network.
+    pub cimd_fetcher: Option<std::sync::Arc<dyn surge::router::CimdDocumentFetcher>>,
 }
 
 impl ServerConfig {
@@ -137,6 +142,7 @@ impl ServerConfig {
                     default_resource: std::env::var("SURGE_OAUTH_DEFAULT_RESOURCE").ok(),
                     dcr_ttl: Duration::from_secs(env_u64("SURGE_OAUTH_DCR_TTL_DAYS", 30) * 86_400),
                     enable_oidc: env_flag("SURGE_OAUTH_ENABLE_OIDC", true),
+                    cimd_fetcher: None,
                 })
             }
             None => None,

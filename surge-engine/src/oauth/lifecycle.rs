@@ -699,9 +699,10 @@ async fn trim_removed_scopes(
 /// off): ends every grant, flow, code and pending choice of each client that
 /// the registration's new policy no longer admits.
 ///
-/// `removed_cimd` are client IDs that cannot be evaluated because a CIMD
-/// client has no registry row until it first authorizes (surge-bcc): they
-/// are ended by name. Every other client holding anything at the registration
+/// `removed_cimd` are the client IDs just taken off the allowlist. They are
+/// ended by name rather than evaluated, which also covers a grant whose CIMD
+/// row was removed since (surge-bcc stores one per client once a consent flow
+/// exists). Every other client holding anything at the registration
 /// is evaluated with the shared rule against the new policy.
 // `redundant_field_names` is a false positive from `QueryableByName`.
 #[allow(clippy::field_reassign_with_default, clippy::redundant_field_names)]

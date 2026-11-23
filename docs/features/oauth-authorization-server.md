@@ -81,11 +81,35 @@ Startup requires a registered return origin for the issuer and requires `https` 
 
 One rule decides whether a client may be issued tokens for a resource, and it is applied to current state at every point a token can come into being: `GET /oauth2/authorize`, consent completion, code redemption and refresh. A grant that was eligible on the day of consent is checked again each time. Ineligible requests fail with `invalid_target`, and the error never says whether the resource exists.
 
-1. **A CIMD client** (its client ID is an `https` URL) may use a resource only if its exact client ID is in that resource's `allowed_cimd_client_ids`. This is checked first, so a CIMD client is always held to the allowlist.
+1. **A CIMD client** (`registration_source` `cimd`; its client ID is an `https` URL, see [Client ID metadata documents](#client-id-metadata-documents)) may use a resource only if its exact client ID is in that resource's `allowed_cimd_client_ids`. This is checked first, so a CIMD client is always held to the allowlist.
 2. **A client with an explicit audience list is restricted to it, for every resource, service or delegated.** An empty list grants nothing. The list names registrations, not URIs, so it does not survive the resource being deleted and registered again.
 3. **A Platform-registered client** (`oauth_client_register`) always has an explicit list, limited to delegated registrations its registrar created, so rule 2 governs it and it never receives the no-list or DCR access in rules 3 and 4.
 4. **A client with no list (the default for existing clients) keeps its access to service resources.** It has none to delegated resources, with the exception in rule 5.
 5. **A dynamically registered client without a list** may use a delegated resource that has set `dcr_enabled`. A dynamic client's explicit list is honoured for a delegated resource only if that resource has also opted in, so an anonymous registration cannot bind itself to someone else's resource.
+
+## Client ID metadata documents
+
+A client may identify itself by the HTTPS URL of a JSON document it publishes (CIMD) instead of registering. Discovery advertises `client_id_metadata_document_supported: true`. Whether a resource admits the client is that resource's exact `allowed_cimd_client_ids` entry, for service and delegated resources alike.
+
+**The client ID.** It must be exactly the canonical form of an `https` URL with a path, a public DNS host (no IP literal, `localhost`, single-label or `.local`/`.internal` name), the default port, and no userinfo or fragment. Anything the URL parser would rewrite (dot segments, an upper-case host, an explicit `:443`) is refused, so one document has one ID.
+
+**The document.** It must repeat the exact client ID as `client_id`, carry a `client_name`, valid `redirect_uris` (the same rules as any client: `https`, or `http` on loopback, no wildcards or fragments), and declare `token_endpoint_auth_method: "none"`. A `client_secret`, another authentication method or an unsupported `grant_types`/`response_types` is refused rather than ignored. An optional `scope` is a ceiling on what the client may request; without one, the resource's scopes are the range. Documents are limited to 32 KiB. PKCE `S256` is required as for every client. Confidential CIMD authentication is not supported in this release.
+
+**Fetching.** The authorize endpoint fetches a document only for a URL that the requested resource lists exactly, so an anonymous request cannot aim the server at other hosts. The fetch:
+
+- does not follow redirects and ignores proxy settings;
+- resolves the host through a resolver that refuses the whole lookup if any address is not publicly routable (loopback, private, link-local, CGNAT, unique-local, multicast, unspecified, documentation, benchmarking, reserved, and every IPv6 form that embeds IPv4: mapped, compatible, NAT64, 6to4, Teredo), and connects only to the addresses it returned, with TLS verified against the original host name;
+- uses `https` only, a 3 s connect and 5 s total timeout, requires status 200 and a JSON content type, and reads at most 32 KiB;
+- is rate limited to 10 fetches per host per minute and 16 in flight, answering `temporarily_unavailable` beyond that;
+- is cached for the origin's `Cache-Control: max-age` (clamped to 1 hour; 5 minutes if absent; `no-store` and `no-cache` are not cached), and failures, including invalid documents, are cached for 60 seconds. The cache holds at most 1024 documents.
+
+Because the document is untrusted until it is fetched and checked, every failure before the redirect URI is verified is an error page, not a redirect.
+
+**Stored client.** Nothing is written when a document is fetched. After the session, document and eligibility checks pass, creating the consent flow upserts one shared client row in the same transaction (under the resource's lock): `registration_source=cimd`, `trust_state=untrusted`, `first_party=false`, public (`none`, no secret). The database refuses any other combination. Concurrent requests converge on one row, and each upsert refreshes the name, URIs and redirect URIs from the document it validated. A revoked row is a tombstone: it is never refreshed or resurrected, authorize refuses it before any fetch, and the sweep never deletes it. Consent shows a CIMD client as `dynamically_registered: true`, because its name and logo are self-declared.
+
+Code redemption and refresh never fetch. They use the stored row and the resource's *current* policy, so removing a client from an allowlist ends its grants as described above.
+
+**Cleanup.** The background sweep deletes a `cimd` row that has been idle for `SURGE_OAUTH_DCR_TTL_DAYS` (measured from its last completed authorization, or creation) and is referenced by no consent, refresh token, code, consent flow or pending account choice. A deleted client returns on its next authorization.
 
 **Authorize and token errors.** At authorize and consent, an unknown resource and an ineligible one return the identical `invalid_target` error. At the token endpoint a refresh whose registration no longer exists returns `invalid_grant`, while one the client may no longer use returns `invalid_target`. The refresh is judged inside the rotation transaction, under the registration's lock: if it fails the eligibility check, the presented token is not spent and every refresh family the client holds at that resource is revoked, so no live refresh token remains and introspection stops reporting the earlier access tokens as active.
 
@@ -231,7 +255,7 @@ Note the metadata path. A resource URI with a path is described at `https://host
 | `SURGE_OAUTH_ALLOW_DYNAMIC_REGISTRATION` | `0` | Opens `POST /oauth2/register`. |
 | `SURGE_OAUTH_REQUIRE_RESOURCE` | `1` | Reject authorize without a resolvable `resource`. |
 | `SURGE_OAUTH_DEFAULT_RESOURCE` | (unset) | Audience assumed when `REQUIRE_RESOURCE=0` and none was sent. |
-| `SURGE_OAUTH_DCR_TTL_DAYS` | `30` | Sweep dynamic clients that never authorized. |
+| `SURGE_OAUTH_DCR_TTL_DAYS` | `30` | Sweep dynamic clients that never authorized, and idle unreferenced CIMD clients. |
 | `SURGE_OAUTH_ENABLE_OIDC` | `1` | ID tokens, `userinfo`, and `/.well-known/openid-configuration`. |
 
 **Related:** [Service Grants](/reference/grants), [Tokens](/reference/tokens), [CLI](/reference/cli), [Session Management](/features/session-management)

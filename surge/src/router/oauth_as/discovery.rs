@@ -62,6 +62,10 @@ pub(crate) async fn metadata(State(state): State<Arc<AsState>>) -> Response {
         // RFC 8707: every token this server issues is audience-restricted.
         "resource_indicators_supported": true,
         "authorization_response_iss_parameter_supported": false,
+        // A client may identify itself by the HTTPS URL of a metadata
+        // document it publishes; whether a resource admits it is that
+        // resource's allowlist.
+        "client_id_metadata_document_supported": true,
         "service_documentation": "https://github.com/panit/surge",
     });
 

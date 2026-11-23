@@ -37,6 +37,12 @@ impl Engine {
                 "a platform client is created with create_platform_oauth_client",
             ));
         }
+        if spec.registration_source == RegistrationSource::Cimd {
+            return Err(field(
+                "registration_source",
+                "a CIMD client is created from its metadata document at consent",
+            ));
+        }
         self.insert_client(spec, None).await
     }
 
@@ -508,14 +514,14 @@ fn row_to_client(row: OauthClientRow, audiences: Option<Vec<String>>) -> OauthCl
     }
 }
 
-fn field(field: &'static str, message: impl Into<String>) -> AuthError {
+pub(super) fn field(field: &'static str, message: impl Into<String>) -> AuthError {
     AuthError::Validation(ValidationError::Field {
         field,
         message: message.into(),
     })
 }
 
-fn validate_client(spec: &NewOauthClient) -> Result<(), AuthError> {
+pub(super) fn validate_client(spec: &NewOauthClient) -> Result<(), AuthError> {
     if spec.client_name.trim().is_empty() {
         return Err(field("client_name", "must not be empty"));
     }
