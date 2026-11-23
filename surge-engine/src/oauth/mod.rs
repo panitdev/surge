@@ -83,6 +83,10 @@ pub struct OauthClient {
     /// (`false`) is the normal MCP case and is only safe because PKCE is
     /// mandatory.
     pub confidential: bool,
+    /// Canonical URIs of the registrations this client is approved for.
+    /// `None` is the legacy default: no explicit list. `Some(vec![])` is an
+    /// explicit list that approves nothing.
+    pub audiences: Option<Vec<String>>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -100,18 +104,69 @@ pub struct NewOauthClient {
     pub confidential: bool,
     pub first_party: bool,
     pub registration_source: RegistrationSource,
+    /// Canonical URIs to approve this client for, each resolved to the
+    /// registration that holds it at creation time. `None` stores no
+    /// explicit list.
+    pub audiences: Option<Vec<String>>,
 }
 
-/// An audience: one resource server, owned by one registered service.
+/// How a protected resource came to be registered. Immutable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResourceSource {
+    /// A first-party resource server owned by a registered service, which is
+    /// the one service allowed to introspect its tokens.
+    Service,
+    /// Registered on a developer's behalf by a delegated registrar. Owned by
+    /// no service.
+    Delegated,
+}
+
+impl ResourceSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Service => "service",
+            Self::Delegated => "delegated",
+        }
+    }
+
+    pub(crate) fn from_db(s: &str) -> Self {
+        match s {
+            "delegated" => Self::Delegated,
+            _ => Self::Service,
+        }
+    }
+}
+
+/// An audience registration: one resource server at one canonical URI.
+///
+/// `registration_id` is the identity every grant is bound to. It never
+/// changes, and re-registering a URI after deletion yields a new one, so
+/// nothing granted against the old registration carries over. The URI is
+/// what clients request and what the JWT `aud` claim carries.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct OauthResource {
+    pub registration_id: Uuid,
     pub resource_uri: String,
-    pub service_id: Uuid,
+    pub registration_source: ResourceSource,
+    /// The owning service of a [`ResourceSource::Service`] registration —
+    /// the service allowed to introspect its tokens. Always `None` for a
+    /// delegated registration.
+    pub service_id: Option<Uuid>,
+    /// The authenticated service that created the registration. `None` when
+    /// unknown: registrations that predate registrar tracking, and those an
+    /// operator created through the CLI.
+    pub registrar_service_id: Option<Uuid>,
     pub scopes: Vec<String>,
     /// `{scope: "human sentence"}`, rendered on the consent screen. A scope
     /// with no entry falls back to its bare name.
     pub scope_descriptions: serde_json::Value,
+    /// Exact CIMD client-ID URLs allowed to use this resource.
+    pub allowed_cimd_client_ids: Vec<String>,
+    /// Whether dynamically registered clients may use this resource without
+    /// an explicit audience binding.
+    pub dcr_enabled: bool,
     pub created_at: DateTime<Utc>,
 }
 
@@ -122,6 +177,7 @@ pub struct OauthResource {
 pub struct ConsentGrant {
     pub client_id: String,
     pub identity_id: IdentityId,
+    pub registration_id: Uuid,
     pub resource_uri: String,
     pub scopes: Vec<String>,
     pub granted_at: DateTime<Utc>,
@@ -151,6 +207,7 @@ pub struct ConsentFlow {
     pub identity_id: IdentityId,
     pub session_id: Uuid,
     pub account_id: Option<Uuid>,
+    pub registration_id: Uuid,
     pub resource_uri: String,
     pub scopes: Vec<String>,
     pub redirect_uri: String,
@@ -169,6 +226,9 @@ pub struct AuthorizationGrant {
     pub client_id: String,
     pub identity_id: IdentityId,
     pub session_id: Uuid,
+    /// The registration the grant was decided against. Minting fails if it
+    /// no longer holds `resource_uri`.
+    pub registration_id: Uuid,
     pub resource_uri: String,
     pub redirect_uri: String,
     pub scopes: Vec<String>,
@@ -185,6 +245,7 @@ pub struct RefreshGrant {
     pub client_id: String,
     pub identity_id: IdentityId,
     pub session_id: Uuid,
+    pub registration_id: Uuid,
     pub resource_uri: String,
     pub scopes: Vec<String>,
     pub family_id: Uuid,
@@ -224,6 +285,19 @@ pub struct PublicSigningKey {
 
 pub(crate) fn now() -> DateTime<Utc> {
     Utc::now()
+}
+
+/// Maps a write that names a registration which no longer holds its URI —
+/// deleted, or deleted and registered again — to `NotFound` instead of an
+/// internal error. The composite foreign key is what detects it.
+pub(crate) fn stale_registration(e: diesel::result::Error) -> crate::AuthError {
+    use diesel::result::{DatabaseErrorKind, Error};
+    match e {
+        Error::DatabaseError(DatabaseErrorKind::ForeignKeyViolation, _) => {
+            crate::AuthError::NotFound
+        }
+        other => crate::AuthError::Internal(other.into()),
+    }
 }
 
 impl crate::Engine {

@@ -221,6 +221,7 @@ pub struct OauthClientRow {
     pub created_at: DateTime<Utc>,
     pub last_used_at: Option<DateTime<Utc>>,
     pub revoked_at: Option<DateTime<Utc>>,
+    pub audience_restricted: bool,
 }
 
 #[derive(Insertable)]
@@ -239,25 +240,36 @@ pub struct NewOauthClient<'a> {
     pub first_party: bool,
     pub trust_state: &'a str,
     pub created_at: DateTime<Utc>,
+    pub audience_restricted: bool,
 }
 
 #[derive(Queryable, Selectable, Clone)]
 #[diesel(table_name = schema::oauth_resource)]
 pub struct OauthResourceRow {
+    pub id: Uuid,
     pub resource_uri: String,
-    pub service_id: Uuid,
+    pub registration_source: String,
+    pub service_id: Option<Uuid>,
+    pub registrar_service_id: Option<Uuid>,
     pub scopes: Vec<String>,
     pub scope_descriptions: serde_json::Value,
+    pub allowed_cimd_client_ids: Vec<String>,
+    pub dcr_enabled: bool,
     pub created_at: DateTime<Utc>,
 }
 
 #[derive(Insertable)]
 #[diesel(table_name = schema::oauth_resource)]
 pub struct NewOauthResource<'a> {
+    pub id: Uuid,
     pub resource_uri: &'a str,
-    pub service_id: Uuid,
+    pub registration_source: &'a str,
+    pub service_id: Option<Uuid>,
+    pub registrar_service_id: Option<Uuid>,
     pub scopes: Vec<String>,
     pub scope_descriptions: serde_json::Value,
+    pub allowed_cimd_client_ids: Vec<String>,
+    pub dcr_enabled: bool,
     pub created_at: DateTime<Utc>,
 }
 
@@ -267,6 +279,7 @@ pub struct NewOauthResource<'a> {
 pub struct OauthConsentRow {
     pub client_id: String,
     pub identity_id: Uuid,
+    pub registration_id: Uuid,
     pub resource_uri: String,
     pub scopes: Vec<String>,
     pub granted_at: DateTime<Utc>,
@@ -278,6 +291,7 @@ pub struct OauthConsentRow {
 pub struct NewOauthConsent<'a> {
     pub client_id: &'a str,
     pub identity_id: Uuid,
+    pub registration_id: Uuid,
     pub resource_uri: &'a str,
     pub scopes: Vec<String>,
     pub granted_at: DateTime<Utc>,
@@ -292,6 +306,7 @@ pub struct OauthConsentFlowRow {
     pub identity_id: Uuid,
     pub session_id: Uuid,
     pub account_id: Option<Uuid>,
+    pub registration_id: Uuid,
     pub resource_uri: String,
     pub scopes: Vec<String>,
     pub redirect_uri: String,
@@ -313,6 +328,7 @@ pub struct NewOauthConsentFlow<'a> {
     pub identity_id: Uuid,
     pub session_id: Uuid,
     pub account_id: Option<Uuid>,
+    pub registration_id: Uuid,
     pub resource_uri: &'a str,
     pub scopes: Vec<String>,
     pub redirect_uri: &'a str,
@@ -333,6 +349,7 @@ pub struct OauthAuthorizationCodeRow {
     pub client_id: String,
     pub identity_id: Uuid,
     pub session_id: Uuid,
+    pub registration_id: Uuid,
     pub resource_uri: String,
     pub redirect_uri: String,
     pub scopes: Vec<String>,
@@ -351,6 +368,7 @@ pub struct NewOauthAuthorizationCode<'a> {
     pub client_id: &'a str,
     pub identity_id: Uuid,
     pub session_id: Uuid,
+    pub registration_id: Uuid,
     pub resource_uri: &'a str,
     pub redirect_uri: &'a str,
     pub scopes: Vec<String>,
@@ -369,6 +387,7 @@ pub struct OauthRefreshTokenRow {
     pub client_id: String,
     pub identity_id: Uuid,
     pub session_id: Uuid,
+    pub registration_id: Uuid,
     pub resource_uri: String,
     pub scopes: Vec<String>,
     pub family_id: Uuid,
@@ -386,6 +405,7 @@ pub struct NewOauthRefreshToken<'a> {
     pub client_id: &'a str,
     pub identity_id: Uuid,
     pub session_id: Uuid,
+    pub registration_id: Uuid,
     pub resource_uri: &'a str,
     pub scopes: Vec<String>,
     pub family_id: Uuid,

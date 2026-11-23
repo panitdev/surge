@@ -121,6 +121,7 @@ impl Engine {
                         client_id: row.client_id,
                         identity_id: IdentityId::from_uuid(row.identity_id),
                         session_id: row.session_id,
+                        registration_id: row.registration_id,
                         resource_uri: row.resource_uri,
                         scopes: row.scopes,
                         family_id: row.family_id,
@@ -199,7 +200,7 @@ impl Engine {
         &self,
         client_id: &str,
         identity_id: IdentityId,
-        resource_uri: &str,
+        registration_id: Uuid,
     ) -> Result<bool, AuthError> {
         let identity = match self.get_identity(identity_id).await {
             Ok(identity) => identity,
@@ -226,7 +227,7 @@ impl Engine {
         let tokens_live: i64 = oauth_refresh_token::table
             .filter(oauth_refresh_token::client_id.eq(client_id))
             .filter(oauth_refresh_token::identity_id.eq(*identity_id.as_uuid()))
-            .filter(oauth_refresh_token::resource_uri.eq(resource_uri))
+            .filter(oauth_refresh_token::registration_id.eq(registration_id))
             .filter(oauth_refresh_token::revoked_at.is_null())
             .count()
             .get_result(&mut conn)
@@ -239,7 +240,7 @@ impl Engine {
         // A first-party client has no consent row by design, so its absence
         // is only disqualifying when a row was revoked.
         let consent_revoked: i64 = oauth_consent::table
-            .find((client_id, *identity_id.as_uuid(), resource_uri))
+            .find((client_id, *identity_id.as_uuid(), registration_id))
             .filter(oauth_consent::revoked_at.is_not_null())
             .count()
             .get_result(&mut conn)
@@ -282,6 +283,7 @@ async fn insert_refresh_token(
             client_id: &grant.client_id,
             identity_id: *grant.identity_id.as_uuid(),
             session_id: grant.session_id,
+            registration_id: grant.registration_id,
             resource_uri: &grant.resource_uri,
             scopes: grant.scopes.clone(),
             family_id: grant.family_id,
@@ -291,7 +293,12 @@ async fn insert_refresh_token(
         })
         .execute(conn)
         .await
-        .map_err(|e| AuthError::Internal(e.into()))?;
+        .map_err(|e| match super::stale_registration(e) {
+            // The registration went away under a live grant; the grant went
+            // with it.
+            AuthError::NotFound => AuthError::InvalidToken,
+            other => other,
+        })?;
 
     Ok(token)
 }

@@ -126,6 +126,11 @@ async fn mint_access_token(
         engine: Arc::clone(engine),
         service_token: String::new(),
         resource_uri: resource_uri.to_string(),
+        registration_id: engine
+            .get_oauth_resource(resource_uri)
+            .await
+            .unwrap()
+            .registration_id,
         suffix,
     };
 

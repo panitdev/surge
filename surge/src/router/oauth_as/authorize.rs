@@ -46,7 +46,7 @@ pub(crate) async fn authorize(
     headers: axum::http::HeaderMap,
     uri: axum::http::Uri,
 ) -> Response {
-    authorize_query(&state, query, &headers, Some(uri), None).await
+    authorize_query(&state, query, &headers, Some(uri), None, None).await
 }
 
 pub(super) async fn authorize_query(
@@ -55,6 +55,9 @@ pub(super) async fn authorize_query(
     headers: &HeaderMap,
     original: Option<axum::http::Uri>,
     selected: Option<(Session, AuthorizationSession)>,
+    // A resumed account choice is bound to the registration it was first
+    // validated against; a replacement at the same URI is not that resource.
+    registration: Option<uuid::Uuid>,
 ) -> Response {
     // --- Phase 1: nothing may be redirected anywhere yet. ---
     let Some(client_id) = query.client_id.as_deref() else {
@@ -117,6 +120,12 @@ pub(super) async fn authorize_query(
         Ok(resource) => resource,
         Err((code, message)) => return fail(code, &message),
     };
+    if registration.is_some_and(|id| id != resource.registration_id) {
+        return fail(
+            OauthErrorCode::InvalidTarget,
+            "the resource was registered again since this request began; authorize again",
+        );
+    }
 
     let scopes = match resolve_scopes(query.scope.as_deref(), &client, &resource) {
         Ok(scopes) => scopes,
@@ -163,7 +172,7 @@ pub(super) async fn authorize_query(
             state,
             headers,
             &query,
-            &resource.resource_uri,
+            &resource,
             &scopes,
             true,
         )
@@ -188,7 +197,7 @@ pub(super) async fn authorize_query(
                     state,
                     headers,
                     &query,
-                    &resource.resource_uri,
+                    &resource,
                     &scopes,
                     false,
                 )
@@ -218,7 +227,7 @@ pub(super) async fn authorize_query(
             .find_consent(
                 &client.client_id,
                 session.identity.id,
-                &resource.resource_uri,
+                resource.registration_id,
             )
             .await
         {
@@ -243,6 +252,7 @@ pub(super) async fn authorize_query(
                 identity_id: session.identity.id,
                 session_id: *session.id.as_uuid(),
                 account_id: binding.account_id(),
+                registration_id: resource.registration_id,
                 resource_uri: resource.resource_uri.clone(),
                 scopes: scopes.clone(),
                 redirect_uri: redirect_uri.to_string(),
@@ -270,6 +280,7 @@ pub(super) async fn authorize_query(
         client_id: client.client_id.clone(),
         identity_id: session.identity.id,
         session_id: *session.id.as_uuid(),
+        registration_id: resource.registration_id,
         resource_uri: resource.resource_uri,
         redirect_uri: redirect_uri.to_string(),
         scopes,

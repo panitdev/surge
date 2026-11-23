@@ -42,6 +42,7 @@ pub struct Harness {
     pub engine: Arc<surge_engine::Engine>,
     pub service_token: String,
     pub resource_uri: String,
+    pub registration_id: uuid::Uuid,
     pub suffix: u32,
 }
 
@@ -101,7 +102,7 @@ pub async fn harness_mode(multi_account: bool, tune: impl FnOnce(OauthAsSettings
         .id;
 
     let resource_uri = format!("https://rs.oauth.test/mcp-{suffix}");
-    engine
+    let registration_id = engine
         .create_oauth_resource(
             &resource_uri,
             service_id,
@@ -112,7 +113,8 @@ pub async fn harness_mode(multi_account: bool, tune: impl FnOnce(OauthAsSettings
             }),
         )
         .await
-        .expect("create_oauth_resource");
+        .expect("create_oauth_resource")
+        .registration_id;
 
     let settings = tune(OauthAsSettings {
         issuer: ISSUER.to_string(),
@@ -151,6 +153,7 @@ pub async fn harness_mode(multi_account: bool, tune: impl FnOnce(OauthAsSettings
         engine,
         service_token: token.expose_secret().to_string(),
         resource_uri,
+        registration_id,
         suffix,
     }
 }
@@ -278,6 +281,7 @@ impl Harness {
                 confidential,
                 first_party,
                 registration_source: RegistrationSource::Admin,
+                audiences: None,
             })
             .await
             .expect("create_oauth_client");

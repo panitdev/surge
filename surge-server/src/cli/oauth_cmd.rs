@@ -121,6 +121,7 @@ async fn client(cmd: ClientCommand, engine: Arc<Engine>) -> anyhow::Result<()> {
                     confidential,
                     first_party,
                     registration_source: RegistrationSource::Admin,
+                    audiences: None,
                 })
                 .await?;
 
@@ -220,6 +221,7 @@ async fn resource(cmd: ResourceCommand, engine: Arc<Engine>) -> anyhow::Result<(
 
             println!("OAuth resource created:");
             println!("  Audience: {}", resource.resource_uri);
+            println!("  ID:       {}", resource.registration_id);
             println!("  Service:  {} ({})", owner.name, owner.id);
             println!("  Scopes:   {:?}", resource.scopes);
 
@@ -228,6 +230,7 @@ async fn resource(cmd: ResourceCommand, engine: Arc<Engine>) -> anyhow::Result<(
                     operator(),
                     "create_oauth_resource",
                     serde_json::json!({
+                        "registration_id": resource.registration_id,
                         "resource_uri": resource.resource_uri,
                         "service_id": owner.id.to_string(),
                     }),
@@ -241,9 +244,16 @@ async fn resource(cmd: ResourceCommand, engine: Arc<Engine>) -> anyhow::Result<(
                 println!("No registered OAuth resources. Every authorize request will fail.");
             }
             for resource in resources {
+                let owner = resource
+                    .service_id
+                    .map_or_else(|| "-".to_string(), |id| id.to_string());
                 println!(
-                    "{}: service={} scopes={:?}",
-                    resource.resource_uri, resource.service_id, resource.scopes
+                    "{}: id={} source={} service={} scopes={:?}",
+                    resource.resource_uri,
+                    resource.registration_id,
+                    resource.registration_source.as_str(),
+                    owner,
+                    resource.scopes
                 );
             }
         }

@@ -102,9 +102,9 @@ async fn run(
         .oauth_resources_for_service(service.id)
         .await
         .map_err(OauthError::from)?;
-    if !owned.iter().any(|r| r.resource_uri == claims.aud) {
+    let Some(registration) = owned.iter().find(|r| r.resource_uri == claims.aud) else {
         return inactive();
-    }
+    };
 
     let Ok(identity_id) = claims.sub.parse::<uuid::Uuid>() else {
         return inactive();
@@ -113,7 +113,7 @@ async fn run(
 
     let live = state
         .engine
-        .oauth_grant_is_live(&claims.client_id, identity_id, &claims.aud)
+        .oauth_grant_is_live(&claims.client_id, identity_id, registration.registration_id)
         .await
         .map_err(OauthError::from)?;
     if !live {

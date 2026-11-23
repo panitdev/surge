@@ -34,7 +34,7 @@ pub(super) async fn start_request(
     state: &AsState,
     headers: &HeaderMap,
     query: &AuthorizeQuery,
-    resource: &str,
+    resource: &surge_engine::oauth::OauthResource,
     scopes: &[String],
     force_picker: bool,
 ) -> Result<Response, ApiError> {
@@ -56,8 +56,11 @@ pub(super) async fn start_request(
     };
     let mut payload = serde_json::to_value(query).map_err(|e| AuthError::Internal(e.into()))?;
     payload["scope"] = scopes.join(" ").into();
-    payload["resource"] = resource.into();
-    let id = state.engine.save_chooser_request(&token, payload).await?;
+    payload["resource"] = resource.resource_uri.as_str().into();
+    let id = state
+        .engine
+        .save_chooser_request(&token, resource.registration_id, payload)
+        .await?;
     let ui = state.config.auth_ui_origin.trim_end_matches('/');
     let target = if force_picker
         || match &token {
@@ -114,13 +117,21 @@ pub(crate) async fn choose_account(
         | (None, None, Some(true), ChooserCredential::Legacy(_)) => {
             let selected =
                 resolve_authorization_session(&state, &headers, choice.account_id).await?;
-            let (payload, _) = state
+            let (payload, _, registration) = state
                 .engine
                 .take_chooser_request(&token, &id, false)
                 .await?;
             let query =
                 serde_json::from_value(payload).map_err(|e| AuthError::Internal(e.into()))?;
-            let response = authorize_query(&state, query, &headers, None, Some(selected)).await;
+            let response = authorize_query(
+                &state,
+                query,
+                &headers,
+                None,
+                Some(selected),
+                Some(registration),
+            )
+            .await;
             let Some(location) = response.headers().get(axum::http::header::LOCATION) else {
                 return Ok(response);
             };
@@ -147,7 +158,7 @@ pub(crate) async fn resume_login(
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let token = crate::extract::browser_cookie(&headers)?.ok_or(AuthError::InvalidToken)?;
-    let (payload, session) = state
+    let (payload, session, registration) = state
         .engine
         .take_chooser_request(&ChooserCredential::Browser(token.clone()), &id, true)
         .await?;
@@ -158,5 +169,5 @@ pub(crate) async fn resume_login(
         return Err(AuthError::InvalidToken.into());
     }
     let query = serde_json::from_value(payload).map_err(|e| AuthError::Internal(e.into()))?;
-    Ok(authorize_query(&state, query, &headers, None, Some(selected)).await)
+    Ok(authorize_query(&state, query, &headers, None, Some(selected), Some(registration)).await)
 }

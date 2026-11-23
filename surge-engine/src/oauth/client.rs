@@ -7,9 +7,10 @@ use diesel::prelude::*;
 use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_async::{AsyncConnection, RunQueryDsl};
 
+use super::resource::canonicalize_resource_uri;
 use super::{now, NewOauthClient, OauthClient, RegistrationSource};
 use crate::models::{NewOauthClient as NewOauthClientRow, OauthClientRow};
-use crate::schema::{oauth_client, oauth_refresh_token};
+use crate::schema::{oauth_client, oauth_client_audience, oauth_refresh_token, oauth_resource};
 use crate::types::*;
 use crate::Engine;
 
@@ -27,6 +28,11 @@ impl Engine {
         spec: NewOauthClient,
     ) -> Result<(OauthClient, Option<ClientSecret>), AuthError> {
         validate_client(&spec)?;
+        let audiences = spec
+            .audiences
+            .as_deref()
+            .map(canonical_audiences)
+            .transpose()?;
 
         let client_id = ClientId::generate();
         let secret = spec.confidential.then(ClientSecret::generate);
@@ -50,14 +56,27 @@ impl Engine {
             first_party: spec.first_party,
             trust_state: if spec.first_party { "trusted" } else { "untrusted" },
             created_at,
+            audience_restricted: audiences.is_some(),
         };
 
         let mut conn = self.conn().await?;
-        diesel::insert_into(oauth_client::table)
-            .values(&row)
-            .execute(&mut conn)
-            .await
-            .map_err(|e| AuthError::Internal(e.into()))?;
+        let row_ref = &row;
+        let audience_uris = audiences.as_deref();
+        conn.transaction::<_, AuthError, _>(|conn| {
+            async move {
+                diesel::insert_into(oauth_client::table)
+                    .values(row_ref)
+                    .execute(conn)
+                    .await
+                    .map_err(|e| AuthError::Internal(e.into()))?;
+                if let Some(uris) = audience_uris {
+                    approve_audiences(conn, row_ref.client_id, uris).await?;
+                }
+                Ok(())
+            }
+            .scope_boxed()
+        })
+        .await?;
 
         let token_endpoint_auth_method = row.token_endpoint_auth_method.to_string();
         let trust_state = row.trust_state.to_string();
@@ -77,6 +96,7 @@ impl Engine {
                 first_party: spec.first_party,
                 trust_state,
                 confidential: spec.confidential,
+                audiences,
                 created_at,
             },
             secret,
@@ -98,7 +118,7 @@ impl Engine {
                 diesel::result::Error::NotFound => AuthError::NotFound,
                 other => AuthError::Internal(other.into()),
             })?;
-        Ok(row_to_client(row))
+        Ok(rows_to_clients(&mut conn, vec![row]).await?.remove(0))
     }
 
     pub async fn list_oauth_clients(&self) -> Result<Vec<OauthClient>, AuthError> {
@@ -110,7 +130,7 @@ impl Engine {
             .load(&mut conn)
             .await
             .map_err(|e| AuthError::Internal(e.into()))?;
-        Ok(rows.into_iter().map(row_to_client).collect())
+        rows_to_clients(&mut conn, rows).await
     }
 
     /// Authenticate a confidential client at the token endpoint. A public
@@ -138,7 +158,7 @@ impl Engine {
         if !constant_time_eq(stored, &secret.hash()) {
             return Err(AuthError::InvalidCredentials);
         }
-        Ok(row_to_client(row))
+        Ok(rows_to_clients(&mut conn, vec![row]).await?.remove(0))
     }
 
     /// Revoking a client kills its outstanding grants in the same
@@ -223,7 +243,93 @@ impl Engine {
     }
 }
 
-pub(crate) fn row_to_client(row: OauthClientRow) -> OauthClient {
+/// Canonicalizes and de-duplicates the URIs a client is to be approved for.
+fn canonical_audiences(uris: &[String]) -> Result<Vec<String>, AuthError> {
+    let mut canonical = uris
+        .iter()
+        .map(|uri| canonicalize_resource_uri(uri))
+        .collect::<Result<Vec<_>, _>>()?;
+    canonical.sort();
+    canonical.dedup();
+    Ok(canonical)
+}
+
+/// Records approvals against the registrations that hold `uris` right now.
+/// Every URI must resolve; the approval names the registration id, so a URI
+/// that is later deleted and registered again is not approved.
+async fn approve_audiences(
+    conn: &mut diesel_async::AsyncPgConnection,
+    client_id: &str,
+    uris: &[String],
+) -> Result<(), AuthError> {
+    let ids: Vec<uuid::Uuid> = oauth_resource::table
+        .filter(oauth_resource::resource_uri.eq_any(uris))
+        .select(oauth_resource::id)
+        .for_share()
+        .load(conn)
+        .await
+        .map_err(|e| AuthError::Internal(e.into()))?;
+    if ids.len() != uris.len() {
+        return Err(field(
+            "audiences",
+            "every audience must be a registered resource",
+        ));
+    }
+    let rows: Vec<_> = ids
+        .into_iter()
+        .map(|id| {
+            (
+                oauth_client_audience::client_id.eq(client_id),
+                oauth_client_audience::registration_id.eq(id),
+            )
+        })
+        .collect();
+    diesel::insert_into(oauth_client_audience::table)
+        .values(rows)
+        .execute(conn)
+        .await
+        .map_err(|e| AuthError::Internal(e.into()))?;
+    Ok(())
+}
+
+/// Maps rows to clients, translating approvals for restricted clients back
+/// to the canonical URIs of the registrations they name.
+pub(crate) async fn rows_to_clients(
+    conn: &mut diesel_async::AsyncPgConnection,
+    rows: Vec<OauthClientRow>,
+) -> Result<Vec<OauthClient>, AuthError> {
+    let restricted: Vec<&str> = rows
+        .iter()
+        .filter(|row| row.audience_restricted)
+        .map(|row| row.client_id.as_str())
+        .collect();
+    let mut approved: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    if !restricted.is_empty() {
+        let pairs: Vec<(String, String)> = oauth_client_audience::table
+            .inner_join(oauth_resource::table)
+            .filter(oauth_client_audience::client_id.eq_any(&restricted))
+            .order(oauth_resource::resource_uri.asc())
+            .select((oauth_client_audience::client_id, oauth_resource::resource_uri))
+            .load(conn)
+            .await
+            .map_err(|e| AuthError::Internal(e.into()))?;
+        for (client_id, uri) in pairs {
+            approved.entry(client_id).or_default().push(uri);
+        }
+    }
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            let audiences = row
+                .audience_restricted
+                .then(|| approved.remove(&row.client_id).unwrap_or_default());
+            row_to_client(row, audiences)
+        })
+        .collect())
+}
+
+fn row_to_client(row: OauthClientRow, audiences: Option<Vec<String>>) -> OauthClient {
     OauthClient {
         client_id: row.client_id,
         client_name: row.client_name,
@@ -237,6 +343,7 @@ pub(crate) fn row_to_client(row: OauthClientRow) -> OauthClient {
         first_party: row.first_party,
         trust_state: row.trust_state,
         confidential: row.client_secret_hash.is_some(),
+        audiences,
         created_at: row.created_at,
     }
 }
@@ -378,6 +485,7 @@ mod tests {
             confidential: false,
             first_party: true,
             registration_source: RegistrationSource::Dynamic,
+            audiences: None,
         };
         assert!(validate_client(&spec).is_err());
     }

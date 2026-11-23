@@ -470,6 +470,7 @@ pub(crate) async fn create_oauth_client(
             confidential: body.confidential,
             first_party: body.first_party,
             registration_source: surge_engine::oauth::RegistrationSource::Admin,
+            audiences: None,
         })
         .await?;
 
@@ -553,6 +554,7 @@ pub(crate) async fn create_oauth_resource(
                 id: auth.service_id.to_string(),
                 name: auth.service_name,
             },
+            auth.service_id,
             &body.resource_uri,
             body.owner_service_id.unwrap_or(auth.service_id),
             body.scopes,

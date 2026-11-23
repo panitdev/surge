@@ -185,6 +185,7 @@ async fn authorization_code_grant(
         client_id: grant.client_id.clone(),
         identity_id: grant.identity_id,
         session_id: grant.session_id,
+        registration_id: grant.registration_id,
         resource_uri: grant.resource_uri.clone(),
         scopes: grant.scopes.clone(),
         family_id: uuid::Uuid::new_v4(),

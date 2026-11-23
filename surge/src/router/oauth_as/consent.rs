@@ -35,7 +35,7 @@ pub(crate) async fn get_consent_flow(
     verify_flow_session(&state, &headers, &flow).await?;
 
     let client = state.engine.get_oauth_client(&flow.client_id).await?;
-    let resource = state.engine.get_oauth_resource(&flow.resource_uri).await?;
+    let resource = state.engine.get_oauth_registration(flow.registration_id).await?;
 
     let scopes: Vec<serde_json::Value> = flow
         .scopes
@@ -129,6 +129,7 @@ pub(crate) async fn decide_consent_flow(
         client_id: flow.client_id.clone(),
         identity_id: flow.identity_id,
         session_id: flow.session_id,
+        registration_id: flow.registration_id,
         resource_uri: flow.resource_uri.clone(),
         redirect_uri: flow.redirect_uri.clone(),
         scopes: approved,

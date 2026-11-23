@@ -121,6 +121,7 @@ impl Engine {
                         conn,
                         &grant.client_id,
                         grant.identity_id,
+                        grant.registration_id,
                         &grant.resource_uri,
                         grant.scopes.clone(),
                     )
@@ -140,6 +141,7 @@ impl Engine {
                         client_id: &grant.client_id,
                         identity_id: *grant.identity_id.as_uuid(),
                         session_id: grant.session_id,
+                        registration_id: grant.registration_id,
                         resource_uri: &grant.resource_uri,
                         redirect_uri: &grant.redirect_uri,
                         scopes: grant.scopes.clone(),
@@ -151,7 +153,7 @@ impl Engine {
                     })
                     .execute(conn)
                     .await
-                    .map_err(|e| AuthError::Internal(e.into()))?;
+                    .map_err(super::stale_registration)?;
 
                 Ok(code)
             }
@@ -204,6 +206,7 @@ impl Engine {
                     client_id: row.client_id,
                     identity_id: IdentityId::from_uuid(row.identity_id),
                     session_id: row.session_id,
+                    registration_id: row.registration_id,
                     resource_uri: row.resource_uri,
                     redirect_uri: row.redirect_uri,
                     scopes: row.scopes,

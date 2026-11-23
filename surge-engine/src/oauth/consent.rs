@@ -12,7 +12,6 @@ use diesel::prelude::*;
 use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_async::{AsyncConnection, RunQueryDsl};
 
-use super::client::row_to_client;
 use super::{Connection, ConsentFlow, ConsentGrant, now};
 use crate::Engine;
 use crate::models::{
@@ -33,6 +32,7 @@ pub(super) async fn record_approval(
     conn: &mut diesel_async::AsyncPgConnection,
     client_id: &str,
     identity_id: IdentityId,
+    registration_id: uuid::Uuid,
     resource_uri: &str,
     scopes: Vec<String>,
 ) -> Result<ConsentGrant, AuthError> {
@@ -42,6 +42,7 @@ pub(super) async fn record_approval(
         .values(&NewOauthConsent {
             client_id,
             identity_id: *identity_id.as_uuid(),
+            registration_id,
             resource_uri,
             scopes: scopes.clone(),
             granted_at,
@@ -49,7 +50,7 @@ pub(super) async fn record_approval(
         .on_conflict((
             oauth_consent::client_id,
             oauth_consent::identity_id,
-            oauth_consent::resource_uri,
+            oauth_consent::registration_id,
         ))
         .do_update()
         .set((
@@ -59,11 +60,12 @@ pub(super) async fn record_approval(
         ))
         .execute(conn)
         .await
-        .map_err(|e| AuthError::Internal(e.into()))?;
+        .map_err(super::stale_registration)?;
 
     Ok(ConsentGrant {
         client_id: client_id.to_string(),
         identity_id,
+        registration_id,
         resource_uri: resource_uri.to_string(),
         scopes,
         granted_at,
@@ -99,16 +101,16 @@ pub(super) async fn consume_flow(
 }
 
 impl Engine {
-    /// The live consent for one (client, identity, resource), if any.
+    /// The live consent for one (client, identity, registration), if any.
     pub async fn find_consent(
         &self,
         client_id: &str,
         identity_id: IdentityId,
-        resource_uri: &str,
+        registration_id: uuid::Uuid,
     ) -> Result<Option<ConsentGrant>, AuthError> {
         let mut conn = self.conn().await?;
         let row: Option<OauthConsentRow> = oauth_consent::table
-            .find((client_id, *identity_id.as_uuid(), resource_uri))
+            .find((client_id, *identity_id.as_uuid(), registration_id))
             .filter(oauth_consent::revoked_at.is_null())
             .select(OauthConsentRow::as_select())
             .first(&mut conn)
@@ -119,6 +121,7 @@ impl Engine {
         Ok(row.map(|r| ConsentGrant {
             client_id: r.client_id,
             identity_id: IdentityId::from_uuid(r.identity_id),
+            registration_id: r.registration_id,
             resource_uri: r.resource_uri,
             scopes: r.scopes,
             granted_at: r.granted_at,
@@ -146,14 +149,15 @@ impl Engine {
 
         Ok(rows
             .into_iter()
-            .map(|(consent, client_row)| {
-                let client = row_to_client(client_row);
+            .map(|(consent, client)| {
                 Connection {
                     client_id: client.client_id,
                     client_name: client.client_name,
                     client_uri: client.client_uri,
                     logo_uri: client.logo_uri,
-                    registration_source: client.registration_source,
+                    registration_source: super::RegistrationSource::from_db(
+                        &client.registration_source,
+                    ),
                     resource_uri: consent.resource_uri,
                     scopes: consent.scopes,
                     granted_at: consent.granted_at,
@@ -229,6 +233,7 @@ impl Engine {
                 identity_id: *flow.identity_id.as_uuid(),
                 session_id: flow.session_id,
                 account_id: flow.account_id,
+                registration_id: flow.registration_id,
                 resource_uri: &flow.resource_uri,
                 scopes: flow.scopes.clone(),
                 redirect_uri: &flow.redirect_uri,
@@ -242,7 +247,7 @@ impl Engine {
             })
             .execute(&mut conn)
             .await
-            .map_err(|e| AuthError::Internal(e.into()))?;
+            .map_err(super::stale_registration)?;
 
         Ok(ConsentFlow {
             id: id.as_str().to_string(),
@@ -250,6 +255,7 @@ impl Engine {
             identity_id: flow.identity_id,
             session_id: flow.session_id,
             account_id: flow.account_id,
+            registration_id: flow.registration_id,
             resource_uri: flow.resource_uri,
             scopes: flow.scopes,
             redirect_uri: flow.redirect_uri,
@@ -321,6 +327,9 @@ pub struct ConsentFlowRequest {
     pub identity_id: IdentityId,
     pub session_id: uuid::Uuid,
     pub account_id: Option<uuid::Uuid>,
+    /// The registration resolved at authorize time. The consent, code and
+    /// refresh lineage that follow are all bound to it.
+    pub registration_id: uuid::Uuid,
     pub resource_uri: String,
     pub scopes: Vec<String>,
     pub redirect_uri: String,
@@ -337,6 +346,7 @@ fn row_to_consent_flow(row: OauthConsentFlowRow) -> ConsentFlow {
         identity_id: IdentityId::from_uuid(row.identity_id),
         session_id: row.session_id,
         account_id: row.account_id,
+        registration_id: row.registration_id,
         resource_uri: row.resource_uri,
         scopes: row.scopes,
         redirect_uri: row.redirect_uri,

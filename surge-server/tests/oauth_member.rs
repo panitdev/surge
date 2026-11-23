@@ -188,6 +188,7 @@ async fn invalidated_members_cannot_finish_consent() {
             client_id: client.clone(),
             identity_id: work.issued.session.identity.id,
             session_id: *work.issued.session.id.as_uuid(),
+            registration_id: h.registration_id,
             resource_uri: h.resource_uri.clone(),
             redirect_uri: CLIENT_REDIRECT.into(),
             scopes: vec!["mcp:read".into()],
@@ -218,7 +219,7 @@ async fn invalidated_members_cannot_finish_consent() {
         }
         assert!(
             h.engine
-                .find_consent(&client, work.issued.session.identity.id, &h.resource_uri)
+                .find_consent(&client, work.issued.session.identity.id, h.registration_id)
                 .await
                 .unwrap()
                 .is_none()

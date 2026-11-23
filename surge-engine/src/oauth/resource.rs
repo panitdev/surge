@@ -8,18 +8,21 @@ use diesel::prelude::*;
 use diesel::result::{DatabaseErrorKind, Error};
 use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
+use uuid::Uuid;
 
-use super::{now, OauthResource};
+use super::{now, OauthResource, ResourceSource};
 use crate::models::{NewOauthResource, OauthResourceRow};
 use crate::schema::oauth_resource;
 use crate::types::*;
 use crate::Engine;
 
 impl Engine {
+    /// Registers a service resource with no recorded registrar — the
+    /// operator path (`surge-server oauth resource create`).
     pub async fn create_oauth_resource(
         &self,
         resource_uri: &str,
-        service_id: uuid::Uuid,
+        service_id: Uuid,
         scopes: Vec<String>,
         scope_descriptions: serde_json::Value,
     ) -> Result<OauthResource, AuthError> {
@@ -28,33 +31,46 @@ impl Engine {
             &mut conn,
             resource_uri,
             service_id,
+            None,
             scopes,
             scope_descriptions,
         )
         .await
     }
 
+    /// Registers a service resource on behalf of an authenticated service,
+    /// which is recorded as the registrar whoever ends up owning it.
     pub async fn register_oauth_resource(
         &self,
         actor: AuditActor,
+        registrar_service_id: Uuid,
         resource_uri: &str,
-        service_id: uuid::Uuid,
+        service_id: Uuid,
         scopes: Vec<String>,
         scope_descriptions: serde_json::Value,
     ) -> Result<OauthResource, AuthError> {
         let mut conn = self.conn().await?;
         conn.transaction(|conn| {
             async move {
-                let resource =
-                    insert_resource(conn, resource_uri, service_id, scopes, scope_descriptions)
-                        .await?;
+                let resource = insert_resource(
+                    conn,
+                    resource_uri,
+                    service_id,
+                    Some(registrar_service_id),
+                    scopes,
+                    scope_descriptions,
+                )
+                .await?;
                 audit_conn(
                     conn,
                     actor,
                     "create_oauth_resource",
                     serde_json::json!({
+                        "registration_id": resource.registration_id,
                         "resource_uri": resource.resource_uri,
+                        "registration_source": resource.registration_source,
                         "owner_service_id": service_id,
+                        "registrar_service_id": registrar_service_id,
                     }),
                     None,
                 )
@@ -66,18 +82,32 @@ impl Engine {
         .await
     }
 
+    /// The registration currently holding a canonical URI.
     pub async fn get_oauth_resource(&self, resource_uri: &str) -> Result<OauthResource, AuthError> {
         let canonical = canonicalize_resource_uri(resource_uri)?;
         let mut conn = self.conn().await?;
         let row: OauthResourceRow = oauth_resource::table
-            .find(&canonical)
+            .filter(oauth_resource::resource_uri.eq(&canonical))
             .select(OauthResourceRow::as_select())
             .first(&mut conn)
             .await
-            .map_err(|e| match e {
-                diesel::result::Error::NotFound => AuthError::NotFound,
-                other => AuthError::Internal(other.into()),
-            })?;
+            .map_err(not_found)?;
+        Ok(row_to_resource(row))
+    }
+
+    /// One registration by its immutable id. `NotFound` once it has been
+    /// deleted, even if its URI has since been registered again.
+    pub async fn get_oauth_registration(
+        &self,
+        registration_id: Uuid,
+    ) -> Result<OauthResource, AuthError> {
+        let mut conn = self.conn().await?;
+        let row: OauthResourceRow = oauth_resource::table
+            .find(registration_id)
+            .select(OauthResourceRow::as_select())
+            .first(&mut conn)
+            .await
+            .map_err(not_found)?;
         Ok(row_to_resource(row))
     }
 
@@ -92,15 +122,17 @@ impl Engine {
         Ok(rows.into_iter().map(row_to_resource).collect())
     }
 
-    /// Resources a given service owns — the introspection authorization
-    /// check: a service may only ask about tokens for its own audiences.
+    /// Service registrations a given service owns — the introspection
+    /// authorization check: a service may only ask about tokens for its own
+    /// audiences.
     pub async fn oauth_resources_for_service(
         &self,
-        service_id: uuid::Uuid,
+        service_id: Uuid,
     ) -> Result<Vec<OauthResource>, AuthError> {
         let mut conn = self.conn().await?;
         let rows: Vec<OauthResourceRow> = oauth_resource::table
             .filter(oauth_resource::service_id.eq(service_id))
+            .filter(oauth_resource::registration_source.eq(ResourceSource::Service.as_str()))
             .select(OauthResourceRow::as_select())
             .load(&mut conn)
             .await
@@ -108,13 +140,17 @@ impl Engine {
         Ok(rows.into_iter().map(row_to_resource).collect())
     }
 
+    /// Deletes the registration holding a URI. Every consent, pending flow,
+    /// code, refresh token and client approval bound to it goes with it.
     pub async fn delete_oauth_resource(&self, resource_uri: &str) -> Result<(), AuthError> {
         let canonical = canonicalize_resource_uri(resource_uri)?;
         let mut conn = self.conn().await?;
-        let deleted = diesel::delete(oauth_resource::table.find(&canonical))
-            .execute(&mut conn)
-            .await
-            .map_err(|e| AuthError::Internal(e.into()))?;
+        let deleted = diesel::delete(
+            oauth_resource::table.filter(oauth_resource::resource_uri.eq(&canonical)),
+        )
+        .execute(&mut conn)
+        .await
+        .map_err(|e| AuthError::Internal(e.into()))?;
         if deleted == 0 {
             return Err(AuthError::NotFound);
         }
@@ -131,10 +167,18 @@ impl Engine {
     }
 }
 
+fn not_found(e: Error) -> AuthError {
+    match e {
+        Error::NotFound => AuthError::NotFound,
+        other => AuthError::Internal(other.into()),
+    }
+}
+
 async fn insert_resource(
     conn: &mut AsyncPgConnection,
     resource_uri: &str,
-    service_id: uuid::Uuid,
+    service_id: Uuid,
+    registrar_service_id: Option<Uuid>,
     scopes: Vec<String>,
     scope_descriptions: serde_json::Value,
 ) -> Result<OauthResource, AuthError> {
@@ -145,17 +189,22 @@ async fn insert_resource(
             message: "must be a JSON object of {scope: description}".into(),
         }));
     }
-    let created_at = now();
 
-    diesel::insert_into(oauth_resource::table)
+    let row: OauthResourceRow = diesel::insert_into(oauth_resource::table)
         .values(&NewOauthResource {
+            id: Uuid::now_v7(),
             resource_uri: &canonical,
-            service_id,
-            scopes: scopes.clone(),
-            scope_descriptions: scope_descriptions.clone(),
-            created_at,
+            registration_source: ResourceSource::Service.as_str(),
+            service_id: Some(service_id),
+            registrar_service_id,
+            scopes,
+            scope_descriptions,
+            allowed_cimd_client_ids: Vec::new(),
+            dcr_enabled: false,
+            created_at: now(),
         })
-        .execute(conn)
+        .returning(OauthResourceRow::as_returning())
+        .get_result(conn)
         .await
         .map_err(|err| match err {
             Error::DatabaseError(DatabaseErrorKind::UniqueViolation, _) => {
@@ -165,21 +214,20 @@ async fn insert_resource(
             other => AuthError::Internal(other.into()),
         })?;
 
-    Ok(OauthResource {
-        resource_uri: canonical,
-        service_id,
-        scopes,
-        scope_descriptions,
-        created_at,
-    })
+    Ok(row_to_resource(row))
 }
 
 fn row_to_resource(row: OauthResourceRow) -> OauthResource {
     OauthResource {
+        registration_id: row.id,
         resource_uri: row.resource_uri,
+        registration_source: ResourceSource::from_db(&row.registration_source),
         service_id: row.service_id,
+        registrar_service_id: row.registrar_service_id,
         scopes: row.scopes,
         scope_descriptions: row.scope_descriptions,
+        allowed_cimd_client_ids: row.allowed_cimd_client_ids,
+        dcr_enabled: row.dcr_enabled,
         created_at: row.created_at,
     }
 }

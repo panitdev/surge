@@ -83,6 +83,7 @@ async fn list_grants_apply_directly_and_through_proxy() {
             confidential: false,
             first_party: true,
             registration_source: RegistrationSource::Admin,
+            audiences: None,
         })
         .await
         .unwrap();

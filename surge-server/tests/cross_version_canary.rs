@@ -401,6 +401,7 @@ async fn lane4_revoking_every_session_deactivates_the_oauth_grant() {
             confidential: false,
             first_party: true,
             registration_source: surge_engine::oauth::RegistrationSource::Admin,
+            audiences: None,
         })
         .await
         .expect("create_oauth_client");

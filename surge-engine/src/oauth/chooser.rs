@@ -114,9 +114,13 @@ impl Engine {
             .ok_or(AuthError::InvalidToken)
     }
 
+    /// Parks an authorize request while the user picks an account. The
+    /// request is bound to the registration it was validated against, and
+    /// disappears with it.
     pub async fn save_chooser_request(
         &self,
         credential: &ChooserCredential,
+        registration_id: Uuid,
         payload: serde_json::Value,
     ) -> Result<String, AuthError> {
         self.conn()
@@ -131,10 +135,12 @@ impl Engine {
                             request::browser_id.eq(browser),
                             request::legacy_id.eq(legacy),
                             request::request.eq(payload),
+                            request::registration_id.eq(registration_id),
                             request::expires_at.eq(Utc::now() + Duration::minutes(10)),
                         ))
                         .execute(conn)
-                        .await?;
+                        .await
+                        .map_err(super::stale_registration)?;
                     Ok(id)
                 }
                 .scope_boxed()
@@ -189,14 +195,14 @@ impl Engine {
         credential: &ChooserCredential,
         id: &str,
         after_login: bool,
-    ) -> Result<(serde_json::Value, Option<Uuid>), AuthError> {
+    ) -> Result<(serde_json::Value, Option<Uuid>, Uuid), AuthError> {
         let mut conn = self.conn().await?;
         conn.transaction(|conn| {
             async move {
                 let (browser, legacy) = Self::chooser_owner(conn, credential).await?;
                 lock_request(conn, id, browser, legacy, after_login).await?;
                 Ok(diesel::delete(request::table.find(id))
-                    .returning((request::request, request::session_id))
+                    .returning((request::request, request::session_id, request::registration_id))
                     .get_result(conn)
                     .await?)
             }

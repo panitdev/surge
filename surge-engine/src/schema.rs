@@ -135,27 +135,41 @@ diesel::table! {
         created_at -> Timestamptz,
         last_used_at -> Nullable<Timestamptz>,
         revoked_at -> Nullable<Timestamptz>,
+        audience_restricted -> Bool,
     }
 }
 
 diesel::table! {
-    surge.oauth_resource (resource_uri) {
+    surge.oauth_resource (id) {
         resource_uri -> Text,
-        service_id -> Uuid,
+        service_id -> Nullable<Uuid>,
         scopes -> Array<Text>,
         scope_descriptions -> Jsonb,
         created_at -> Timestamptz,
+        id -> Uuid,
+        registration_source -> Text,
+        registrar_service_id -> Nullable<Uuid>,
+        allowed_cimd_client_ids -> Array<Text>,
+        dcr_enabled -> Bool,
     }
 }
 
 diesel::table! {
-    surge.oauth_consent (client_id, identity_id, resource_uri) {
+    surge.oauth_client_audience (client_id, registration_id) {
+        client_id -> Text,
+        registration_id -> Uuid,
+    }
+}
+
+diesel::table! {
+    surge.oauth_consent (client_id, identity_id, registration_id) {
         client_id -> Text,
         identity_id -> Uuid,
         resource_uri -> Text,
         scopes -> Array<Text>,
         granted_at -> Timestamptz,
         revoked_at -> Nullable<Timestamptz>,
+        registration_id -> Uuid,
     }
 }
 
@@ -177,6 +191,7 @@ diesel::table! {
         decided_at -> Nullable<Timestamptz>,
         expires_at -> Timestamptz,
         created_at -> Timestamptz,
+        registration_id -> Uuid,
     }
 }
 
@@ -195,6 +210,7 @@ diesel::table! {
         issued_at -> Timestamptz,
         expires_at -> Timestamptz,
         consumed_at -> Nullable<Timestamptz>,
+        registration_id -> Uuid,
     }
 }
 
@@ -212,6 +228,7 @@ diesel::table! {
         expires_at -> Timestamptz,
         consumed_at -> Nullable<Timestamptz>,
         revoked_at -> Nullable<Timestamptz>,
+        registration_id -> Uuid,
     }
 }
 
@@ -258,6 +275,9 @@ diesel::joinable!(session -> identity (identity_id));
 diesel::joinable!(oauth_resource -> service (service_id));
 diesel::joinable!(oauth_consent -> identity (identity_id));
 diesel::joinable!(oauth_consent -> oauth_client (client_id));
+diesel::joinable!(oauth_consent -> oauth_resource (registration_id));
+diesel::joinable!(oauth_client_audience -> oauth_client (client_id));
+diesel::joinable!(oauth_client_audience -> oauth_resource (registration_id));
 
 diesel::allow_tables_to_appear_in_same_query!(
     identity,
@@ -271,6 +291,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     service,
     oauth_client,
     oauth_resource,
+    oauth_client_audience,
     oauth_consent,
     oauth_consent_flow,
     oauth_authorization_code,
@@ -286,5 +307,6 @@ diesel::table! {
         expires_at -> Timestamptz,
         login_id -> Nullable<Text>,
         session_id -> Nullable<Uuid>,
+        registration_id -> Uuid,
     }
 }

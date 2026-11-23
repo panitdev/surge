@@ -325,7 +325,8 @@ async fn registration_enforces_grants_and_preserves_the_first_owner() {
         .get_oauth_resource(&h.resource_uri)
         .await
         .unwrap()
-        .service_id;
+        .service_id
+        .unwrap();
     let uri = format!("{}-registry", h.resource_uri);
     let token = surge_engine::types::ServiceToken::generate();
     let other = h
@@ -372,6 +373,6 @@ async fn registration_enforces_grants_and_preserves_the_first_owner() {
             .await
             .unwrap()
             .service_id,
-        winner
+        Some(winner)
     );
 }
