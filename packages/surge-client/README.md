@@ -77,6 +77,29 @@ if (flow.registration_mode === "open") {
 }
 ```
 
+### OAuth consent
+
+The Surge auth UI receives the flow ID in its `consent_flow` query parameter.
+Call `getConsentFlow(flowId)` to load the client, resource, and requested
+scopes before prompting the user. Use `client.dynamically_registered` to
+indicate when the client's name and logo are untrusted.
+
+After the user decides, submit their selection and follow the OAuth callback.
+Omit `scopes` to approve all requested scopes.
+
+```ts
+const flow = await surge.getConsentFlow(flowId);
+// After the user has made a choice in the consent UI:
+const { redirect_to } = await surge.decideConsentFlow(flow.flow_id, {
+  approve,
+  csrf_token: flow.csrf_token,
+});
+window.location.assign(redirect_to);
+```
+
+The browser must have the session associated with the consent flow.
+For cross-origin calls, the UI must run on the configured auth UI origin.
+
 ### Logout
 
 ```ts

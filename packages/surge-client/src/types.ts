@@ -195,3 +195,35 @@ export interface WhoamiResult {
   /** Absent from legacy whoami responses. */
   accountId: string | null;
 }
+export interface ConsentFlow {
+  flow_id: string;
+  csrf_token: string;
+  client: {
+    client_id: string;
+    client_name: string;
+    client_uri: string | null;
+    logo_uri: string | null;
+    /** Show users when the client's name and logo are untrusted. */
+    dynamically_registered: boolean;
+    first_party: boolean;
+    publisher_host: string | null;
+  };
+  resource: {
+    resource_uri: string;
+    registration_source: "service" | "delegated" | "unknown";
+  };
+  scopes: { scope: string; description: string | null }[];
+  expires_at: string;
+}
+
+export interface ConsentDecision {
+  approve: boolean;
+  /** A subset of the requested scopes. Omit to approve all requested scopes. */
+  scopes?: string[];
+  csrf_token: string;
+}
+
+export interface ConsentResult {
+  /** OAuth callback URL carrying an authorization code or an OAuth error. */
+  redirect_to: string;
+}

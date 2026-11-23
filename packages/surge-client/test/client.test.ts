@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { SurgeClient, SurgeError } from "../src/index.js";
-import type { FlowResult, PolicyBlock, Session } from "../src/index.js";
+import type { ConsentFlow, FlowResult, PolicyBlock, Session } from "../src/index.js";
 
 const session: Session = {
   id: "018f9a1b-c2d3-4b5e-a6f7-d8e9f0a1b2c3",
@@ -53,6 +53,57 @@ describe("loginUrl", () => {
     expect(client.loginUrl("https://app.example.com/dashboard")).toBe(
       "https://auth.example.com/v1/login?return_to=https%3A%2F%2Fapp.example.com%2Fdashboard",
     );
+  });
+});
+
+describe("OAuth consent", () => {
+  test("loads the flow using the browser session and encodes the flow ID", async () => {
+    const flow: ConsentFlow = {
+      flow_id: "flow/id",
+      csrf_token: "flow-token",
+      client: {
+        client_id: "client",
+        client_name: "Example client",
+        client_uri: null,
+        logo_uri: null,
+        dynamically_registered: true,
+        first_party: false,
+        publisher_host: "app.example.com",
+      },
+      resource: { resource_uri: "https://api.example.com", registration_source: "delegated" },
+      scopes: [{ scope: "read", description: null }],
+      expires_at: "2026-11-23T00:05:00Z",
+    };
+    const { client, requests } = mockClient(json(flow));
+
+    expect(await client.getConsentFlow(flow.flow_id)).toEqual(flow);
+    expect(requests[0]?.url).toBe("https://auth.example.com/v1/oauth/consent/flow%2Fid");
+    expect(requests[0]?.init?.method).toBe("GET");
+    expect(requests[0]?.init?.credentials).toBe("include");
+  });
+
+  test("posts the flow CSRF token and selected scopes and returns the redirect", async () => {
+    const result = { redirect_to: "https://app.example.com/callback?code=example" };
+    const requests: { url: string; init: RequestInit | undefined }[] = [];
+    const consentClient = new SurgeClient({
+      baseUrl: "https://auth.example.com",
+      accountId: "pinned-account",
+      fetch: ((url, init) => {
+        requests.push({ url: String(url), init });
+        return Promise.resolve(json(result));
+      }) as typeof fetch,
+    });
+    const decision = { approve: true, scopes: ["read"], csrf_token: "flow-token" };
+
+    expect(await consentClient.decideConsentFlow("flow/id", decision)).toEqual(result);
+    const request = requests[0]!;
+    expect(request.url).toBe("https://auth.example.com/v1/oauth/consent/flow%2Fid");
+    expect(request.init?.method).toBe("POST");
+    expect(request.init?.credentials).toBe("include");
+    const headers = new Headers(request.init?.headers);
+    expect(headers.get("Content-Type")).toBe("application/json");
+    expect(headers.has("X-Surge-Account")).toBe(false);
+    expect(request.init?.body).toBe(JSON.stringify(decision));
   });
 });
 

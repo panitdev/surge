@@ -1,6 +1,9 @@
 import { errorFromResponse, SurgeError } from "./errors.js";
 import type {
   BrowserAccountList,
+  ConsentDecision,
+  ConsentFlow,
+  ConsentResult,
   FactorsResult,
   Flow,
   FlowInit,
@@ -112,6 +115,28 @@ export class SurgeClient {
     );
     if (!response.ok) throw await errorFromResponse(response);
     return (await response.json()) as Flow;
+  }
+
+  /** Loads the consent flow identified by the auth UI's `consent_flow` query parameter. */
+  async getConsentFlow(flowId: string): Promise<ConsentFlow> {
+    const response = await this.browserRequest(
+      `/v1/oauth/consent/${encodeURIComponent(flowId)}`,
+      "GET",
+    );
+    return (await response.json()) as ConsentFlow;
+  }
+
+  /**
+   * Approves or denies a consent flow using its CSRF token.
+   * Navigate the browser to the returned `redirect_to` URL to complete the flow.
+   */
+  async decideConsentFlow(flowId: string, body: ConsentDecision): Promise<ConsentResult> {
+    const response = await this.browserRequest(
+      `/v1/oauth/consent/${encodeURIComponent(flowId)}`,
+      "POST",
+      body,
+    );
+    return (await response.json()) as ConsentResult;
   }
 
   /**
