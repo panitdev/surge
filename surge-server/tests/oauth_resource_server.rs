@@ -100,6 +100,7 @@ async fn listening_as() -> (String, Arc<surge_engine::Engine>, axum::Router, Str
             default_resource: None,
             dcr_ttl: Duration::from_secs(30 * 86_400),
             enable_oidc: true,
+            cimd_fetcher: None,
         }),
     });
 

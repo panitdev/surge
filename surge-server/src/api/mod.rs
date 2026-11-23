@@ -141,6 +141,7 @@ pub async fn router(
         default_resource: oauth.default_resource.clone(),
         dcr_ttl: oauth.dcr_ttl,
         enable_oidc: oauth.enable_oidc,
+        cimd_fetcher: oauth.cimd_fetcher.clone(),
     });
 
     let browser_router = Arc::clone(&embedded).browser_router(BrowserRouterConfig {

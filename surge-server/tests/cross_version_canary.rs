@@ -136,6 +136,7 @@ async fn test_app_inner() -> (axum::Router, Arc<surge_engine::Engine>, String, S
             default_resource: None,
             dcr_ttl: Duration::from_secs(30 * 86_400),
             enable_oidc: true,
+            cimd_fetcher: None,
         }),
     });
 

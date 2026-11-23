@@ -25,6 +25,7 @@
 
 mod authorize;
 mod chooser;
+mod cimd;
 mod connections;
 mod consent;
 mod discovery;
@@ -44,6 +45,10 @@ use axum::Router;
 use surge_engine::Engine;
 use tower_http::cors::{Any, CorsLayer};
 
+pub use cimd::{
+    is_public_ip, CimdDocumentFetcher, CimdError, CimdLimits, CimdResolver, FetchError,
+    FetchedDocument, HttpDocumentFetcher,
+};
 use super::rate_limit::RateLimiter;
 use crate::AuthProvider;
 
@@ -83,6 +88,11 @@ pub struct OauthAsConfig {
     /// Serve `/.well-known/openid-configuration` alongside the OAuth metadata
     /// and honour the `openid` scope (ID tokens, `userinfo`).
     pub enable_oidc: bool,
+    /// Where client-ID metadata documents (CIMD) are fetched from. `None`
+    /// uses [`HttpDocumentFetcher`], the only implementation that is safe
+    /// against SSRF on its own; supply another only to serve documents some
+    /// other trusted way (tests, an audited egress layer).
+    pub cimd_fetcher: Option<Arc<dyn CimdDocumentFetcher>>,
 }
 
 pub(crate) struct AsState {
@@ -92,6 +102,21 @@ pub(crate) struct AsState {
     pub config: OauthAsConfig,
     pub multi_account: bool,
     pub cookie_domain: String,
+    pub cimd: CimdResolver,
+}
+
+/// Builds the document resolver an AS mounts with.
+pub(crate) fn cimd_resolver(config: &OauthAsConfig) -> CimdResolver {
+    let fetcher = config.cimd_fetcher.clone().unwrap_or_else(|| {
+        match HttpDocumentFetcher::new() {
+            Ok(fetcher) => Arc::new(fetcher),
+            Err(e) => {
+                tracing::error!(error = %e, "cannot build the CIMD HTTP client; CIMD clients are unavailable");
+                Arc::new(cimd::UnavailableFetcher)
+            }
+        }
+    });
+    CimdResolver::new(fetcher, CimdLimits::default())
 }
 
 impl AsState {

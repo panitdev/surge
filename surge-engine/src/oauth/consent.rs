@@ -232,6 +232,16 @@ impl Engine {
             async move {
                 // Under the registration's shared lock, so a flow cannot
                 // outlive a policy change that would have refused it.
+                if let Some(metadata) = &new_flow.cimd {
+                    if metadata.client_id != new_flow.client_id {
+                        return Err(AuthError::Forbidden);
+                    }
+                    // Lock first (the order every grant write uses), then
+                    // store the validated client the flow is about to name.
+                    super::lifecycle::lock_registration_shared(conn, new_flow.registration_id)
+                        .await?;
+                    super::cimd::upsert_cimd_client(conn, metadata).await?;
+                }
                 super::lifecycle::admit(
                     conn,
                     &new_flow.client_id,
@@ -355,6 +365,11 @@ pub struct ConsentFlowRequest {
     pub nonce: Option<String>,
     pub code_challenge: String,
     pub code_challenge_method: String,
+    /// For a CIMD client: the document validated for this request. Stored as
+    /// the client row in the same transaction as the flow, after the
+    /// registration is locked; `None` for a client that already has a
+    /// registered row.
+    pub cimd: Option<super::CimdMetadata>,
 }
 
 fn row_to_consent_flow(row: OauthConsentFlowRow) -> ConsentFlow {

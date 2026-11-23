@@ -8,6 +8,7 @@
 use std::sync::Arc;
 
 use super::chooser::start_request;
+use super::cimd::CimdError;
 use axum::extract::{Query, State};
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Redirect, Response};
@@ -64,12 +65,21 @@ pub(super) async fn authorize_query(
         return authorize_error_page(OauthErrorCode::InvalidRequest, "client_id is required");
     };
 
-    let client = match state.engine.get_oauth_client(client_id).await {
-        Ok(client) => client,
-        Err(AuthError::NotFound) => {
-            return authorize_error_page(OauthErrorCode::InvalidClient, "unknown client");
+    // A client ID that is an `https://` URL names a metadata document (CIMD);
+    // every registered client has a generated `aeg_cid_…` ID.
+    let (client, cimd) = if client_id.starts_with("https://") {
+        match resolve_cimd_client(state, client_id, query.resource.as_deref()).await {
+            Ok((client, metadata)) => (client, Some(metadata)),
+            Err(response) => return *response,
         }
-        Err(e) => return authorize_error_page(OauthErrorCode::ServerError, &e.to_string()),
+    } else {
+        match state.engine.get_oauth_client(client_id).await {
+            Ok(client) => (client, None),
+            Err(AuthError::NotFound) => {
+                return authorize_error_page(OauthErrorCode::InvalidClient, "unknown client");
+            }
+            Err(e) => return authorize_error_page(OauthErrorCode::ServerError, &e.to_string()),
+        }
     };
 
     let Some(redirect_uri) = query.redirect_uri.as_deref() else {
@@ -264,6 +274,9 @@ pub(super) async fn authorize_query(
                 nonce: query.nonce.clone(),
                 code_challenge: code_challenge.to_string(),
                 code_challenge_method: "S256".to_string(),
+                // Stores the shared client row in the flow's transaction,
+                // after the session, document and eligibility checks above.
+                cimd: cimd.clone(),
             })
             .await
         {
@@ -308,6 +321,49 @@ pub(super) async fn authorize_query(
             Some((code, message)) => fail(code, message),
             None => fail(OauthErrorCode::ServerError, &error.to_string()),
         },
+    }
+}
+
+/// Turns a CIMD client ID into the in-memory client the request is evaluated
+/// as. Nothing is stored here: the row is written when the consent flow is
+/// created, once every other check has passed.
+///
+/// The document is fetched only for a URL the requested resource's allowlist
+/// names exactly, so an unauthenticated request cannot aim the fetcher at an
+/// arbitrary host. Every refusal here is an error page, not a redirect: until
+/// the document is verified there is no redirect URI to trust.
+async fn resolve_cimd_client(
+    state: &AsState,
+    client_id: &str,
+    requested_resource: Option<&str>,
+) -> Result<(OauthClient, surge_engine::oauth::CimdMetadata), Box<Response>> {
+    let page = |code, message: &str| Box::new(authorize_error_page(code, message));
+    if let Err(reason) = surge_engine::oauth::validate_cimd_client_id(client_id) {
+        return Err(page(OauthErrorCode::InvalidClient, reason));
+    }
+    let resource = match resolve_resource(state, requested_resource).await {
+        Ok(resource) => resource,
+        Err((code, message)) => return Err(page(code, &message)),
+    };
+    if !resource.allowed_cimd_client_ids.iter().any(|id| id == client_id) {
+        return Err(page(OauthErrorCode::InvalidTarget, INELIGIBLE_TARGET));
+    }
+    // A revoked client stays revoked, whatever its document now says.
+    match state.engine.cimd_client_is_revoked(client_id).await {
+        Ok(false) => {}
+        Ok(true) => return Err(page(OauthErrorCode::InvalidClient, "unknown client")),
+        Err(e) => return Err(page(OauthErrorCode::ServerError, &e.to_string())),
+    }
+    match state.cimd.resolve(client_id).await {
+        Ok(metadata) => Ok((OauthClient::from_cimd(&metadata, &resource), metadata)),
+        Err(CimdError::Invalid(reason)) => Err(page(
+            OauthErrorCode::InvalidClient,
+            &format!("the client metadata document is not acceptable: {reason}"),
+        )),
+        Err(CimdError::Unavailable | CimdError::RateLimited) => Err(page(
+            OauthErrorCode::TemporarilyUnavailable,
+            "the client metadata document is temporarily unavailable",
+        )),
     }
 }
 

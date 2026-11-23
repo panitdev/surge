@@ -173,6 +173,7 @@ pub(crate) fn embedded_browser_router(
             config: as_config.clone(),
             multi_account: state.multi_account,
             cookie_domain: state.cookie_domain.clone(),
+            cimd: super::oauth_as::cimd_resolver(as_config),
         });
         let session_cors = if state.session_cors_origins.is_empty() {
             cors::narrow(&state.auth_ui_origin)
