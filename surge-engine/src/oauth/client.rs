@@ -267,10 +267,19 @@ async fn approve_audiences(
         .load(conn)
         .await
         .map_err(|e| AuthError::Internal(e.into()))?;
+    // Unauthenticated dynamic registration gets one message for "unknown" and
+    // "not permitted", so it cannot probe which resources exist or have
+    // opted in. Operators and services get the detail.
+    let dynamic = client.registration_source == RegistrationSource::Dynamic;
+    const DYNAMIC_REFUSAL: &str = "every resource must be registered and available to this client";
     if resources.len() != uris.len() {
         return Err(field(
             "resources",
-            "every audience must be a registered resource",
+            if dynamic {
+                DYNAMIC_REFUSAL.to_string()
+            } else {
+                "every audience must be a registered resource".to_string()
+            },
         ));
     }
     let resources: Vec<_> = resources.into_iter().map(row_to_resource).collect();
@@ -280,11 +289,15 @@ async fn approve_audiences(
     {
         return Err(field(
             "resources",
-            format!(
-                "this client may not be bound to {}: it is delegated and has not opted in to \
-                 dynamic registration",
-                denied.resource_uri
-            ),
+            if dynamic {
+                DYNAMIC_REFUSAL.to_string()
+            } else {
+                format!(
+                    "this client may not be bound to {}: it is delegated and has not opted in \
+                     to dynamic registration",
+                    denied.resource_uri
+                )
+            },
         ));
     }
     let rows: Vec<_> = resources

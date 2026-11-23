@@ -384,11 +384,15 @@ async fn a_dynamic_client_cannot_bind_itself_to_a_resource_that_has_not_opted_in
 
     let resp = register(json!([closed])).await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(body_json(resp).await["error"], "invalid_client_metadata");
+    let closed_body = body_json(resp).await;
+    assert_eq!(closed_body["error"], "invalid_client_metadata");
 
     let resp = register(json!(["https://nowhere.oauth.test/mcp"])).await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(body_json(resp).await["error"], "invalid_client_metadata");
+    let unknown_body = body_json(resp).await;
+    assert_eq!(unknown_body["error"], "invalid_client_metadata");
+    // Unauthenticated callers cannot tell "unknown" from "not opted in".
+    assert_eq!(closed_body, unknown_body);
 
     let resp = register(json!([open])).await;
     assert_eq!(resp.status(), StatusCode::CREATED);
@@ -520,15 +524,28 @@ async fn an_unknown_resource_looks_like_an_ineligible_one() {
 #[ignore = "requires a live Postgres via DATABASE_URL"]
 async fn tokens_without_the_access_token_type_or_from_the_future_are_refused() {
     let h = harness().await;
-    let _session = h.sign_in().await;
+    let session = h.sign_in().await;
     let sub = h.identity_id().await.to_string();
-    let claims = |iat| access_claims(ISSUER, &sub, &h.resource_uri, "openid mcp:read", iat);
+    // A real, live grant, so introspection would say `active` if only the
+    // header or `iat` were wrong.
+    let client_id = client(&h, true, RegistrationSource::Admin, None).await;
+    let (pkce, target) = authorize(&h, &client_id, &session, &h.resource_uri).await;
+    let code = query_param(&target, "code").unwrap();
+    let (status, _) = redeem(&h, &client_id, &code, &pkce).await;
+    assert_eq!(status, StatusCode::OK);
+    let claims = |iat| {
+        let mut c = access_claims(ISSUER, &sub, &h.resource_uri, "openid mcp:read", iat);
+        c["client_id"] = json!(client_id);
+        c
+    };
 
     let good = forge_jwt(&h.engine, Some("at+jwt"), claims(0)).await;
     assert_eq!(
         h.bearer_get("/oauth2/userinfo", &good).await.status(),
         StatusCode::OK
     );
+    let body = body_json(h.introspect(&good, &h.service_token).await).await;
+    assert_eq!(body["active"], true);
 
     let mut refused = vec![
         forge_jwt(&h.engine, None, claims(0)).await,
@@ -579,4 +596,53 @@ async fn the_service_api_binds_a_new_client_to_resources() {
 
     let resp = create(json!(["https://nowhere.oauth.test/mcp"])).await.unwrap();
     assert!(resp.status().is_client_error(), "{}", resp.status());
+}
+
+#[tokio::test]
+#[ignore = "requires a live Postgres via DATABASE_URL"]
+async fn an_ineligible_refresh_ends_every_family_at_that_registration() {
+    let h = harness().await;
+    let session = h.sign_in().await;
+    let client_id = client(
+        &h,
+        true,
+        RegistrationSource::Admin,
+        Some(vec![h.resource_uri.clone()]),
+    )
+    .await;
+
+    let mut grants = vec![];
+    for _ in 0..2 {
+        let (pkce, target) = authorize(&h, &client_id, &session, &h.resource_uri).await;
+        let code = query_param(&target, "code").unwrap();
+        let (status, tokens) = redeem(&h, &client_id, &code, &pkce).await;
+        assert_eq!(status, StatusCode::OK, "{tokens}");
+        grants.push(tokens);
+    }
+    for tokens in &grants {
+        let access = tokens["access_token"].as_str().unwrap();
+        let body = body_json(h.introspect(access, &h.service_token).await).await;
+        assert_eq!(body["active"], true);
+    }
+
+    drop_approvals(&client_id).await;
+
+    // Only the first family refreshes; the second must die with it.
+    let resp = h
+        .post_form(
+            "/oauth2/token",
+            &[
+                ("grant_type", "refresh_token"),
+                ("refresh_token", grants[0]["refresh_token"].as_str().unwrap()),
+                ("client_id", &client_id),
+            ],
+        )
+        .await;
+    assert_eq!(body_json(resp).await["error"], "invalid_target");
+
+    for tokens in &grants {
+        let access = tokens["access_token"].as_str().unwrap();
+        let body = body_json(h.introspect(access, &h.service_token).await).await;
+        assert_eq!(body["active"], false);
+    }
 }

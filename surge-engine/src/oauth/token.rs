@@ -152,6 +152,30 @@ impl Engine {
         })
     }
 
+    /// Ends every grant a client holds at one registration, across all
+    /// families and identities. For when the client stops being eligible for
+    /// the resource: eligibility is per (client, registration), and
+    /// `oauth_grant_is_live` looks across families, so revoking only the
+    /// family that happened to refresh would leave the others live.
+    pub async fn revoke_oauth_grants_for_registration(
+        &self,
+        client_id: &str,
+        registration_id: Uuid,
+    ) -> Result<u64, AuthError> {
+        let mut conn = self.conn().await?;
+        let affected = diesel::update(
+            oauth_refresh_token::table
+                .filter(oauth_refresh_token::client_id.eq(client_id))
+                .filter(oauth_refresh_token::registration_id.eq(registration_id))
+                .filter(oauth_refresh_token::revoked_at.is_null()),
+        )
+        .set(oauth_refresh_token::revoked_at.eq(Utc::now()))
+        .execute(&mut conn)
+        .await
+        .map_err(|e| AuthError::Internal(e.into()))?;
+        Ok(affected as u64)
+    }
+
     /// RFC 7009 revocation. Takes down the whole family, not just the token
     /// presented: a client asking to revoke means the grant is over.
     pub async fn revoke_refresh_token(
