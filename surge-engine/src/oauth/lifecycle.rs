@@ -703,7 +703,8 @@ async fn trim_removed_scopes(
 /// client has no registry row until it first authorizes (surge-bcc): they
 /// are ended by name. Every other client holding anything at the registration
 /// is evaluated with the shared rule against the new policy.
-#[allow(clippy::field_reassign_with_default)]
+// `redundant_field_names` is a false positive from `QueryableByName`.
+#[allow(clippy::field_reassign_with_default, clippy::redundant_field_names)]
 async fn end_ineligible_grants(
     conn: &mut AsyncPgConnection,
     resource: &OauthResource,
@@ -749,7 +750,6 @@ async fn end_ineligible_grants(
             .map_err(internal)?,
     );
     #[derive(QueryableByName)]
-    #[allow(clippy::redundant_field_names)] // false positive from the derive
     struct Pending {
         #[diesel(sql_type = Text)]
         client_id: String,
