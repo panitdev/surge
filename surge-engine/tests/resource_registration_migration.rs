@@ -331,6 +331,8 @@ async fn exercise(url: String) {
     let resource = engine.get_oauth_resource(KEPT).await.unwrap();
     assert_eq!(resource.registration_source, ResourceSource::Service);
     assert!(engine.get_oauth_client(CLIENT).await.unwrap().audiences.is_none());
+    // A scope list of unknown provenance is an explicit ceiling.
+    assert!(engine.get_oauth_client(CLIENT).await.unwrap().scope_ceiling_explicit);
     assert!(engine.oauth_grant_is_live(CLIENT, identity, kept.id).await.unwrap());
     assert!(engine.oauth_grant_is_live(CLIENT, identity, reused.id).await.unwrap());
 

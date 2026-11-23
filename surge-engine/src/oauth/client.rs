@@ -37,7 +37,27 @@ impl Engine {
                 "a platform client is created with create_platform_oauth_client",
             ));
         }
-        self.insert_client(spec, None).await
+        self.insert_client(spec, None, true).await
+    }
+
+    /// [`Engine::create_oauth_client`] for a registration that may not have
+    /// named scopes. `scope_ceiling_explicit = false` records that
+    /// `spec.scopes` is only a snapshot of the defaults offered at
+    /// registration, so the client's effective ceiling at a resource is
+    /// whatever that resource currently permits. Everything else, including
+    /// every legacy and admin client, is an explicit ceiling.
+    pub async fn create_oauth_client_with_ceiling(
+        &self,
+        spec: NewOauthClient,
+        scope_ceiling_explicit: bool,
+    ) -> Result<(OauthClient, Option<ClientSecret>), AuthError> {
+        if spec.registration_source == RegistrationSource::Platform {
+            return Err(field(
+                "registration_source",
+                "a platform client is created with create_platform_oauth_client",
+            ));
+        }
+        self.insert_client(spec, None, scope_ceiling_explicit).await
     }
 
     /// Registers a third-party client on behalf of a Platform service,
@@ -70,6 +90,7 @@ impl Engine {
                 registrar_service_id,
                 registration_ids,
             }),
+            true,
         )
         .await
     }
@@ -78,6 +99,7 @@ impl Engine {
         &self,
         spec: NewOauthClient,
         platform: Option<PlatformBinding>,
+        scope_ceiling_explicit: bool,
     ) -> Result<(OauthClient, Option<ClientSecret>), AuthError> {
         validate_client(&spec)?;
         let audiences = spec
@@ -110,6 +132,7 @@ impl Engine {
             created_at,
             audience_restricted: audiences.is_some() || platform.is_some(),
             registrar_service_id: platform.as_ref().map(|p| p.registrar_service_id),
+            scope_ceiling_explicit,
         };
 
         let token_endpoint_auth_method = row.token_endpoint_auth_method.to_string();
@@ -129,6 +152,7 @@ impl Engine {
             confidential: spec.confidential,
             audiences,
             registrar_service_id: None,
+            scope_ceiling_explicit,
             created_at,
         };
 
@@ -504,6 +528,7 @@ fn row_to_client(row: OauthClientRow, audiences: Option<Vec<String>>) -> OauthCl
         confidential: row.client_secret_hash.is_some(),
         audiences,
         registrar_service_id: row.registrar_service_id,
+        scope_ceiling_explicit: row.scope_ceiling_explicit,
         created_at: row.created_at,
     }
 }

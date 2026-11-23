@@ -189,6 +189,15 @@ pub(crate) async fn admit(
     if !scopes.iter().all(offered) {
         return Err(AuthError::ScopeNotGranted);
     }
+    // The client's own ceiling, judged against the resource as it is now, so
+    // no stage (refresh included) can carry a grant past it.
+    let permitted = super::permitted_scopes(&client, &resource);
+    if !scopes
+        .iter()
+        .all(|s| PSEUDO_SCOPES.contains(&s.as_str()) || permitted.contains(s))
+    {
+        return Err(AuthError::ScopeNotGranted);
+    }
     Ok(resource)
 }
 
