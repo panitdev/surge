@@ -86,7 +86,9 @@ One rule decides whether a client may be issued tokens for a resource, and it is
 3. **A client with no list (the default for existing clients) keeps its access to service resources.** It has none to delegated resources, with the exception in rule 4.
 4. **A dynamically registered client without a list** may use a delegated resource that has set `dcr_enabled`. A dynamic client's explicit list is honoured for a delegated resource only if that resource has also opted in, so an anonymous registration cannot bind itself to someone else's resource.
 
-If a refresh fails this check, every refresh family the client holds at that resource is revoked, so no live refresh token remains and introspection stops reporting the earlier access tokens as active. Dynamic registration answers an unknown resource and a non-opted-in one with the same message. An unknown resource and an ineligible one return the identical error.
+**Authorize and token errors.** At authorize, consent and the token endpoint, an unknown resource and an ineligible one return the identical `invalid_target` error. If a refresh fails this check, every refresh family the client holds at that resource is revoked, so no live refresh token remains and introspection stops reporting the earlier access tokens as active. A refresh that fails for any other reason (a storage error, say) ends only the presented family.
+
+**Registration errors.** Dynamic registration answers an unknown resource and a non-opted-in one with the same `invalid_client_metadata` message. Operator and service registration paths give the detail.
 
 Scopes are then narrowed per resource, so two resources that both define `mcp:read` stay separate: consent, codes, refresh tokens and the access token's `aud` are all bound to one registration.
 

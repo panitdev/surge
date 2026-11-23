@@ -247,14 +247,24 @@ async fn refresh_token_grant(
     // revoked, leaving no live refresh token behind to keep
     // `oauth_grant_is_live` (and so introspection) answering for it.
     if let Err(e) = ensure_eligible(state, &client, rotated.grant.registration_id).await {
-        // Ineligibility is per (client, registration), so every family the
-        // client holds there ends, not only the one that refreshed.
-        if let Err(revoke) = state
-            .engine
-            .revoke_oauth_grants_for_registration(&client.client_id, rotated.grant.registration_id)
-            .await
-        {
-            tracing::warn!(error = %revoke, client_id = %client.client_id, "failed to end refused grants");
+        if e.code == OauthErrorCode::InvalidTarget {
+            // Ineligibility is per (client, registration), so every family
+            // the client holds there ends, not only the one that refreshed.
+            if let Err(revoke) = state
+                .engine
+                .revoke_oauth_grants_for_registration(
+                    &client.client_id,
+                    rotated.grant.registration_id,
+                )
+                .await
+            {
+                tracing::warn!(error = %revoke, client_id = %client.client_id, "failed to end refused grants");
+            }
+        } else {
+            // Anything else (a database error, a registration that is gone)
+            // says nothing about eligibility, so it must not take down
+            // grants it knows nothing about; only the presented family ends.
+            end_grant(state, &client, &rotated.token).await;
         }
         return Err(e);
     }

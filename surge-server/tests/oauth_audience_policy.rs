@@ -603,7 +603,16 @@ async fn the_service_api_binds_a_new_client_to_resources() {
 async fn an_ineligible_refresh_ends_every_family_at_that_registration() {
     let h = harness().await;
     let session = h.sign_in().await;
-    let client_id = client(
+    let other = second_service_resource(&h).await;
+    let registration = h.registration_id;
+    let x = client(
+        &h,
+        true,
+        RegistrationSource::Admin,
+        Some(vec![h.resource_uri.clone(), other.clone()]),
+    )
+    .await;
+    let y = client(
         &h,
         true,
         RegistrationSource::Admin,
@@ -611,21 +620,40 @@ async fn an_ineligible_refresh_ends_every_family_at_that_registration() {
     )
     .await;
 
-    let mut grants = vec![];
-    for _ in 0..2 {
-        let (pkce, target) = authorize(&h, &client_id, &session, &h.resource_uri).await;
+    async fn grant(h: &Harness, session: &str, client_id: &str, resource: &str) -> Value {
+        let (pkce, target) = authorize(h, client_id, session, resource).await;
         let code = query_param(&target, "code").unwrap();
-        let (status, tokens) = redeem(&h, &client_id, &code, &pkce).await;
+        let (status, tokens) = redeem(h, client_id, &code, &pkce).await;
         assert_eq!(status, StatusCode::OK, "{tokens}");
-        grants.push(tokens);
+        tokens
     }
-    for tokens in &grants {
+    async fn active(h: &Harness, tokens: &Value) -> bool {
         let access = tokens["access_token"].as_str().unwrap();
-        let body = body_json(h.introspect(access, &h.service_token).await).await;
-        assert_eq!(body["active"], true);
+        body_json(h.introspect(access, &h.service_token).await).await["active"] == true
     }
 
-    drop_approvals(&client_id).await;
+    // X holds two families at the first resource and one at the other; Y is
+    // a second client at the first resource.
+    let x_a1 = grant(&h, &session, &x, &h.resource_uri).await;
+    let x_a2 = grant(&h, &session, &x, &h.resource_uri).await;
+    let x_b = grant(&h, &session, &x, &other).await;
+    let y_a = grant(&h, &session, &y, &h.resource_uri).await;
+    for tokens in [&x_a1, &x_a2, &x_b, &y_a] {
+        assert!(active(&h, tokens).await);
+    }
+
+    // X alone loses the first resource.
+    {
+        let mut conn = db().await;
+        diesel::delete(
+            oauth_client_audience::table
+                .filter(oauth_client_audience::client_id.eq(&x))
+                .filter(oauth_client_audience::registration_id.eq(registration)),
+        )
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    }
 
     // Only the first family refreshes; the second must die with it.
     let resp = h
@@ -633,16 +661,15 @@ async fn an_ineligible_refresh_ends_every_family_at_that_registration() {
             "/oauth2/token",
             &[
                 ("grant_type", "refresh_token"),
-                ("refresh_token", grants[0]["refresh_token"].as_str().unwrap()),
-                ("client_id", &client_id),
+                ("refresh_token", x_a1["refresh_token"].as_str().unwrap()),
+                ("client_id", &x),
             ],
         )
         .await;
     assert_eq!(body_json(resp).await["error"], "invalid_target");
 
-    for tokens in &grants {
-        let access = tokens["access_token"].as_str().unwrap();
-        let body = body_json(h.introspect(access, &h.service_token).await).await;
-        assert_eq!(body["active"], false);
-    }
+    assert!(!active(&h, &x_a1).await);
+    assert!(!active(&h, &x_a2).await);
+    assert!(active(&h, &x_b).await, "the same client at another resource");
+    assert!(active(&h, &y_a).await, "another client at the same resource");
 }
