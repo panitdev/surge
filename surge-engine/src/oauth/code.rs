@@ -105,7 +105,8 @@ impl Engine {
     /// registration, in the same transaction as the code and consent writes
     /// (see `lifecycle`). `Forbidden`: the client may no longer use the
     /// registration; `ScopeNotGranted`: it no longer offers a requested
-    /// scope; `NotFound`: it is gone. Nothing is written in those cases, a
+    /// scope; `NotFound`: it is gone; `ConsentRequired`: no consent flow was
+    /// supplied and the saved consent no longer covers the scopes. Nothing is written in those cases, a
     /// consent flow included.
     pub async fn mint_authorization_code(
         &self,
@@ -127,6 +128,36 @@ impl Engine {
                     &grant.scopes,
                 )
                 .await?;
+                // A saved consent is read by the caller outside this
+                // transaction; a code issued on the strength of it must still
+                // be covered when the registration is locked. (A consent flow
+                // being consumed here records the approval itself.)
+                if consent_flow.is_none() {
+                    use crate::schema::{oauth_client, oauth_consent};
+                    let first_party: bool = oauth_client::table
+                        .find(&grant.client_id)
+                        .select(oauth_client::first_party)
+                        .first(conn)
+                        .await
+                        .map_err(|e| AuthError::Internal(e.into()))?;
+                    if !first_party {
+                        let saved: Option<Vec<String>> = oauth_consent::table
+                            .find((
+                                &grant.client_id,
+                                *grant.identity_id.as_uuid(),
+                                grant.registration_id,
+                            ))
+                            .filter(oauth_consent::revoked_at.is_null())
+                            .select(oauth_consent::scopes)
+                            .first(conn)
+                            .await
+                            .optional()
+                            .map_err(|e| AuthError::Internal(e.into()))?;
+                        if !saved.is_some_and(|s| grant.scopes.iter().all(|g| s.contains(g))) {
+                            return Err(AuthError::ConsentRequired);
+                        }
+                    }
+                }
                 let session_expiry = binding
                     .validate(conn, grant.session_id, grant.identity_id)
                     .await?;

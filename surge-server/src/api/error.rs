@@ -22,7 +22,7 @@ impl IntoResponse for ApiError {
             AuthError::RateLimited { .. } => (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
             AuthError::UsernameTaken => (StatusCode::CONFLICT, "username_taken"),
             AuthError::ResourceAlreadyRegistered => (StatusCode::CONFLICT, "resource_already_registered"),
-            AuthError::ResourceReserved => (StatusCode::CONFLICT, "resource_reserved"),
+            AuthError::ResourceReserved(_) => (StatusCode::CONFLICT, "resource_reserved"),
             AuthError::PreconditionFailed => {
                 (StatusCode::PRECONDITION_FAILED, "precondition_failed")
             }
@@ -41,6 +41,9 @@ impl IntoResponse for ApiError {
         let mut body = json!({ "error": code });
         if let AuthError::RateLimited { retry_after } = &self.0 {
             body["retry_after"] = json!(retry_after.as_secs());
+        }
+        if let AuthError::ResourceReserved(until) = &self.0 {
+            body["reserved_until"] = json!(until);
         }
         if let AuthError::Validation(v) = &self.0 {
             body["message"] = json!(v.to_string());

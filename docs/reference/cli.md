@@ -201,7 +201,7 @@ surge-server oauth resource create \
 | `--scope` | A scope this resource defines. Repeatable. Scopes belong to resources, never to clients |
 | `--describe` | `scope=human sentence`, rendered on the consent screen. Repeatable |
 
-`oauth resource list` lists registrations. `oauth resource delete <uri> [--registration-id <uuid>]` runs the same lifecycle logic as the service API (all grants ended atomically, URI reserved for the access-token lifetime plus 60 seconds, audited with the operator as actor); `--registration-id` refuses to delete anything but that registration. Both `create` and `delete` are audited.
+`oauth resource list` lists registrations. `oauth resource delete <uri> [--registration-id <uuid>]` runs the same lifecycle logic as the service API (all grants ended atomically, URI reserved for the access-token lifetime plus 60 seconds, audited with the operator as actor); `--registration-id` refuses to delete anything but that registration, and is recommended in scripts (without it the command warns and deletes whatever holds the URI). The reservation uses the persisted high-water mark of the access-token lifetime; the command refuses if none is recorded and `SURGE_OAUTH_ISSUER` is not set. Both `create` and `delete` are audited.
 
 ### `oauth client create`
 

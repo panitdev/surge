@@ -26,8 +26,13 @@ pub enum AuthError {
 
     /// A deleted registration's URI is reserved until access tokens issued
     /// for it have expired.
-    #[error("resource URI is reserved")]
-    ResourceReserved,
+    #[error("resource URI is reserved until {0}")]
+    ResourceReserved(chrono::DateTime<chrono::Utc>),
+
+    /// A saved consent no longer covers the scopes being granted. The
+    /// authorization must go through the consent screen again.
+    #[error("consent required")]
+    ConsentRequired,
 
     /// A lifecycle request named a registration other than the one that
     /// holds the URI now.

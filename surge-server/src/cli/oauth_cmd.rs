@@ -85,7 +85,7 @@ pub enum ResourceCommand {
     Delete {
         uri: String,
         /// Refuse unless this is the registration that holds the URI now
-        /// (see `list`). Lets a scripted retry avoid deleting a successor.
+        /// (see `list`). Recommended: lets a retry avoid deleting a successor.
         #[arg(long)]
         registration_id: Option<uuid::Uuid>,
     },
@@ -102,11 +102,11 @@ pub enum KeyCommand {
 pub async fn oauth(
     cmd: OauthCommand,
     engine: Arc<Engine>,
-    reuse_window: std::time::Duration,
+    access_ttl: Option<std::time::Duration>,
 ) -> anyhow::Result<()> {
     match cmd {
         OauthCommand::Client(cmd) => client(cmd, engine).await,
-        OauthCommand::Resource(cmd) => resource(cmd, engine, reuse_window).await,
+        OauthCommand::Resource(cmd) => resource(cmd, engine, access_ttl).await,
         OauthCommand::Key(cmd) => key(cmd, engine).await,
     }
 }
@@ -205,7 +205,7 @@ async fn client(cmd: ClientCommand, engine: Arc<Engine>) -> anyhow::Result<()> {
 async fn resource(
     cmd: ResourceCommand,
     engine: Arc<Engine>,
-    reuse_window: std::time::Duration,
+    access_ttl: Option<std::time::Duration>,
 ) -> anyhow::Result<()> {
     match cmd {
         ResourceCommand::Create {
@@ -270,6 +270,13 @@ async fn resource(
             uri,
             registration_id,
         } => {
+            if registration_id.is_none() {
+                eprintln!(
+                    "note: no --registration-id given; this deletes whatever registration holds \
+                     {uri} right now. Pass --registration-id (see `oauth resource list`) in \
+                     scripts so a retry cannot delete a successor."
+                );
+            }
             // The same lifecycle logic as the service API, with the
             // operator as actor and administrative authority.
             match engine
@@ -278,16 +285,16 @@ async fn resource(
                     surge_engine::oauth::ResourceManager::Admin,
                     &uri,
                     registration_id,
-                    reuse_window,
+                    access_ttl,
                 )
                 .await?
             {
                 surge_engine::oauth::DeleteOutcome::Deleted(resource) => {
                     println!("Resource {uri} deleted (registration {}).", resource.registration_id);
                     println!(
-                        "The URI is reserved for {}s: access tokens already issued for it \
-                         stay valid that long.",
-                        reuse_window.as_secs()
+                        "The URI is reserved for the longest access-token lifetime ever \
+                         configured plus clock skew: access tokens already issued for it stay \
+                         valid that long. `oauth resource create` refuses it until then."
                     );
                 }
                 surge_engine::oauth::DeleteOutcome::AlreadyDeleted => {

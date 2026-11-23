@@ -55,7 +55,9 @@ Both calls address the registration by its **canonical URI, percent-encoded as o
 }
 ```
 
-All fields are optional but at least one is required. Each field replaces the stored value. Scopes are non-empty printable tokens without spaces (not `openid`, `profile` or `offline_access`); CIMD entries are exact `https` URLs with a path and no userinfo or fragment, stored as given; `dcr_enabled` applies to delegated registrations only. The response is the updated registration. A change that alters nothing writes and audits nothing.
+All fields are optional but at least one is required. Each field replaces the stored value. Scopes are non-empty printable tokens without spaces (not `openid`, `profile` or `offline_access`); CIMD entries are exact `https` URLs with a path and no userinfo or fragment, stored as given; `dcr_enabled` applies to delegated registrations only. The response is the updated registration. A change that alters nothing writes and audits nothing. `scope_descriptions` keys must name scopes the registration will have after the change. `dcr_enabled: false` is accepted on a service registration as a no-op.
+
+A change waits for issuance transactions already in flight to finish (they are short and do no network I/O), so under sustained heavy issuance it can take longer to apply.
 
 What a change does to existing grants (all in one transaction, serialized against issuance):
 
@@ -69,9 +71,9 @@ Revoking refresh families is what makes introspection report earlier access toke
 
 ### `DELETE`
 
-Returns HTTP 204. In one transaction it deletes the registration and with it every consent, flow, code, refresh token and client approval bound to it. Other audiences are unaffected. Retrying with the same `registration_id` after a success also returns 204 and does nothing.
+Returns HTTP 204. In one transaction it deletes the registration and with it every consent, flow, code, refresh token and client approval bound to it. Other audiences are unaffected. Retrying with the same `registration_id` after a success also returns 204 and does nothing, until the reservation record is garbage-collected (seven days after it lapses) or the URI is registered again, after which the retry returns 404 or 412 respectively and still touches nothing.
 
-**URI reservation.** Access tokens already issued for the URI verify offline until they expire, so the URI cannot be registered again until the maximum access-token lifetime (`SURGE_OAUTH_ACCESS_TTL_SECS`) plus 60 seconds of accepted clock skew has passed. `POST` for a reserved URI returns HTTP 409 (`resource_reserved`), for administrators too. The window uses the access-token lifetime configured at deletion time; lowering the lifetime later does not shorten reservations already made, but tokens issued under a longer, earlier setting are not accounted for.
+**URI reservation.** Access tokens already issued for the URI verify offline until they expire, so the URI cannot be registered again until the maximum access-token lifetime (`SURGE_OAUTH_ACCESS_TTL_SECS`) plus 60 seconds of accepted clock skew has passed. `POST` for a reserved URI returns HTTP 409 (`resource_reserved`), for administrators too. The 409 body carries `reserved_until`. The window uses the **longest access-token lifetime ever configured**: the server records it in the database at startup, raises it when `SURGE_OAUTH_ACCESS_TTL_SECS` is increased, and never lowers it automatically, so lowering the setting does not shorten later reservations. The CLI uses that record too (or its own `SURGE_OAUTH_ISSUER` environment if higher); with neither, deletion is refused. Each access token's `exp` counts from before the transaction that authorized it committed, so no token outlives a reservation that began after that commit.
 
 ### Audit
 

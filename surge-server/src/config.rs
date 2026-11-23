@@ -53,17 +53,12 @@ pub struct OauthAsSettings {
 }
 
 impl ServerConfig {
-    /// How long a deleted OAuth resource's URI is reserved: the access-token
-    /// lifetime plus the clock skew verifiers accept. Without the
-    /// authorization server enabled no token is issued, but a deployment may
-    /// have issued some before it was switched off, so the default lifetime
-    /// stands in.
-    pub fn oauth_reuse_window(&self) -> Duration {
-        surge_engine::oauth::reuse_window(
-            self.oauth_as
-                .as_ref()
-                .map_or(Duration::from_secs(DEFAULT_ACCESS_TTL_SECS), |o| o.access_ttl),
-        )
+    /// The access-token lifetime this process is configured with, if the
+    /// authorization server is enabled. Deleting a resource reserves its URI
+    /// for the longer of this and the persisted high-water mark of every
+    /// lifetime ever configured.
+    pub fn oauth_access_ttl(&self) -> Option<Duration> {
+        self.oauth_as.as_ref().map(|o| o.access_ttl)
     }
 
     pub fn from_env() -> anyhow::Result<Self> {

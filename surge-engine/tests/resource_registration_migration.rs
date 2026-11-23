@@ -369,16 +369,20 @@ async fn exercise(url: String) {
         Err(AuthError::Validation(_))
     ));
 
-    // A zero reuse window: this test is about what survives re-registering.
+    // The reservation is lapsed by hand: this test is about what survives
+    // re-registering.
     engine
         .delete_oauth_resource(
             surge_engine::audit::AuditActor::Operator { name: "test".into() },
             surge_engine::oauth::ResourceManager::Admin,
             KEPT,
             None,
-            Duration::ZERO,
+            Some(Duration::ZERO),
         )
         .await
+        .unwrap();
+    diesel::sql_query("UPDATE surge.oauth_resource_reservation SET reserved_until = now() - interval '1 second'")
+        .execute(&mut conn)
         .unwrap();
     let replacement = engine
         .create_oauth_resource(KEPT, creator, vec!["mcp:read".into()], serde_json::json!({}))

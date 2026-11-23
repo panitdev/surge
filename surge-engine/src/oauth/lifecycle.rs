@@ -21,6 +21,12 @@
 //! policy. There is no third case. Shared locks do not conflict, so issuance
 //! does not serialize against itself.
 //!
+//! A steady stream of overlapping issuance can in principle keep a policy
+//! change waiting: Postgres queues the `FOR UPDATE` behind shared holders
+//! already granted, but a long-running issuance transaction delays it for as
+//! long as it runs. Issuance transactions are short (no network I/O is done
+//! while holding the lock), so the wait is bounded by their duration.
+//!
 //! **Lock order** is registration row first, then anything else (flow, code
 //! and token rows, session rows). A transaction that took a grant row first
 //! and then asked for the registration would deadlock against a policy change
@@ -42,8 +48,11 @@
 //!
 //! # Reuse
 //!
-//! Deleting a registration reserves its URI for [`reuse_window`]: access
-//! tokens already issued verify offline until they expire.
+//! Deleting a registration reserves its URI for [`reuse_window`] of the
+//! longest access-token lifetime ever configured: access tokens already
+//! issued verify offline until they expire. Every access token's `exp` is
+//! fixed from a time before its grant-creating transaction commits, so no
+//! token outlives a reservation that began after that commit.
 
 use std::collections::BTreeSet;
 use std::time::Duration;
@@ -373,7 +382,9 @@ impl Engine {
                 if if_registration.is_some_and(|id| id != old.registration_id) {
                     return Err(AuthError::PreconditionFailed);
                 }
-                if dcr.is_some() && old.registration_source != ResourceSource::Delegated {
+                if dcr.is_some_and(|d| d != old.dcr_enabled)
+                    && old.registration_source != ResourceSource::Delegated
+                {
                     return Err(field(
                         "dcr_enabled",
                         "dynamic registration opt-in applies to delegated registrations only",
@@ -383,6 +394,14 @@ impl Engine {
                 let new_scopes = scopes.unwrap_or_else(|| old.scopes.clone());
                 let new_cimd = cimd.unwrap_or_else(|| old.allowed_cimd_client_ids.clone());
                 let new_dcr = dcr.unwrap_or(old.dcr_enabled);
+                if let Some(map) = descriptions.as_ref().and_then(|d| d.as_object())
+                    && let Some(stray) = map.keys().find(|k| !new_scopes.contains(k))
+                {
+                    return Err(field(
+                        "scope_descriptions",
+                        format!("`{stray}` is not one of the resource's scopes"),
+                    ));
+                }
                 let mut new_descriptions =
                     descriptions.unwrap_or_else(|| old.scope_descriptions.clone());
 
@@ -467,6 +486,11 @@ impl Engine {
     /// bound to it and reserves its URI for `reuse_window` (see
     /// [`reuse_window`]).
     ///
+    /// The reservation lasts [`reuse_window`] of the longer of
+    /// `configured_access_ttl` (this process's setting, if it has one) and
+    /// the persisted high-water mark of every lifetime ever configured. If
+    /// neither is known the delete is refused: no safe window can be named.
+    ///
     /// `if_registration` is the registration the caller means to delete. With
     /// it, a retry can never delete a successor registered at the same URI:
     /// if that id was already deleted the call is `AlreadyDeleted`; if the URI
@@ -478,11 +502,9 @@ impl Engine {
         manager: ResourceManager,
         resource_uri: &str,
         if_registration: Option<Uuid>,
-        reuse_window: Duration,
+        configured_access_ttl: Option<Duration>,
     ) -> Result<DeleteOutcome, AuthError> {
         let canonical = canonicalize_resource_uri(resource_uri)?;
-        let window = chrono::Duration::from_std(reuse_window)
-            .map_err(|e| AuthError::Internal(anyhow::anyhow!("reuse window out of range: {e}")))?;
 
         let mut conn = self.conn().await?;
         conn.transaction::<_, AuthError, _>(|conn| {
@@ -508,6 +530,21 @@ impl Engine {
                     return Err(AuthError::PreconditionFailed);
                 }
 
+                let window = {
+                    let recorded = access_ttl_high_water(conn).await?;
+                    let ttl = [configured_access_ttl, recorded].into_iter().flatten().max();
+                    let ttl = ttl.ok_or_else(|| {
+                        field(
+                            "access_ttl",
+                            "no access-token lifetime is recorded for this deployment; start the \
+                             server once with SURGE_OAUTH_ISSUER set (or run this with the same \
+                             environment) so a safe reservation window is known",
+                        )
+                    })?;
+                    chrono::Duration::from_std(reuse_window(ttl)).map_err(|e| {
+                        AuthError::Internal(anyhow::anyhow!("reuse window out of range: {e}"))
+                    })?
+                };
                 let ended = count_live_grants(conn, resource.registration_id).await?;
                 let deleted_at = Utc::now();
                 diesel::insert_into(oauth_resource_reservation::table)
@@ -562,6 +599,32 @@ impl Engine {
             .scope_boxed()
         })
         .await
+    }
+
+    /// Records that access tokens may be issued with a lifetime of
+    /// `access_ttl`. Raises the persisted high-water mark if it is higher
+    /// than any before; never lowers it.
+    pub async fn raise_access_ttl_high_water(&self, access_ttl: Duration) -> Result<(), AuthError> {
+        use crate::schema::oauth_access_ttl_high_water as hw;
+        let secs = access_ttl.as_secs().max(1) as i64;
+        let mut conn = self.conn().await?;
+        diesel::insert_into(hw::table)
+            .values(hw::max_access_ttl_secs.eq(secs))
+            .on_conflict(hw::singleton)
+            .do_update()
+            .set(hw::max_access_ttl_secs.eq(diesel::dsl::sql::<diesel::sql_types::BigInt>(
+                "GREATEST(oauth_access_ttl_high_water.max_access_ttl_secs, excluded.max_access_ttl_secs)",
+            )))
+            .execute(&mut conn)
+            .await
+            .map_err(internal)?;
+        Ok(())
+    }
+
+    /// The longest access-token lifetime ever configured, if any is recorded.
+    pub async fn access_ttl_high_water(&self) -> Result<Option<Duration>, AuthError> {
+        let mut conn = self.conn().await?;
+        access_ttl_high_water(&mut conn).await
     }
 
     /// Drops reservations whose window ended long enough ago that no retry
@@ -848,6 +911,17 @@ async fn end_ineligible_grants(
     Ok(ended)
 }
 
+async fn access_ttl_high_water(conn: &mut AsyncPgConnection) -> Result<Option<Duration>, AuthError> {
+    use crate::schema::oauth_access_ttl_high_water as hw;
+    let secs: Option<i64> = hw::table
+        .select(hw::max_access_ttl_secs)
+        .first(conn)
+        .await
+        .optional()
+        .map_err(internal)?;
+    Ok(secs.map(|s| Duration::from_secs(s.max(0) as u64)))
+}
+
 /// Whether `id` is a registration this manager could manage that was deleted
 /// from `canonical` and is still remembered: a retried delete.
 async fn already_deleted(
@@ -890,7 +964,7 @@ pub(super) async fn check_reservation(
         .optional()
         .map_err(internal)?;
     match until {
-        Some(until) if until > Utc::now() => Err(AuthError::ResourceReserved),
+        Some(until) if until > Utc::now() => Err(AuthError::ResourceReserved(until)),
         Some(_) => {
             diesel::delete(oauth_resource_reservation::table.find(canonical))
                 .execute(conn)

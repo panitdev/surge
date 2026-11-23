@@ -412,10 +412,24 @@ async fn a_platform_client_cannot_bind_a_registration_it_no_longer_holds() {
             surge_engine::oauth::ResourceManager::Admin,
             &uri,
             None,
-            std::time::Duration::ZERO,
+            Some(std::time::Duration::ZERO),
         )
         .await
         .unwrap();
+    // The reservation is lapsed by hand: this test is about the race.
+    {
+        use diesel::prelude::*;
+        use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
+        let mut conn = AsyncPgConnection::establish(&std::env::var("DATABASE_URL").unwrap())
+            .await
+            .unwrap();
+        diesel::sql_query(
+            "UPDATE surge.oauth_resource_reservation SET reserved_until = now() - interval '1 second'",
+        )
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    }
     // The URI is re-registered by an administrator after the check passed.
     h.engine
         .register_oauth_resource(

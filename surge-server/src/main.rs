@@ -29,12 +29,12 @@ async fn main() -> anyhow::Result<()> {
 
     let embedded = Arc::new(EmbeddedProvider::new(config.embedded_config()).await?);
     let engine = embedded.engine();
-    let reuse_window = config.oauth_reuse_window();
+    let access_ttl = config.oauth_access_ttl();
 
     match cli {
         Cli::Serve(args) => cli::serve(args, Arc::clone(&embedded), config).await,
         Cli::Identity(cmd) => cli::identity(cmd, engine).await,
         Cli::Svc(cmd) => cli::svc(cmd, engine).await,
-        Cli::Oauth(cmd) => cli::oauth(cmd, engine, reuse_window).await,
+        Cli::Oauth(cmd) => cli::oauth(cmd, engine, access_ttl).await,
     }
 }

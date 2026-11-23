@@ -15,9 +15,9 @@ use crate::config::ServerConfig;
 pub struct AppState {
     pub engine: Arc<surge_engine::Engine>,
     pub provider: Arc<dyn AuthProvider>,
-    /// How long a deleted OAuth resource's URI stays reserved: the longest
-    /// an access token issued for it can still verify.
-    pub oauth_reuse_window: std::time::Duration,
+    /// The configured access-token lifetime, when the authorization server
+    /// is enabled; sizes the reservation of a deleted resource's URI.
+    pub oauth_access_ttl: Option<std::time::Duration>,
 }
 
 /// Central startup coherence (architecture.md §5): refuse to start, or
@@ -108,8 +108,14 @@ pub async fn router(
     let state = Arc::new(AppState {
         engine: Arc::clone(&engine),
         provider: Arc::clone(&provider),
-        oauth_reuse_window: config.oauth_reuse_window(),
+        oauth_access_ttl: config.oauth_access_ttl(),
     });
+
+    // Raised before anything can be issued, so the record is never behind the
+    // tokens in circulation.
+    if let Some(ttl) = config.oauth_access_ttl() {
+        engine.raise_access_ttl_high_water(ttl).await?;
+    }
 
     let return_origins = engine.all_return_origins().await?;
     let oauth_resource_count = if config.oauth_as.is_some() {

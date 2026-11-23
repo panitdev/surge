@@ -70,13 +70,18 @@ pub(crate) struct AccessTokenSpec<'a> {
     pub scopes: &'a [String],
     pub session_id: &'a str,
     pub ttl: Duration,
+    /// When the grant behind this token was authorized to issue it: before
+    /// the transaction that took the registration's lock committed. `iat`
+    /// and `exp` count from here, not from signing, so a token never outlives
+    /// the reservation window of a registration deleted after that point.
+    pub issued_at: i64,
 }
 
 pub(crate) fn sign_access_token(
     key: &SigningKeyMaterial,
     spec: AccessTokenSpec<'_>,
 ) -> Result<MintedAccessToken, OauthError> {
-    let now = chrono::Utc::now().timestamp();
+    let now = spec.issued_at;
     let ttl = spec.ttl.as_secs() as i64;
 
     let claims = AccessClaims {
@@ -100,7 +105,7 @@ pub(crate) fn sign_access_token(
 
     Ok(MintedAccessToken {
         token,
-        expires_in: ttl,
+        expires_in: (now + ttl - chrono::Utc::now().timestamp()).clamp(0, ttl),
     })
 }
 

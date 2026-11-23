@@ -318,6 +318,10 @@ pub(crate) fn admission_refusal(e: &AuthError) -> Option<(OauthErrorCode, &'stat
         AuthError::Forbidden | AuthError::NotFound => {
             Some((OauthErrorCode::InvalidTarget, INELIGIBLE_TARGET))
         }
+        AuthError::ConsentRequired => Some((
+            OauthErrorCode::ConsentRequired,
+            "the saved approval no longer covers this request; authorize again",
+        )),
         AuthError::ScopeNotGranted => Some((
             OauthErrorCode::InvalidScope,
             "the resource no longer offers a requested scope",

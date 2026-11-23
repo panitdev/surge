@@ -725,7 +725,9 @@ async fn deletion_ends_every_grant_and_reserves_the_uri() {
         .await
         .unwrap();
     let remaining = (reserved_until - chrono::Utc::now()).num_seconds();
-    assert!((600..=660).contains(&remaining), "{remaining}");
+    // At least the configured lifetime; another test may have raised the
+    // recorded high-water mark on this database.
+    assert!(remaining >= 600, "{remaining}");
     for token in [&token, &h.service_token] {
         let resp = call(
             &h,
@@ -840,7 +842,7 @@ async fn updates_are_audited_and_the_cli_deletes_through_the_same_logic() {
             registration_id: Some(id),
         }),
         h.engine.clone(),
-        Duration::from_secs(660),
+        None,
     )
     .await
     .unwrap();
@@ -1025,21 +1027,22 @@ async fn racing_refreshes_against_policy_changes_never_leave_a_violating_grant()
     let h = std::sync::Arc::new(harness().await);
     let session = h.sign_in().await;
     let (_, token) = registrar(&h, "race").await;
-    let c = client(&h, RegistrationSource::Admin, None).await;
 
     for round in 0..8 {
         let rs = format!("https://race{round}.lifecycle.test/mcp-{}", h.suffix);
         let reg = register(&h, &token, &rs, &["mcp:read", "mcp:write"]).await;
         let bound = client(&h, RegistrationSource::Admin, Some(vec![rs.clone()])).await;
-        let (_, first) = grant(&h, &bound, &session, &rs, "mcp:read mcp:write").await;
-        let _ = &c;
-
-        let refreshers: Vec<_> = (0..3)
-            .map(|_| {
-                let (h, bound, first) = (h.clone(), bound.clone(), first.clone());
-                tokio::spawn(async move { refresh(&h, &bound, &first).await.0 })
-            })
-            .collect();
+        // Each refresher rotates its own family: no replay detection, so
+        // every rotation that wins the race writes a live successor that
+        // only the locking keeps the patch from missing.
+        let mut refreshers = Vec::new();
+        for _ in 0..4 {
+            let (_, first) = grant(&h, &bound, &session, &rs, "mcp:read mcp:write").await;
+            let (h, bound) = (h.clone(), bound.clone());
+            refreshers.push(tokio::spawn(async move {
+                refresh(&h, &bound, &first).await.0
+            }));
+        }
         let patcher = {
             let (h, token, rs) = (h.clone(), token.clone(), rs.clone());
             tokio::spawn(async move {
@@ -1048,7 +1051,8 @@ async fn racing_refreshes_against_policy_changes_never_leave_a_violating_grant()
         };
         assert_eq!(patcher.await.unwrap(), StatusCode::OK);
         for r in refreshers {
-            r.await.unwrap();
+            let status = r.await.unwrap();
+            assert!(status == StatusCode::OK || status == StatusCode::BAD_REQUEST);
         }
 
         // Whatever interleaving happened, no live token carries the scope.
@@ -1067,6 +1071,11 @@ async fn racing_refreshes_against_policy_changes_never_leave_a_violating_grant()
 #[tokio::test]
 #[ignore = "requires a live Postgres via DATABASE_URL"]
 async fn racing_deletion_against_refresh_leaves_no_live_grant() {
+    // Deletion needs no extra locking against issuance to be safe: a refresh
+    // token written for a registration that is being deleted is refused by
+    // the composite foreign key, and the delete cascades whatever was
+    // written before it. This test is a sanity check of that, not of the
+    // lock; the lock's behaviour is covered by the lock-holding tests above.
     let h = std::sync::Arc::new(harness().await);
     let session = h.sign_in().await;
     let (_, token) = registrar(&h, "racedel").await;
@@ -1096,6 +1105,101 @@ async fn racing_deletion_against_refresh_leaves_no_live_grant() {
 
 #[tokio::test]
 #[ignore = "requires a live Postgres via DATABASE_URL"]
+async fn a_saved_consent_removed_before_the_code_is_minted_is_not_relied_on() {
+    let h = std::sync::Arc::new(harness().await);
+    let session = h.sign_in().await;
+    let (_, token) = registrar(&h, "consent").await;
+    let rs = uri(&h, "consent");
+    let reg = register(&h, &token, &rs, &["mcp:read"]).await;
+    let c = client(&h, RegistrationSource::Admin, Some(vec![rs.clone()])).await;
+    grant(&h, &c, &session, &rs, "mcp:read").await;
+    assert!(consent_scopes(&h, &c, reg).await.is_some());
+
+    // The authorize request reads the saved consent, then waits for the
+    // registration lock a policy change holds...
+    let mut change = hold_policy_lock(reg).await;
+    let request = {
+        let (h, c, rs, session) = (h.clone(), c.clone(), rs.clone(), session.clone());
+        tokio::spawn(async move {
+            let pkce = Pkce::generate();
+            h.get(&h.authorize_uri(&c, &pkce, Some(&rs), Some("mcp:read")), Some(&session))
+                .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert!(!request.is_finished());
+    // ...during which the user withdraws the consent.
+    h.engine.revoke_connection(h.identity_id().await, &c).await.unwrap();
+    diesel::sql_query("COMMIT").execute(&mut change).await.unwrap();
+
+    let resp = request.await.unwrap();
+    let target = location(&resp);
+    assert_eq!(
+        query_param(&target, "error").as_deref(),
+        Some("consent_required"),
+        "{target}"
+    );
+    assert!(query_param(&target, "code").is_none());
+}
+
+#[tokio::test]
+#[ignore = "requires a live Postgres via DATABASE_URL"]
+async fn the_reservation_window_never_shrinks_below_the_recorded_lifetime() {
+    let h = harness().await;
+    let (_, token) = registrar(&h, "hw").await;
+    // The server recorded its lifetime at startup.
+    assert!(h.engine.access_ttl_high_water().await.unwrap().unwrap() >= Duration::from_secs(600));
+    // A higher one is kept, a lower one is not.
+    h.engine.raise_access_ttl_high_water(Duration::from_secs(3600)).await.unwrap();
+    h.engine.raise_access_ttl_high_water(Duration::from_secs(60)).await.unwrap();
+    let recorded = h.engine.access_ttl_high_water().await.unwrap().unwrap();
+    assert!(recorded >= Duration::from_secs(3600));
+
+    // A delete from a process that knows nothing of the configuration (the
+    // CLI) reserves for the recorded lifetime, not a default.
+    let rs = uri(&h, "hw");
+    let id = register(&h, &token, &rs, &["mcp:read"]).await;
+    h.engine
+        .delete_oauth_resource(
+            AuditActor::Operator { name: "t".into() },
+            ResourceManager::Admin,
+            &rs,
+            Some(id),
+            None,
+        )
+        .await
+        .unwrap();
+    let until: chrono::DateTime<chrono::Utc> = oauth_resource_reservation::table
+        .find(&rs)
+        .select(oauth_resource_reservation::reserved_until)
+        .first(&mut db().await)
+        .await
+        .unwrap();
+    assert!((until - chrono::Utc::now()).num_seconds() >= recorded.as_secs() as i64);
+    let resp = call(
+        &h,
+        "POST",
+        "/v1/oauth/resources",
+        &token,
+        Some(json!({ "resource_uri": rs, "scopes": ["mcp:read"] })),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    assert!(body_json(resp).await["reserved_until"].is_string());
+}
+
+#[tokio::test]
+#[ignore = "requires a live Postgres via DATABASE_URL"]
+async fn description_keys_must_name_scopes_and_a_noop_dcr_flag_is_accepted() {
+    let h = harness().await;
+    let resp = patch(&h, &h.service_token, &h.resource_uri, json!({ "scope_descriptions": { "nope": "x" } })).await;
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let resp = patch(&h, &h.service_token, &h.resource_uri, json!({ "dcr_enabled": false })).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+#[ignore = "requires a live Postgres via DATABASE_URL"]
 async fn the_engine_refuses_a_delete_for_a_registrar_that_is_not_the_creator() {
     let h = harness().await;
     let (creator, token) = registrar(&h, "creator").await;
@@ -1108,7 +1212,7 @@ async fn the_engine_refuses_a_delete_for_a_registrar_that_is_not_the_creator() {
             ResourceManager::Registrar(Uuid::now_v7()),
             &rs,
             Some(id),
-            Duration::ZERO,
+            Some(Duration::ZERO),
         )
         .await;
     assert!(matches!(outcome, Err(surge_engine::AuthError::NotFound)));
@@ -1119,7 +1223,7 @@ async fn the_engine_refuses_a_delete_for_a_registrar_that_is_not_the_creator() {
             ResourceManager::Registrar(creator),
             &rs,
             Some(id),
-            Duration::ZERO,
+            Some(Duration::ZERO),
         )
         .await
         .unwrap();

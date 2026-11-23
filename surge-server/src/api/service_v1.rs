@@ -829,7 +829,8 @@ fn lifecycle_uri(segment: String) -> Result<String, AuthError> {
         ResourceKey::Uri(uri) => Ok(uri),
         ResourceKey::Id(_) => Err(AuthError::Validation(ValidationError::Field {
             field: "resource",
-            message: "address the registration by its canonical URI; pass the registration id                       as registration_id or If-Match"
+            message: "address the registration by its canonical URI; pass the registration id \
+                      as registration_id or If-Match"
                 .into(),
         })),
     }
@@ -906,7 +907,7 @@ pub(crate) async fn delete_oauth_resource(
             authority.manager(),
             &uri,
             expected,
-            state.oauth_reuse_window,
+            state.oauth_access_ttl,
         )
         .await?;
     Ok(match outcome {

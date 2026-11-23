@@ -323,3 +323,10 @@ diesel::table! {
         reserved_until -> Timestamptz,
     }
 }
+
+diesel::table! {
+    surge.oauth_access_ttl_high_water (singleton) {
+        singleton -> Bool,
+        max_access_ttl_secs -> Int8,
+    }
+}

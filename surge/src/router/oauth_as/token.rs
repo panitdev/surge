@@ -129,6 +129,8 @@ async fn authorization_code_grant(
     client: OauthClient,
     form: TokenForm,
 ) -> Result<Response, OauthError> {
+    // Before the grant is locked and written; see `AccessTokenSpec::issued_at`.
+    let issued_at = chrono::Utc::now().timestamp();
     let code = form
         .code
         .as_deref()
@@ -193,7 +195,15 @@ async fn authorization_code_grant(
         family_id: uuid::Uuid::new_v4(),
     };
 
-    issue_token_response(state, &client, &refresh_grant, grant.nonce.as_deref(), true).await
+    issue_token_response(
+        state,
+        &client,
+        &refresh_grant,
+        grant.nonce.as_deref(),
+        true,
+        issued_at,
+    )
+    .await
 }
 
 async fn refresh_token_grant(
@@ -201,6 +211,8 @@ async fn refresh_token_grant(
     client: OauthClient,
     form: TokenForm,
 ) -> Result<Response, OauthError> {
+    // Before the rotation locks and commits; see `AccessTokenSpec::issued_at`.
+    let issued_at = chrono::Utc::now().timestamp();
     let token = form
         .refresh_token
         .as_deref()
@@ -280,7 +292,15 @@ async fn refresh_token_grant(
         grant.scopes = requested;
     }
 
-    let response = build_token_body(state, &client, &grant, None, false).await?;
+    // The rotation has committed a live successor; if no token can be handed
+    // over, it must not outlive the failure.
+    let response = match build_token_body(state, &client, &grant, None, false, issued_at).await {
+        Ok(response) => response,
+        Err(e) => {
+            end_grant(state, &client, &rotated.token).await;
+            return Err(e);
+        }
+    };
     Ok(Json(with_refresh(response, rotated.token.expose_secret())).into_response())
 }
 
@@ -335,8 +355,9 @@ async fn issue_token_response(
     grant: &RefreshGrant,
     nonce: Option<&str>,
     issue_refresh: bool,
+    issued_at: i64,
 ) -> Result<Response, OauthError> {
-    let body = build_token_body(state, client, grant, nonce, true).await?;
+    let body = build_token_body(state, client, grant, nonce, true, issued_at).await?;
 
     if !issue_refresh {
         return Ok(Json(body).into_response());
@@ -348,9 +369,13 @@ async fn issue_token_response(
         .await
         .map_err(|e| match e {
             // A policy change landed between the check above and the write.
-            AuthError::Forbidden | AuthError::ScopeNotGranted => OauthError::new(
+            AuthError::Forbidden => OauthError::new(
                 OauthErrorCode::InvalidTarget,
                 super::authorize::INELIGIBLE_TARGET,
+            ),
+            AuthError::ScopeNotGranted => OauthError::new(
+                OauthErrorCode::InvalidScope,
+                "the resource no longer offers a scope of this grant",
             ),
             AuthError::InvalidToken => OauthError::new(
                 OauthErrorCode::InvalidGrant,
@@ -368,6 +393,7 @@ async fn build_token_body(
     grant: &RefreshGrant,
     nonce: Option<&str>,
     include_id_token: bool,
+    issued_at: i64,
 ) -> Result<serde_json::Value, OauthError> {
     let key = state
         .engine
@@ -386,6 +412,7 @@ async fn build_token_body(
             scopes: &grant.scopes,
             session_id: &grant.session_id.to_string(),
             ttl: state.config.access_ttl,
+            issued_at,
         },
     )?;
 
