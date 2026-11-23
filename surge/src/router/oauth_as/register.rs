@@ -7,8 +7,10 @@
 //! - rate-limited per IP through the existing limiter;
 //! - `registration_source='dynamic'`, `trust_state='untrusted'`,
 //!   `first_party=false`, none of which this endpoint can set otherwise;
-//! - scope capped by what registered resources declare — a client cannot
-//!   invent a scope, only ask for one that already exists;
+//! - scope capped by what service resources and DCR-opted-in delegated
+//!   resources declare — a client cannot invent a scope, only ask for one
+//!   that is already open to it, and other resources' scope names are never
+//!   revealed. Whether it asked is recorded (`scope_ceiling_explicit`);
 //! - redirect URIs `https`, or `http` on loopback for native clients;
 //! - an optional `resources` list binds the client to registered audiences,
 //!   each checked against the shared eligibility rule;
@@ -26,7 +28,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::Deserialize;
 use serde_json::json;
-use surge_engine::oauth::{NewOauthClient, RegistrationSource};
+use surge_engine::oauth::{offers_scopes_to_dcr, NewOauthClient, RegistrationSource};
 
 use super::error::{OauthError, OauthErrorCode};
 use super::AsState;
@@ -80,15 +82,30 @@ async fn run(
         ));
     }
 
-    // Scopes are defined by resources. A dynamic client may ask for any scope
-    // that already exists somewhere in the registry, and authorize narrows
-    // that further per resource; it can never bring a new scope into being.
+    // The global switch is also enforced here, not only by whether the route
+    // is mounted: the handler must not be reachable by any other wiring.
+    if !state.config.allow_dynamic_registration
+        || !state.engine.eligibility_policy().dynamic_clients_enabled
+    {
+        return Err(OauthError::new(
+            OauthErrorCode::AccessDenied,
+            "dynamic client registration is not enabled",
+        ));
+    }
+
+    // Scopes are defined by resources, but an anonymous caller may only see
+    // and ask for the ones open to it: service resources, and delegated
+    // resources that explicitly opted in to DCR. Any other scope name (a
+    // delegated-only scope, one of an unrecognised source) is not revealed,
+    // by defaults or by an error, and is indistinguishable from one that
+    // does not exist.
     let declared: std::collections::BTreeSet<String> = state
         .engine
         .list_oauth_resources()
         .await
         .map_err(OauthError::from)?
         .into_iter()
+        .filter(offers_scopes_to_dcr)
         .flat_map(|r| r.scopes)
         .collect();
 
@@ -98,6 +115,16 @@ async fn run(
         .map(|s| s.split_whitespace().map(str::to_string).collect())
         .unwrap_or_default();
 
+    // Asking for scopes is asking for a ceiling; the registration records
+    // which it was. Omitting them stores today's defaults as a snapshot only:
+    // the client's effective scopes follow the target resource.
+    // A request that names only identity scopes (`openid`, `offline_access`)
+    // names no resource scope, so it is an omission too; so is an empty or
+    // whitespace-only `scope`.
+    let scope_ceiling_explicit = requested
+        .iter()
+        .any(|s| !matches!(s.as_str(), "openid" | "profile" | "offline_access"));
+    let requested = if scope_ceiling_explicit { requested } else { Vec::new() };
     let scopes: Vec<String> = if requested.is_empty() {
         declared.iter().cloned().collect()
     } else {
@@ -108,7 +135,7 @@ async fn run(
         if capped.is_empty() {
             return Err(OauthError::new(
                 OauthErrorCode::InvalidClientMetadata,
-                "none of the requested scopes are defined by any registered resource",
+                "none of the requested scopes are available to dynamically registered clients",
             ));
         }
         capped
@@ -142,7 +169,7 @@ async fn run(
 
     let (client, secret) = state
         .engine
-        .create_oauth_client(spec)
+        .create_oauth_client_with_ceiling(spec, scope_ceiling_explicit)
         .await
         .map_err(|e| match e {
             surge_engine::AuthError::Validation(v) => {

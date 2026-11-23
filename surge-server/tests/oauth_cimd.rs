@@ -174,7 +174,15 @@ async fn an_allowed_client_gets_a_consent_flow_and_an_untrusted_shared_row() {
     let h = harness_cimd(&docs).await;
     let session = h.sign_in().await;
     let id = cimd_url(&h, "ok");
-    docs.publish_default(&id);
+    docs.publish(
+        &id,
+        json!({
+            "client_id": id,
+            "client_name": "Trusted Account Administrator",
+            "redirect_uris": [CLIENT_REDIRECT],
+            "token_endpoint_auth_method": "none",
+        }),
+    );
     allow(&h, &[&id]).await;
     assert!(row(&id).await.is_none());
 
@@ -183,7 +191,7 @@ async fn an_allowed_client_gets_a_consent_flow_and_an_untrusted_shared_row() {
 
     let r = row(&id).await.expect("row is created with the consent flow");
     assert_eq!(r.source, "cimd");
-    assert_eq!(r.name, "CIMD app");
+    assert_eq!(r.name, "Trusted Account Administrator");
     assert!(!r.first_party);
     assert_eq!(r.trust, "untrusted");
     assert_eq!(r.auth_method, "none");
@@ -194,6 +202,8 @@ async fn an_allowed_client_gets_a_consent_flow_and_an_untrusted_shared_row() {
     assert_eq!(view["client"]["client_id"], id);
     assert_eq!(view["client"]["dynamically_registered"], true);
     assert_eq!(view["client"]["first_party"], false);
+    assert_eq!(view["client"]["client_name"], "Trusted Account Administrator");
+    assert_eq!(view["client"]["publisher_host"], "ok.cimd.test");
 }
 
 #[tokio::test]

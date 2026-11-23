@@ -115,6 +115,8 @@ Code redemption and refresh never fetch. They use the stored row and the resourc
 
 **Registration errors.** Dynamic registration answers an unknown resource and a non-opted-in one with the same `invalid_client_metadata` message. Operator and service registration paths give the detail.
 
+**Scope ceilings.** What a client may be granted at a resource is the resource's *current* scopes, narrowed by the client's own list unless that list is only a snapshot. A client registered with an explicit scope list (every admin and platform client, a dynamic client that sent `scope`, and every client that predates the `scope_ceiling_explicit` column, whose provenance is unknown) is held to `client scopes ∩ resource scopes`: adding `write` to a resource never expands a client that registered for `read`. A dynamic client that registered without `scope` has no ceiling of its own; its stored list is the defaults offered that day, and it may use whatever the target currently permits. The same ceiling is re-judged under the registration's lock at consent completion, code redemption and refresh (against the refresh token's own scopes), and a refresh may only narrow the grant, so it cannot widen.
+
 Scopes are then narrowed per resource, so two resources that both define `mcp:read` stay separate: consent, codes, refresh tokens and the access token's `aud` are all bound to one registration.
 
 Clients receive a list when they are registered: `--resource` on `surge-server oauth client create`, `resources` in the `POST /v1/oauth/clients` body, and `resources` in a `POST /oauth2/register` body. Each URI must resolve to a current registration the client is eligible for, or registration fails. Omit the field for no list. A Platform service holding `oauth_client_register` may bind a client only to delegated registrations it created itself; any other resource, or an empty list, is refused with HTTP 403 or 422 ([Client registration](../api/service/oauth-resources.md#register-a-client)).
@@ -203,12 +205,16 @@ Surge's guarantee is that a minted session stays valid until it expires or is re
 
 - rate-limited per IP through the existing limiter;
 - registered clients are always `registration_source=dynamic`, `trust_state=untrusted`, and `first_party=false` — the database refuses any other combination, so no code path can promote one;
-- scope is capped by what registered resources declare: a client can ask for an existing scope, never invent one;
+- scope is capped by what service resources and DCR-opted-in delegated resources declare: a client can ask for a scope that is open to it, never invent one. Scope names defined only by other delegated resources are neither returned as defaults nor distinguishable from nonexistent ones in errors. Whether the registration asked for scopes is recorded: a registration that did is an explicit ceiling, one that did not follows the target resource (see [Scope ceilings](#audience-and-scope-policy));
 - an optional `resources` list binds the client to specific audiences and restricts it to them; each must be a registered resource the client is eligible for (see [Audience and scope policy](#audience-and-scope-policy));
 - redirect URIs must be `https`, or `http` on a loopback host (`127.0.0.1`, `::1`, `localhost`, any port) for native clients. No wildcards, no plain `http` on a public host;
 - registrations that never complete an authorization are swept after `SURGE_OAUTH_DCR_TTL_DAYS`.
 
 There is no registration access token and no RFC 7592 configuration endpoint: a dynamic client that wants different metadata registers again.
+
+Disabling DCR on a delegated resource (`dcr_enabled: false`) ends every grant, consent, flow and code its dynamic clients hold there, through the same lifecycle change as removing a CIMD client. **The global switch is a kill switch.** `SURGE_OAUTH_ALLOW_DYNAMIC_REGISTRATION` controls the endpoint and the `registration_endpoint` in metadata, and it is also part of the eligibility rule: with it off, every dynamically registered client is ineligible for every resource, service or delegated, at authorize, consent, code redemption and refresh. Nothing is deleted at restart; each affected grant ends at its next use. A refresh fails with `invalid_target` and revokes every refresh family the client holds at that registration, exactly as for any other ineligible client, and the client's consents, pending flows and codes are refused at their next step. Turning the switch back on restores no ended grant. A resource's own `dcr_enabled` opt-in only matters while the global switch is on. The setting is read from the running server's configuration, so changing it takes a restart.
+
+A registration that names no resource scope (empty or whitespace `scope`, or only `openid`, `profile` or `offline_access`) counts as omitting scopes.
 
 **Never enable dynamic registration without a working consent screen.** DCR without one means anyone can register a client and obtain tokens silently.
 
@@ -252,7 +258,7 @@ Note the metadata path. A resource URI with a path is described at `https://host
 | `SURGE_OAUTH_ACCESS_TTL_SECS` | `600` | Access-token lifetime = the offline revocation window. |
 | `SURGE_OAUTH_REFRESH_TTL_DAYS` | `30` | Refresh lifetime, renewed on each rotation. |
 | `SURGE_OAUTH_KEY_ROTATION_DAYS` | `90` | Signing-key rotation cadence. |
-| `SURGE_OAUTH_ALLOW_DYNAMIC_REGISTRATION` | `0` | Opens `POST /oauth2/register`. |
+| `SURGE_OAUTH_ALLOW_DYNAMIC_REGISTRATION` | `0` | Opens `POST /oauth2/register`. Also a kill switch: when off, existing dynamic clients are ineligible everywhere. |
 | `SURGE_OAUTH_REQUIRE_RESOURCE` | `1` | Reject authorize without a resolvable `resource`. |
 | `SURGE_OAUTH_DEFAULT_RESOURCE` | (unset) | Audience assumed when `REQUIRE_RESOURCE=0` and none was sent. |
 | `SURGE_OAUTH_DCR_TTL_DAYS` | `30` | Sweep dynamic clients that never authorized, and idle unreferenced CIMD clients. |

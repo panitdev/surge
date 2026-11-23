@@ -20,15 +20,33 @@
 //!    unless a dynamically registered client meets a resource that has opted
 //!    in to DCR.
 //!
+//! 0. The global DCR switch is a kill switch: with it off, a dynamically
+//!    registered client is ineligible for every resource (after rule 1, which
+//!    governs CIMD clients).
+//!
 //! One further condition applies to dynamically registered clients, because
 //! their registration is unauthenticated: an explicit binding to a delegated
 //! resource is honoured only if that resource has opted in to DCR. Otherwise
 //! anyone could bind themselves to any developer's resource.
 
+/// Deployment-wide inputs to the eligibility rule, kept apart from the rule
+/// so it stays a pure function of its arguments.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EligibilityPolicy {
+    /// The global DCR switch (`SURGE_OAUTH_ALLOW_DYNAMIC_REGISTRATION`). It is
+    /// a kill switch: when `false`, a dynamically registered client may use
+    /// nothing, so its grants end at their next refresh.
+    pub dynamic_clients_enabled: bool,
+}
+
 use super::{OauthClient, OauthResource, RegistrationSource, ResourceSource};
 
 /// True when `client` may be issued tokens for `resource`.
-pub fn client_may_use_resource(client: &OauthClient, resource: &OauthResource) -> bool {
+pub fn client_may_use_resource(
+    client: &OauthClient,
+    resource: &OauthResource,
+    policy: EligibilityPolicy,
+) -> bool {
     // A source this build does not recognise grants nothing to anyone.
     if resource.registration_source == ResourceSource::Unknown
         || client.registration_source == RegistrationSource::Unknown
@@ -50,6 +68,12 @@ pub fn client_may_use_resource(client: &OauthClient, resource: &OauthResource) -
         return resource.allowed_cimd_client_ids.contains(&client.client_id);
     }
 
+    // The global kill switch. After the CIMD rule: a CIMD client is not a
+    // dynamically registered one, whatever source it is stored with.
+    if dynamic && !policy.dynamic_clients_enabled {
+        return false;
+    }
+
     if let Some(approved) = &client.audiences {
         if !approved.contains(&resource.resource_uri) {
             return false;
@@ -61,6 +85,41 @@ pub fn client_may_use_resource(client: &OauthClient, resource: &OauthResource) -
         return true;
     }
     dynamic && resource.dcr_enabled
+}
+
+/// The scopes `client` may be granted at `resource`: the resource's *current*
+/// scopes, narrowed by the client's own list unless that list is only a
+/// snapshot of defaults.
+///
+/// - an explicit ceiling (`scope_ceiling_explicit`, which is also what every
+///   scope list of unknown provenance is treated as) yields
+///   `client.scopes ∩ resource.scopes`, so a scope added to a resource later
+///   never widens a client that registered for fewer;
+/// - a client that registered without naming scopes yields every scope the
+///   resource currently offers.
+///
+/// This decides scope only; eligibility is [`client_may_use_resource`]. The
+/// order is the resource's.
+pub fn permitted_scopes(client: &OauthClient, resource: &OauthResource) -> Vec<String> {
+    resource
+        .scopes
+        .iter()
+        .filter(|s| !client.scope_ceiling_explicit || client.scopes.iter().any(|c| c == *s))
+        .cloned()
+        .collect()
+}
+
+/// True when `resource`'s scopes may be offered to anonymous dynamic client
+/// registration as defaults or as a cap: service resources always, delegated
+/// ones only after explicitly opting in, and a source this build does not
+/// recognise never. Scope names of any other resource must not be revealed
+/// to an unauthenticated caller.
+pub fn offers_scopes_to_dcr(resource: &OauthResource) -> bool {
+    match resource.registration_source {
+        ResourceSource::Service => true,
+        ResourceSource::Delegated => resource.dcr_enabled,
+        ResourceSource::Unknown => false,
+    }
 }
 
 /// A CIMD client's identifier is the HTTPS URL of its metadata document;
@@ -100,6 +159,7 @@ mod tests {
             confidential: false,
             audiences: audiences.map(|a| a.into_iter().map(String::from).collect()),
             registrar_service_id: None,
+            scope_ceiling_explicit: true,
             created_at: Utc::now(),
         }
     }
@@ -120,6 +180,37 @@ mod tests {
     }
 
     const URI: &str = "https://rs.example/mcp";
+
+    const ON: EligibilityPolicy = EligibilityPolicy {
+        dynamic_clients_enabled: true,
+    };
+
+    /// The rule with the global switch on, which every test but the kill
+    /// switch's own assumes.
+    fn client_may_use_resource(client: &OauthClient, resource: &OauthResource) -> bool {
+        super::client_may_use_resource(client, resource, ON)
+    }
+
+    #[test]
+    fn the_global_switch_is_a_kill_switch_for_dynamic_clients_only() {
+        let off = EligibilityPolicy {
+            dynamic_clients_enabled: false,
+        };
+        let service = resource(ResourceSource::Service, false, vec![]);
+        let open = resource(ResourceSource::Delegated, true, vec![]);
+        for audiences in [None, Some(vec![URI])] {
+            let dynamic = client(RegistrationSource::Dynamic, audiences.clone());
+            assert!(super::client_may_use_resource(&dynamic, &service, ON) || audiences.is_some());
+            assert!(!super::client_may_use_resource(&dynamic, &service, off));
+            assert!(!super::client_may_use_resource(&dynamic, &open, off));
+        }
+        // Other sources, and CIMD clients, are untouched.
+        let admin = client(RegistrationSource::Admin, None);
+        assert!(super::client_may_use_resource(&admin, &service, off));
+        let cimd = client_id("https://app.example/c.json", RegistrationSource::Dynamic, None);
+        let listed = resource(ResourceSource::Service, false, vec!["https://app.example/c.json"]);
+        assert!(super::client_may_use_resource(&cimd, &listed, off));
+    }
 
     #[test]
     fn an_unrecognised_source_grants_nothing() {
@@ -204,6 +295,37 @@ mod tests {
         // The opt-in changes nothing for service resources.
         let service = resource(ResourceSource::Service, false, vec![]);
         assert!(client_may_use_resource(&unbound, &service));
+    }
+
+    #[test]
+    fn an_explicit_ceiling_is_intersected_with_current_resource_scopes() {
+        let mut r = resource(ResourceSource::Delegated, true, vec![]);
+        r.scopes = vec!["read".into(), "write".into()];
+        let mut c = client(RegistrationSource::Dynamic, None);
+        c.scopes = vec!["read".into(), "gone".into()];
+        // `write` was added to the resource after registration: no widening.
+        assert_eq!(permitted_scopes(&c, &r), vec!["read".to_string()]);
+    }
+
+    #[test]
+    fn an_omitted_ceiling_follows_the_resource() {
+        let mut r = resource(ResourceSource::Delegated, true, vec![]);
+        r.scopes = vec!["read".into(), "write".into()];
+        let mut c = client(RegistrationSource::Dynamic, None);
+        c.scopes = vec!["read".into()];
+        c.scope_ceiling_explicit = false;
+        assert_eq!(
+            permitted_scopes(&c, &r),
+            vec!["read".to_string(), "write".to_string()]
+        );
+    }
+
+    #[test]
+    fn only_service_and_opted_in_resources_offer_scopes_to_dcr() {
+        assert!(offers_scopes_to_dcr(&resource(ResourceSource::Service, false, vec![])));
+        assert!(offers_scopes_to_dcr(&resource(ResourceSource::Delegated, true, vec![])));
+        assert!(!offers_scopes_to_dcr(&resource(ResourceSource::Delegated, false, vec![])));
+        assert!(!offers_scopes_to_dcr(&resource(ResourceSource::Unknown, true, vec![])));
     }
 
     #[test]

@@ -30,7 +30,7 @@ pub use cimd::{
 pub use client::{validate_redirect_uri, MAX_PLATFORM_RESOURCES};
 pub use code::{AuthorizationSession, verify_pkce, AUTHORIZATION_CODE_TTL_SECS};
 pub use consent::ConsentFlowRequest;
-pub use eligibility::client_may_use_resource;
+pub use eligibility::{client_may_use_resource, EligibilityPolicy, offers_scopes_to_dcr, permitted_scopes};
 pub use key::ES256;
 pub use lifecycle::{
     reuse_window, DeleteOutcome, ResourceManager, ResourcePatch, ACCESS_TOKEN_CLOCK_SKEW,
@@ -129,6 +129,13 @@ pub struct OauthClient {
     /// The service that registered a [`RegistrationSource::Platform`]
     /// client. `None` for every other source.
     pub registrar_service_id: Option<Uuid>,
+    /// True when `scopes` is a ceiling the registration asked for, or one of
+    /// unknown provenance (every row that predates the column). Effective
+    /// scopes at a resource are then `scopes ∩ resource.scopes`. False for a
+    /// dynamic client that registered without naming scopes: `scopes` is a
+    /// snapshot, and the ceiling is whatever the target currently permits.
+    /// See [`permitted_scopes`].
+    pub scope_ceiling_explicit: bool,
     pub created_at: DateTime<Utc>,
 }
 

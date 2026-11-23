@@ -40,7 +40,9 @@ async fn the_consent_screen_is_told_the_client_registered_itself() {
     // that cannot tell a self-declared name from a verified one trains people
     // to approve anything.
     assert_eq!(body["client"]["dynamically_registered"], false);
+    assert!(body["client"]["publisher_host"].is_null());
     assert_eq!(body["resource"]["resource_uri"], h.resource_uri);
+    assert_eq!(body["resource"]["registration_source"], "service");
     assert_eq!(body["scopes"][0]["scope"], "mcp:read");
     assert_eq!(body["scopes"][0]["description"], "Read your data");
     assert!(body["csrf_token"].as_str().is_some());

@@ -31,6 +31,28 @@ impl Engine {
         &self,
         spec: NewOauthClient,
     ) -> Result<(OauthClient, Option<ClientSecret>), AuthError> {
+        self.create_oauth_client_with_ceiling(spec, true).await
+    }
+
+    /// [`Engine::create_oauth_client`] for a registration that may not have
+    /// named scopes. `scope_ceiling_explicit = false` records that
+    /// `spec.scopes` is only a snapshot of the defaults offered at
+    /// registration, so the client's effective ceiling at a resource is
+    /// whatever that resource currently permits. Everything else, including
+    /// every legacy and admin client, is an explicit ceiling.
+    pub async fn create_oauth_client_with_ceiling(
+        &self,
+        spec: NewOauthClient,
+        scope_ceiling_explicit: bool,
+    ) -> Result<(OauthClient, Option<ClientSecret>), AuthError> {
+        // Only a client that registered itself can have omitted its scopes;
+        // the database holds the same line.
+        if !scope_ceiling_explicit && spec.registration_source != RegistrationSource::Dynamic {
+            return Err(field(
+                "scope",
+                "only a dynamically registered client can omit its scope ceiling",
+            ));
+        }
         if spec.registration_source == RegistrationSource::Platform {
             return Err(field(
                 "registration_source",
@@ -43,7 +65,7 @@ impl Engine {
                 "a CIMD client is created from its metadata document at consent",
             ));
         }
-        self.insert_client(spec, None).await
+        self.insert_client(spec, None, scope_ceiling_explicit).await
     }
 
     /// Registers a third-party client on behalf of a Platform service,
@@ -76,6 +98,7 @@ impl Engine {
                 registrar_service_id,
                 registration_ids,
             }),
+            true,
         )
         .await
     }
@@ -84,6 +107,7 @@ impl Engine {
         &self,
         spec: NewOauthClient,
         platform: Option<PlatformBinding>,
+        scope_ceiling_explicit: bool,
     ) -> Result<(OauthClient, Option<ClientSecret>), AuthError> {
         validate_client(&spec)?;
         let audiences = spec
@@ -116,6 +140,7 @@ impl Engine {
             created_at,
             audience_restricted: audiences.is_some() || platform.is_some(),
             registrar_service_id: platform.as_ref().map(|p| p.registrar_service_id),
+            scope_ceiling_explicit,
         };
 
         let token_endpoint_auth_method = row.token_endpoint_auth_method.to_string();
@@ -135,9 +160,11 @@ impl Engine {
             confidential: spec.confidential,
             audiences,
             registrar_service_id: None,
+            scope_ceiling_explicit,
             created_at,
         };
 
+        let policy = self.eligibility_policy();
         let mut conn = self.conn().await?;
         let row_ref = &row;
         let client_ref = &client;
@@ -161,7 +188,7 @@ impl Engine {
                         // directly, not through the DCR-oriented admin check.
                         approve_registrations(conn, row_ref.client_id, bound).await?;
                     } else if let Some(uris) = &client_ref.audiences {
-                        approve_audiences(conn, client_ref, uris).await?;
+                        approve_audiences(conn, client_ref, uris, policy).await?;
                     }
                     Ok(bound)
                 }
@@ -397,6 +424,7 @@ async fn approve_audiences(
     conn: &mut diesel_async::AsyncPgConnection,
     client: &OauthClient,
     uris: &[String],
+    policy: super::EligibilityPolicy,
 ) -> Result<(), AuthError> {
     let resources: Vec<OauthResourceRow> = oauth_resource::table
         .filter(oauth_resource::resource_uri.eq_any(uris))
@@ -423,7 +451,7 @@ async fn approve_audiences(
     let resources: Vec<_> = resources.into_iter().map(row_to_resource).collect();
     if let Some(denied) = resources
         .iter()
-        .find(|resource| !super::client_may_use_resource(client, resource))
+        .find(|resource| !super::client_may_use_resource(client, resource, policy))
     {
         return Err(field(
             "resources",
@@ -510,6 +538,7 @@ fn row_to_client(row: OauthClientRow, audiences: Option<Vec<String>>) -> OauthCl
         confidential: row.client_secret_hash.is_some(),
         audiences,
         registrar_service_id: row.registrar_service_id,
+        scope_ceiling_explicit: row.scope_ceiling_explicit,
         created_at: row.created_at,
     }
 }

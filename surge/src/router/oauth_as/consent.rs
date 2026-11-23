@@ -66,9 +66,11 @@ pub(crate) async fn get_consent_flow(
             "dynamically_registered":
                 client.registration_source.metadata_is_untrusted(),
             "first_party": client.first_party,
+            "publisher_host": client.cimd_publisher_host(),
         },
         "resource": {
             "resource_uri": resource.resource_uri,
+            "registration_source": resource.registration_source,
         },
         "scopes": scopes,
         "expires_at": flow.expires_at,
@@ -123,7 +125,7 @@ pub(crate) async fn decide_consent_flow(
         .get_oauth_registration(flow.registration_id)
         .await
     {
-        Ok(registration) => client_may_use_resource(&client, &registration),
+        Ok(registration) => client_may_use_resource(&client, &registration, state.engine.eligibility_policy()),
         // Deleted since the flow began: the same answer as ineligible.
         Err(AuthError::NotFound) => false,
         Err(e) => return Err(e.into()),

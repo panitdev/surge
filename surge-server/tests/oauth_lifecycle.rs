@@ -241,6 +241,16 @@ async fn live_tokens(reg: Uuid) -> i64 {
 
 // -- routing ---------------------------------------------------------------
 
+/// A harness with the global DCR switch on, which dynamically registered
+/// clients need to be eligible for anything.
+async fn dcr_harness() -> Harness {
+    harness_with(|mut settings| {
+        settings.allow_dynamic_registration = true;
+        settings
+    })
+    .await
+}
+
 #[tokio::test]
 #[ignore = "requires a live Postgres via DATABASE_URL"]
 async fn encoded_paths_and_queries_route_to_the_canonical_uri() {
@@ -624,12 +634,22 @@ async fn removing_a_cimd_client_ends_its_grants_and_restoring_it_needs_fresh_con
 #[tokio::test]
 #[ignore = "requires a live Postgres via DATABASE_URL"]
 async fn disabling_dcr_ends_dynamic_client_grants_flows_and_codes() {
-    let h = harness().await;
+    let h = dcr_harness().await;
     let session = h.sign_in().await;
     let (_, token) = registrar(&h, "dcr").await;
     let rs = uri(&h, "dcr");
     let reg = register(&h, &token, &rs, &["mcp:read"]).await;
-    let resp = patch(&h, &token, &rs, json!({ "dcr_enabled": true })).await;
+    let description = "<b>Developer-authored description</b>";
+    let resp = patch(
+        &h,
+        &token,
+        &rs,
+        json!({
+            "dcr_enabled": true,
+            "scope_descriptions": { "mcp:read": description },
+        }),
+    )
+    .await;
     assert_eq!(resp.status(), StatusCode::OK);
     assert_eq!(body_json(resp).await["dcr_enabled"], true);
 
@@ -653,6 +673,12 @@ async fn disabling_dcr_ends_dynamic_client_grants_flows_and_codes() {
             .await;
         query_param(&location(&resp), "consent_flow").expect("consent flow")
     };
+
+    let view = h.get(&format!("/v1/oauth/consent/{pending}"), Some(&session)).await;
+    assert_eq!(view.status(), StatusCode::OK);
+    let view = body_json(view).await;
+    assert_eq!(view["resource"]["registration_source"], "delegated");
+    assert_eq!(view["scopes"][0]["description"], description);
 
     let resp = patch(&h, &token, &rs, json!({ "dcr_enabled": false })).await;
     assert_eq!(resp.status(), StatusCode::OK);

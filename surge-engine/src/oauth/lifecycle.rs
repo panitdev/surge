@@ -173,6 +173,7 @@ pub(crate) async fn admit(
     client_id: &str,
     registration_id: Uuid,
     scopes: &[String],
+    policy: super::EligibilityPolicy,
 ) -> Result<OauthResource, AuthError> {
     let resource = lock_registration_shared(conn, registration_id).await?;
     let client_row: Option<OauthClientRow> = oauth_client::table
@@ -189,13 +190,22 @@ pub(crate) async fn admit(
     let client = super::client::rows_to_clients(conn, vec![client_row])
         .await?
         .remove(0);
-    if !client_may_use_resource(&client, &resource) {
+    if !client_may_use_resource(&client, &resource, policy) {
         return Err(AuthError::Forbidden);
     }
     let offered = |s: &String| {
         PSEUDO_SCOPES.contains(&s.as_str()) || resource.scopes.iter().any(|r| r == s)
     };
     if !scopes.iter().all(offered) {
+        return Err(AuthError::ScopeNotGranted);
+    }
+    // The client's own ceiling, judged against the resource as it is now, so
+    // no stage (refresh included) can carry a grant past it.
+    let permitted = super::permitted_scopes(&client, &resource);
+    if !scopes
+        .iter()
+        .all(|s| PSEUDO_SCOPES.contains(&s.as_str()) || permitted.contains(s))
+    {
         return Err(AuthError::ScopeNotGranted);
     }
     Ok(resource)
@@ -284,23 +294,8 @@ fn validate_cimd_ids(ids: Vec<String>) -> Result<Vec<String>, AuthError> {
     let mut seen = BTreeSet::new();
     let mut out = Vec::with_capacity(ids.len());
     for id in ids {
-        let bad = |why: &str| field("allowed_cimd_client_ids", format!("`{id}`: {why}"));
-        if id.len() > MAX_ENTRY_LEN {
-            return Err(bad("too long"));
-        }
-        let url = url::Url::parse(&id).map_err(|_| bad("not a URL"))?;
-        if url.scheme() != "https" || !id.starts_with("https://") {
-            return Err(bad("must be an https URL"));
-        }
-        if url.path().len() <= 1 {
-            return Err(bad("must have a path"));
-        }
-        if !url.username().is_empty() || url.password().is_some() {
-            return Err(bad("must not carry userinfo"));
-        }
-        if url.fragment().is_some() {
-            return Err(bad("must not carry a fragment"));
-        }
+        super::validate_cimd_client_id(&id)
+            .map_err(|why| field("allowed_cimd_client_ids", format!("{id:?}: {why}")))?;
         if seen.insert(id.clone()) {
             out.push(id);
         }
@@ -370,6 +365,7 @@ impl Engine {
             .map(validate_cimd_ids)
             .transpose()?;
         let dcr = patch.dcr_enabled;
+        let policy = self.eligibility_policy();
         let descriptions = patch.scope_descriptions;
 
         let mut conn = self.conn().await?;
@@ -455,7 +451,7 @@ impl Engine {
                 }
                 if !removed_cimd.is_empty() || (old.dcr_enabled && !new_dcr) {
                     ended.add(
-                        end_ineligible_grants(conn, &updated, &removed_cimd).await?,
+                        end_ineligible_grants(conn, &updated, &removed_cimd, policy).await?,
                     );
                 }
 
@@ -773,6 +769,7 @@ async fn end_ineligible_grants(
     conn: &mut AsyncPgConnection,
     resource: &OauthResource,
     removed_cimd: &[String],
+    policy: super::EligibilityPolicy,
 ) -> Result<Invalidated, AuthError> {
     let id = resource.registration_id;
 
@@ -852,7 +849,7 @@ async fn end_ineligible_grants(
         for client in super::client::rows_to_clients(conn, rows).await? {
             // A revoked client's refresh tokens were already ended; ending
             // the rest of its state here is harmless and tidy.
-            if !client_may_use_resource(&client, resource) {
+            if !client_may_use_resource(&client, resource, policy) {
                 to_end.push(client.client_id);
             }
         }

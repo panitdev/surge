@@ -119,8 +119,8 @@ fn seed_legacy(conn: &mut PgConnection) {
             ('{OWNER}', 'owner', sha256('owner'::bytea), now());
         INSERT INTO surge.identity (id, username, display_name, created_at, updated_at)
             VALUES ('{IDENTITY}', 'migration-user', 'Migration User', now(), now());
-        INSERT INTO surge.oauth_client (client_id, client_name, redirect_uris)
-            VALUES ('{CLIENT}', 'Legacy', ARRAY['https://client.migration.test/cb']);
+        INSERT INTO surge.oauth_client (client_id, client_name, redirect_uris, scopes)
+            VALUES ('{CLIENT}', 'Legacy', ARRAY['https://client.migration.test/cb'], ARRAY['mcp:read']);
 
         -- Registered by CREATOR for OWNER two days ago.
         INSERT INTO surge.oauth_resource (resource_uri, service_id, scopes, created_at)
@@ -331,6 +331,8 @@ async fn exercise(url: String) {
     let resource = engine.get_oauth_resource(KEPT).await.unwrap();
     assert_eq!(resource.registration_source, ResourceSource::Service);
     assert!(engine.get_oauth_client(CLIENT).await.unwrap().audiences.is_none());
+    // A scope list of unknown provenance is an explicit ceiling.
+    assert!(engine.get_oauth_client(CLIENT).await.unwrap().scope_ceiling_explicit);
     assert!(engine.oauth_grant_is_live(CLIENT, identity, kept.id).await.unwrap());
     assert!(engine.oauth_grant_is_live(CLIENT, identity, reused.id).await.unwrap());
 
@@ -445,6 +447,7 @@ async fn exercise(url: String) {
     drop(engine);
 
     // And the migration reverses cleanly.
+    conn.revert_last_migration(MIGRATIONS).unwrap(); // 17, scope ceiling
     conn.revert_last_migration(MIGRATIONS).unwrap(); // 16, CIMD clients
     conn.revert_last_migration(MIGRATIONS).unwrap(); // 15, access-token high water
     conn.revert_last_migration(MIGRATIONS).unwrap(); // 14, resource lifecycle

@@ -54,6 +54,7 @@ impl Engine {
         grant: &RefreshGrant,
         ttl: std::time::Duration,
     ) -> Result<RefreshToken, AuthError> {
+        let policy = self.eligibility_policy();
         let mut conn = self.conn().await?;
         conn.transaction::<_, AuthError, _>(|conn| {
             async move {
@@ -62,6 +63,7 @@ impl Engine {
                     &grant.client_id,
                     grant.registration_id,
                     &grant.scopes,
+                    policy,
                 )
                 .await
                 // The registration went away under the grant; so did it.
@@ -110,6 +112,7 @@ impl Engine {
         let client_id = client_id.to_string();
         let owner = client_id.clone();
         let requested_scopes = requested_scopes.map(<[String]>::to_vec);
+        let policy = self.eligibility_policy();
         let mut conn = self.conn().await?;
 
         // Reuse is reported as `Ok(Err(family))` rather than as an error,
@@ -121,9 +124,9 @@ impl Engine {
                 async move {
                     // The registration is locked before the token row, never
                     // after: see `lifecycle` for why the order matters.
-                    let registration_id: Uuid = oauth_refresh_token::table
+                    let (registration_id, token_scopes): (Uuid, Vec<String>) = oauth_refresh_token::table
                         .find(&token_hash)
-                        .select(oauth_refresh_token::registration_id)
+                        .select((oauth_refresh_token::registration_id, oauth_refresh_token::scopes))
                         .first(conn)
                         .await
                         .map_err(|e| match e {
@@ -133,7 +136,7 @@ impl Engine {
                     // A registration deleted since the read took its tokens
                     // with it.
                     let admitted =
-                        match super::lifecycle::admit(conn, &client_id, registration_id, &[]).await {
+                        match super::lifecycle::admit(conn, &client_id, registration_id, &token_scopes, policy).await {
                             Ok(_) => true,
                             Err(AuthError::Forbidden) => false,
                             Err(AuthError::NotFound) => return Err(AuthError::InvalidToken),

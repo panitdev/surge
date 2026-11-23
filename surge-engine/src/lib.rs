@@ -51,9 +51,30 @@ pub struct Engine {
     database_url: String,
     pepper: PepperConfig,
     session_ttl: Duration,
+    /// The global dynamic-client-registration switch, as the authorization
+    /// server mounted on this engine was configured. See
+    /// [`oauth::EligibilityPolicy`]. Off until the AS says otherwise.
+    dynamic_clients_enabled: std::sync::atomic::AtomicBool,
 }
 
 impl Engine {
+    /// Sets the global DCR switch the eligibility rule consults. It is a
+    /// kill switch: while off, dynamically registered clients are ineligible
+    /// everywhere, whatever any resource's own opt-in says.
+    pub fn set_dynamic_clients_enabled(&self, enabled: bool) {
+        self.dynamic_clients_enabled
+            .store(enabled, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The policy inputs that are deployment-wide rather than per resource.
+    pub fn eligibility_policy(&self) -> oauth::EligibilityPolicy {
+        oauth::EligibilityPolicy {
+            dynamic_clients_enabled: self
+                .dynamic_clients_enabled
+                .load(std::sync::atomic::Ordering::Relaxed),
+        }
+    }
+
     pub async fn new(config: EngineConfig) -> Result<Self, anyhow::Error> {
         let db_url = config.database_url.expose_secret().to_string();
         let manager = AsyncDieselConnectionManager::<AsyncPgConnection>::new(&db_url);
@@ -64,6 +85,7 @@ impl Engine {
             database_url: db_url,
             pepper: config.pepper,
             session_ttl: config.session_ttl,
+            dynamic_clients_enabled: std::sync::atomic::AtomicBool::new(false),
         })
     }
 

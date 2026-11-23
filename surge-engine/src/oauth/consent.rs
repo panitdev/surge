@@ -225,6 +225,7 @@ impl Engine {
         let created_at = now();
         let expires_at = created_at + Duration::minutes(CONSENT_FLOW_TTL_MINUTES);
 
+        let policy = self.eligibility_policy();
         let mut conn = self.conn().await?;
         let new_flow = &flow;
         let (flow_id, csrf_str) = (id.as_str(), csrf.as_str());
@@ -247,6 +248,7 @@ impl Engine {
                     &new_flow.client_id,
                     new_flow.registration_id,
                     &new_flow.scopes,
+                    policy,
                 )
                 .await?;
                 diesel::insert_into(oauth_consent_flow::table)

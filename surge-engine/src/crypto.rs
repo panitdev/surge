@@ -129,6 +129,7 @@ mod tests {
                 peppers,
             },
             session_ttl: std::time::Duration::from_secs(3600),
+            dynamic_clients_enabled: std::sync::atomic::AtomicBool::new(false),
         }
     }
 

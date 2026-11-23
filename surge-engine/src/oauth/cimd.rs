@@ -17,7 +17,7 @@
 
 use chrono::Utc;
 use diesel::prelude::*;
-use diesel::sql_types::{Array, BigInt, Nullable, Text, Timestamptz};
+use diesel::sql_types::{Array, BigInt, Bool, Nullable, Text, Timestamptz};
 use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
 
@@ -54,13 +54,26 @@ impl CimdMetadata {
     /// The host that publishes the document: who vouches for the metadata,
     /// not proof of who is running the client.
     pub fn publisher_host(&self) -> Option<String> {
-        url::Url::parse(&self.client_id)
-            .ok()
-            .and_then(|u| u.host_str().map(str::to_string))
+        publisher_host(&self.client_id)
     }
 }
 
+fn publisher_host(client_id: &str) -> Option<String> {
+    url::Url::parse(client_id)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_string))
+}
+
 impl OauthClient {
+    /// The host of the validated metadata document stored for a CIMD client.
+    pub fn cimd_publisher_host(&self) -> Option<String> {
+        if self.registration_source == RegistrationSource::Cimd {
+            publisher_host(&self.client_id)
+        } else {
+            None
+        }
+    }
+
     /// The in-memory client an authorization request is evaluated as before
     /// any row exists. Untrusted, public, never first-party, no audience
     /// list. Without a declared `scope`, the whole resource is in range.
@@ -76,6 +89,7 @@ impl OauthClient {
                 .scopes
                 .clone()
                 .unwrap_or_else(|| resource.scopes.clone()),
+            scope_ceiling_explicit: metadata.scopes.is_some(),
             token_endpoint_auth_method: "none".into(),
             registration_source: RegistrationSource::Cimd,
             first_party: false,
@@ -260,12 +274,13 @@ pub(super) async fn upsert_cimd_client(
         "INSERT INTO surge.oauth_client \
             (client_id, client_secret_hash, client_name, client_uri, logo_uri, redirect_uris, \
              grant_types, scopes, token_endpoint_auth_method, registration_source, \
-             first_party, trust_state, created_at, audience_restricted) \
-         VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, 'none', 'cimd', FALSE, 'untrusted', $8, FALSE) \
+             first_party, trust_state, created_at, audience_restricted, scope_ceiling_explicit, last_used_at) \
+         VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, 'none', 'cimd', FALSE, 'untrusted', $8, FALSE, $9, $8) \
          ON CONFLICT (client_id) DO UPDATE SET \
             client_name = EXCLUDED.client_name, client_uri = EXCLUDED.client_uri, \
             logo_uri = EXCLUDED.logo_uri, redirect_uris = EXCLUDED.redirect_uris, \
-            grant_types = EXCLUDED.grant_types, scopes = EXCLUDED.scopes \
+            grant_types = EXCLUDED.grant_types, scopes = EXCLUDED.scopes, \
+            scope_ceiling_explicit = EXCLUDED.scope_ceiling_explicit, last_used_at = EXCLUDED.last_used_at \
           WHERE surge.oauth_client.revoked_at IS NULL",
     )
     .bind::<Text, _>(&metadata.client_id)
@@ -276,6 +291,7 @@ pub(super) async fn upsert_cimd_client(
     .bind::<Array<Text>, _>(&metadata.grant_types)
     .bind::<Array<Text>, _>(metadata.scopes.clone().unwrap_or_default())
     .bind::<Timestamptz, _>(now())
+    .bind::<Bool, _>(metadata.scopes.is_some())
     .execute(conn)
     .await
     .map_err(|e| AuthError::Internal(e.into()))?;

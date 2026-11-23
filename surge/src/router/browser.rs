@@ -175,6 +175,11 @@ pub(crate) fn embedded_browser_router(
             cookie_domain: state.cookie_domain.clone(),
             cimd: super::oauth_as::cimd_resolver(as_config),
         });
+        // The kill switch the eligibility rule consults, from the same
+        // setting that mounts `/oauth2/register`.
+        state
+            .engine
+            .set_dynamic_clients_enabled(as_config.allow_dynamic_registration);
         let session_cors = if state.session_cors_origins.is_empty() {
             cors::narrow(&state.auth_ui_origin)
         } else {

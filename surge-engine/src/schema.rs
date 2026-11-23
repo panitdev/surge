@@ -137,6 +137,7 @@ diesel::table! {
         revoked_at -> Nullable<Timestamptz>,
         audience_restricted -> Bool,
         registrar_service_id -> Nullable<Uuid>,
+        scope_ceiling_explicit -> Bool,
     }
 }
 

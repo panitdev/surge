@@ -144,6 +144,16 @@ async fn drop_approvals(client_id: &str) {
     .unwrap();
 }
 
+/// A harness with the global DCR switch on, which dynamically registered
+/// clients need to be eligible for anything.
+async fn dcr_harness() -> Harness {
+    harness_with(|mut settings| {
+        settings.allow_dynamic_registration = true;
+        settings
+    })
+    .await
+}
+
 #[tokio::test]
 #[ignore = "requires a live Postgres via DATABASE_URL"]
 async fn an_empty_audience_list_grants_no_access() {
@@ -327,7 +337,7 @@ async fn consent_cannot_be_completed_once_the_client_loses_the_audience() {
 #[tokio::test]
 #[ignore = "requires a live Postgres via DATABASE_URL"]
 async fn delegated_resources_need_a_binding_a_cimd_entry_or_a_dcr_opt_in() {
-    let h = harness().await;
+    let h = dcr_harness().await;
     let session = h.sign_in().await;
     let closed = delegated_resource(&h, "closed", &["mcp:read"], false).await;
     let open = delegated_resource(&h, "open", &["mcp:read"], true).await;

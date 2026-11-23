@@ -145,7 +145,11 @@ async fn client(cmd: ClientCommand, engine: Arc<Engine>) -> anyhow::Result<()> {
             println!("  Client ID:   {}", client.client_id);
             println!("  Name:        {}", client.client_name);
             println!("  Redirects:   {:?}", client.redirect_uris);
-            println!("  Scopes:      {:?}", client.scopes);
+            println!(
+                "  Scopes:      {:?} ({})",
+                client.scopes,
+                ceiling_label(client.scope_ceiling_explicit)
+            );
             println!("  First party: {}", client.first_party);
             if let Some(secret) = secret {
                 println!("  Secret:      {}", secret.expose_secret());
@@ -175,12 +179,13 @@ async fn client(cmd: ClientCommand, engine: Arc<Engine>) -> anyhow::Result<()> {
             }
             for client in clients {
                 println!(
-                    "{} ({}): source={} first_party={} scopes={:?} redirects={:?}",
+                    "{} ({}): source={} first_party={} scopes={:?} ({}) redirects={:?}",
                     client.client_name,
                     client.client_id,
                     client.registration_source.as_str(),
                     client.first_party,
                     client.scopes,
+                    ceiling_label(client.scope_ceiling_explicit),
                     client.redirect_uris,
                 );
             }
@@ -349,5 +354,14 @@ async fn key(cmd: KeyCommand, engine: Arc<Engine>) -> anyhow::Result<()> {
 fn operator() -> surge_engine::audit::AuditActor {
     surge_engine::audit::AuditActor::Operator {
         name: std::env::var("USER").unwrap_or_else(|_| "unknown".into()),
+    }
+}
+
+/// How to read a client's stored scope list.
+fn ceiling_label(explicit: bool) -> &'static str {
+    if explicit {
+        "ceiling"
+    } else {
+        "snapshot of defaults at registration; follows the target resource"
     }
 }

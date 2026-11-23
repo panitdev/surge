@@ -137,7 +137,7 @@ pub(super) async fn authorize_query(
         );
     }
 
-    if !client_may_use_resource(&client, &resource) {
+    if !client_may_use_resource(&client, &resource, state.engine.eligibility_policy()) {
         return fail(OauthErrorCode::InvalidTarget, INELIGIBLE_TARGET);
     }
 
@@ -471,12 +471,9 @@ pub(crate) fn resolve_scopes(
     client: &OauthClient,
     resource: &OauthResource,
 ) -> Result<Vec<String>, String> {
-    let grantable: Vec<String> = resource
-        .scopes
-        .iter()
-        .filter(|s| client.scopes.iter().any(|c| c == *s))
-        .cloned()
-        .collect();
+    // Explicit ceiling: the client's list ∩ the resource's current scopes.
+    // Registered without scopes: whatever the resource currently permits.
+    let grantable = surge_engine::oauth::permitted_scopes(client, resource);
 
     let requested: Vec<String> = requested
         .map(|s| s.split_whitespace().map(str::to_string).collect())
