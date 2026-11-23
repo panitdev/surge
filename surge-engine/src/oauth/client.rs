@@ -6,9 +6,10 @@ use chrono::Utc;
 use diesel::prelude::*;
 use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_async::{AsyncConnection, RunQueryDsl};
+use uuid::Uuid;
 
 use super::resource::canonicalize_resource_uri;
-use super::{now, NewOauthClient, OauthClient, RegistrationSource};
+use super::{now, NewOauthClient, OauthClient, RegistrationSource, ResourceSource};
 use crate::models::{NewOauthClient as NewOauthClientRow, OauthClientRow};
 use crate::schema::{oauth_client, oauth_client_audience, oauth_refresh_token, oauth_resource};
 use crate::types::*;
@@ -26,6 +27,48 @@ impl Engine {
     pub async fn create_oauth_client(
         &self,
         spec: NewOauthClient,
+    ) -> Result<(OauthClient, Option<ClientSecret>), AuthError> {
+        if spec.registration_source == RegistrationSource::Platform {
+            return Err(field(
+                "registration_source",
+                "a platform client is created with create_platform_oauth_client",
+            ));
+        }
+        self.insert_client(spec, None).await
+    }
+
+    /// Registers a third-party client on behalf of a Platform service,
+    /// approved for exactly `registration_ids`. In one transaction every
+    /// registration is locked and must still be a delegated registration
+    /// that `registrar_service_id` created; otherwise nothing is created and
+    /// the result is `Forbidden`. The caller's earlier authorization check is
+    /// advisory, so a registration deleted and re-registered by someone else
+    /// in between cannot be bound.
+    pub async fn create_platform_oauth_client(
+        &self,
+        registrar_service_id: Uuid,
+        mut spec: NewOauthClient,
+        registration_ids: Vec<Uuid>,
+    ) -> Result<(OauthClient, Option<ClientSecret>), AuthError> {
+        if registration_ids.is_empty() {
+            return Err(field("resources", "at least one resource is required"));
+        }
+        spec.registration_source = RegistrationSource::Platform;
+        spec.audiences = None;
+        self.insert_client(
+            spec,
+            Some(PlatformBinding {
+                registrar_service_id,
+                registration_ids,
+            }),
+        )
+        .await
+    }
+
+    async fn insert_client(
+        &self,
+        spec: NewOauthClient,
+        platform: Option<PlatformBinding>,
     ) -> Result<(OauthClient, Option<ClientSecret>), AuthError> {
         validate_client(&spec)?;
         let audiences = spec
@@ -56,27 +99,47 @@ impl Engine {
             first_party: spec.first_party,
             trust_state: if spec.first_party { "trusted" } else { "untrusted" },
             created_at,
-            audience_restricted: audiences.is_some(),
+            audience_restricted: audiences.is_some() || platform.is_some(),
+            registrar_service_id: platform.as_ref().map(|p| p.registrar_service_id),
         };
 
         let mut conn = self.conn().await?;
         let row_ref = &row;
         let audience_uris = audiences.as_deref();
-        conn.transaction::<_, AuthError, _>(|conn| {
-            async move {
-                diesel::insert_into(oauth_client::table)
-                    .values(row_ref)
-                    .execute(conn)
-                    .await
-                    .map_err(|e| AuthError::Internal(e.into()))?;
-                if let Some(uris) = audience_uris {
-                    approve_audiences(conn, row_ref.client_id, uris).await?;
+        let platform_ref = platform.as_ref();
+        let bound = conn
+            .transaction::<_, AuthError, _>(|conn| {
+                async move {
+                    // Lock first, so the registrations cannot change between
+                    // the check and the approvals.
+                    let bound = match platform_ref {
+                        Some(binding) => Some(lock_registrar_resources(conn, binding).await?),
+                        None => None,
+                    };
+                    diesel::insert_into(oauth_client::table)
+                        .values(row_ref)
+                        .execute(conn)
+                        .await
+                        .map_err(|e| AuthError::Internal(e.into()))?;
+                    if let Some(bound) = &bound {
+                        approve_registrations(conn, row_ref.client_id, bound).await?;
+                    } else if let Some(uris) = audience_uris {
+                        approve_audiences(conn, row_ref.client_id, uris).await?;
+                    }
+                    Ok(bound)
                 }
-                Ok(())
-            }
-            .scope_boxed()
-        })
-        .await?;
+                .scope_boxed()
+            })
+            .await?;
+        let audiences = match bound {
+            Some(bound) => Some(
+                bound
+                    .into_iter()
+                    .map(|(_, uri)| uri)
+                    .collect::<Vec<_>>(),
+            ),
+            None => audiences,
+        };
 
         let token_endpoint_auth_method = row.token_endpoint_auth_method.to_string();
         let trust_state = row.trust_state.to_string();
@@ -97,6 +160,7 @@ impl Engine {
                 trust_state,
                 confidential: spec.confidential,
                 audiences,
+                registrar_service_id: platform.map(|p| p.registrar_service_id),
                 created_at,
             },
             secret,
@@ -219,7 +283,9 @@ impl Engine {
     /// Deletes dynamically registered clients that never completed an
     /// authorization within the TTL. Admin-registered clients are never
     /// swept: an operator registering a client ahead of the service that will
-    /// use it is a normal thing to do.
+    /// use it is a normal thing to do. Neither are platform clients: the
+    /// Platform that registered one manages its lifecycle, and a developer's
+    /// client may legitimately sit unused until they ship.
     pub async fn gc_unused_dynamic_clients(
         &self,
         ttl: std::time::Duration,
@@ -241,6 +307,62 @@ impl Engine {
 
         Ok(deleted as u64)
     }
+}
+
+/// The registrar a Platform client is created for and the exact
+/// registrations it is to be bound to.
+struct PlatformBinding {
+    registrar_service_id: Uuid,
+    registration_ids: Vec<Uuid>,
+}
+
+/// Locks the named registrations and returns `(id, uri)` for each, ordered
+/// by URI. Every one must be a delegated registration created by the
+/// registrar, or the whole request is `Forbidden`: a missing id, another
+/// registrar's and an administrator's look the same.
+async fn lock_registrar_resources(
+    conn: &mut diesel_async::AsyncPgConnection,
+    binding: &PlatformBinding,
+) -> Result<Vec<(Uuid, String)>, AuthError> {
+    let mut ids = binding.registration_ids.clone();
+    ids.sort();
+    ids.dedup();
+    let rows: Vec<(Uuid, String)> = oauth_resource::table
+        .filter(oauth_resource::id.eq_any(&ids))
+        .filter(oauth_resource::registration_source.eq(ResourceSource::Delegated.as_str()))
+        .filter(oauth_resource::registrar_service_id.eq(binding.registrar_service_id))
+        .order(oauth_resource::resource_uri.asc())
+        .select((oauth_resource::id, oauth_resource::resource_uri))
+        .for_share()
+        .load(conn)
+        .await
+        .map_err(|e| AuthError::Internal(e.into()))?;
+    if rows.len() != ids.len() {
+        return Err(AuthError::Forbidden);
+    }
+    Ok(rows)
+}
+
+async fn approve_registrations(
+    conn: &mut diesel_async::AsyncPgConnection,
+    client_id: &str,
+    bound: &[(Uuid, String)],
+) -> Result<(), AuthError> {
+    let rows: Vec<_> = bound
+        .iter()
+        .map(|(id, _)| {
+            (
+                oauth_client_audience::client_id.eq(client_id),
+                oauth_client_audience::registration_id.eq(*id),
+            )
+        })
+        .collect();
+    diesel::insert_into(oauth_client_audience::table)
+        .values(rows)
+        .execute(conn)
+        .await
+        .map_err(|e| AuthError::Internal(e.into()))?;
+    Ok(())
 }
 
 /// Canonicalizes and de-duplicates the URIs a client is to be approved for.
@@ -344,6 +466,7 @@ fn row_to_client(row: OauthClientRow, audiences: Option<Vec<String>>) -> OauthCl
         trust_state: row.trust_state,
         confidential: row.client_secret_hash.is_some(),
         audiences,
+        registrar_service_id: row.registrar_service_id,
         created_at: row.created_at,
     }
 }
@@ -388,10 +511,10 @@ fn validate_client(spec: &NewOauthClient) -> Result<(), AuthError> {
     for uri in &spec.redirect_uris {
         validate_redirect_uri(uri)?;
     }
-    if spec.registration_source == RegistrationSource::Dynamic && spec.first_party {
+    if spec.registration_source != RegistrationSource::Admin && spec.first_party {
         return Err(field(
             "first_party",
-            "a dynamically registered client can never be first-party",
+            "only an administrator can register a first-party client",
         ));
     }
     for grant in &spec.grant_types {

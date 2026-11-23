@@ -19,7 +19,7 @@ Service tokens carry grants that control which API operations the service can pe
 | `external_link` | Attach an external provider account to an existing identity, or detach one |
 | `oauth_admin` | Register and revoke OAuth clients, and register the audiences tokens can be scoped to |
 | `oauth_resource_register` | Platform grant: register delegated audiences and see the ones this service registered |
-| `oauth_client_register` | Platform grant: register third-party OAuth clients for audiences this service registered |
+| `oauth_client_register` | Platform grant: register third-party OAuth clients for resources this service registered |
 
 ## Grant-to-endpoint mapping
 
@@ -38,7 +38,7 @@ Each grant unlocks a specific set of service API endpoints:
 | `external_link` | `POST /v1/identities/{id}/links` — attach or confirm a link; `DELETE /v1/identities/{id}/links` — detach one |
 | `oauth_admin` | `POST /v1/oauth/clients` — register an OAuth client; `GET /v1/oauth/clients` — list them; `DELETE /v1/oauth/clients/{client_id}` — revoke one; `POST /v1/oauth/resources` — register an audience for any service; `GET /v1/oauth/resources` — list audiences; `GET /v1/oauth/resources/{registration_id}` — read one |
 | `oauth_resource_register` | `POST /v1/oauth/resources` — register a delegated audience; `GET /v1/oauth/resources` and `GET /v1/oauth/resources/{registration_id}` — only audiences this service registered |
-| `oauth_client_register` | `POST /v1/oauth/clients` — register a non-first-party client whose `audiences` are all delegated registrations this service created |
+| `oauth_client_register` | `POST /v1/oauth/clients` — register a non-first-party client whose `resources` are all delegated registrations this service created; the client is recorded with `registration_source: platform` and this service as registrar |
 
 A request to an endpoint without the required grant returns `403 Forbidden`:
 
@@ -86,7 +86,7 @@ Treat `oauth_admin` as trusted registry-wide delegation authority. Its holder ca
 
 ### The Platform grants are bounded by registrar
 
-`oauth_resource_register` and `oauth_client_register` are for a platform registering resources and clients on behalf of developers, and are deliberately weaker than `oauth_admin`. The registrar is derived from the authenticated service, never from the request. A holder can create delegated resources, which no service owns, but cannot assign an owner, create a service registration or a first-party client, or read or change a registration made by another registrar. Registrations with an unknown registrar, which includes everything that predates registrar tracking, stay with `oauth_admin`. `oauth_client_register` is separate so that authority over resources does not imply authority over clients: it can only create non-first-party clients approved for resources the same service registered.
+`oauth_resource_register` and `oauth_client_register` are for a platform registering resources and clients on behalf of developers, and are deliberately weaker than `oauth_admin`. The registrar is derived from the authenticated service, never from the request. A holder can create delegated resources, which no service owns, but cannot assign an owner, create a service registration or a first-party client, or read or change a registration made by another registrar. Registrations with an unknown registrar, which includes everything that predates registrar tracking, stay with `oauth_admin`. `oauth_client_register` is separate so that authority over resources does not imply authority over clients: it can only create non-first-party clients approved for resources the same service registered. Those clients are untrusted at consent and are not removed by the unused-client sweep. [Client registration](../api/service/oauth-resources.md#register-a-client)
 
 ### Verified and unverified links
 

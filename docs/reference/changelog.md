@@ -18,6 +18,7 @@ Surge can now issue audience-scoped OAuth tokens. Enable the authorization serve
 - **ES256 signing keys encrypted under the pepper**, rotated by the background sweep, with retired keys published until the tokens they signed expire.
 - **`surge::resource`** (feature `resource-server`) ships the resource-server half: RFC 9728 metadata, the `WWW-Authenticate` challenge MCP clients discover the AS through, and an offline bearer-token guard.
 - **New grant `oauth_admin`** and new CLI group `surge-server oauth {client,resource,key}`.
+- **Platform registration grants** `oauth_resource_register` and `oauth_client_register` let a Platform create delegated resources and third-party clients without `oauth_admin`. Request bodies of `POST /v1/oauth/resources` and `POST /v1/oauth/clients` now reject unknown fields with HTTP 422 instead of ignoring them.
 - **New token prefixes** `aeg_cid_`, `aeg_cs_`, `aeg_ac_`, `aeg_rt_`.
 
 Behaviour change worth noting: `revoke_all_sessions` now also revokes that identity's OAuth refresh tokens. "Log this person out everywhere" would otherwise leave their connected apps refreshing.

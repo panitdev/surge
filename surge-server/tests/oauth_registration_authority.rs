@@ -113,7 +113,7 @@ async fn admin_post_defaults_to_a_service_registration() {
         Some(req),
     )
     .await;
-    assert!(resp.is_client_error());
+    assert_eq!(resp, StatusCode::UNPROCESSABLE_ENTITY);
 }
 
 #[tokio::test]
@@ -155,10 +155,9 @@ async fn a_platform_registrar_is_confined_to_its_own_delegated_resources() {
     // A registrar cannot claim to be someone else.
     let mut spoof = resource(&format!("{uri}-spoof"));
     spoof["registrar_service_id"] = json!(owner_id);
-    assert!(
-        status(&h, "POST", post, &platform, Some(spoof))
-            .await
-            .is_client_error()
+    assert_eq!(
+        status(&h, "POST", post, &platform, Some(spoof)).await,
+        StatusCode::UNPROCESSABLE_ENTITY
     );
 
     // Duplicates (including a trailing-slash alias) keep the original.
@@ -238,64 +237,205 @@ async fn administrators_manage_legacy_registrations_and_others_need_a_grant() {
     );
 }
 
+fn client_body(first_party: bool, resources: Value) -> Value {
+    json!({
+        "client_name": "dev app",
+        "redirect_uris": [CLIENT_REDIRECT],
+        "scopes": ["mcp:read"],
+        "first_party": first_party,
+        "resources": resources,
+    })
+}
+
 #[tokio::test]
 #[ignore = "requires a live Postgres via DATABASE_URL"]
 async fn platform_client_registration_is_bounded_to_its_own_resources() {
     let h = harness().await;
+    let (platform_id, platform) = service(
+        &h,
+        "platform",
+        &["oauth_resource_register", "oauth_client_register"],
+    )
+    .await;
+    let (_, resource_only) = service(&h, "resources", &["oauth_resource_register"]).await;
+    let (_, client_only) = service(&h, "clients", &["oauth_client_register"]).await;
+    let uri = format!("{}-clients", h.resource_uri);
+    let created = status(&h, "POST", "/v1/oauth/resources", &platform, Some(resource(&uri))).await;
+    assert_eq!(created, StatusCode::CREATED);
+
+    // A delegated registration an administrator made is not this registrar's.
+    let admin_made = format!("{}-admin-made", h.resource_uri);
+    let mut req = resource(&admin_made);
+    req["registration_source"] = json!("delegated");
+    let made = status(&h, "POST", "/v1/oauth/resources", &h.service_token, Some(req)).await;
+    assert_eq!(made, StatusCode::CREATED);
+
+    let forbidden = StatusCode::FORBIDDEN;
+    assert_eq!(mint(&h, &platform, client_body(true, json!([uri]))).await, forbidden);
+    assert_eq!(
+        mint(&h, &platform, client_body(false, json!([]))).await,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let mut absent = client_body(false, json!(null));
+    absent.as_object_mut().unwrap().remove("resources");
+    assert_eq!(mint(&h, &platform, absent).await, StatusCode::UNPROCESSABLE_ENTITY);
+    // Operator-registered, administrator-made and unregistered resources are refused.
+    for other in [&h.resource_uri, &admin_made, "https://nowhere.oauth.test/x"] {
+        assert_eq!(mint(&h, &platform, client_body(false, json!([other]))).await, forbidden);
+    }
+    // One foreign resource among its own spoils the request.
+    let mixed = json!([uri, h.resource_uri]);
+    assert_eq!(mint(&h, &platform, client_body(false, mixed)).await, forbidden);
+    // Each grant is needed on its own.
+    assert_eq!(mint(&h, &resource_only, client_body(false, json!([uri]))).await, forbidden);
+    assert_eq!(mint(&h, &client_only, client_body(false, json!([uri]))).await, forbidden);
+    // The old field name is now rejected rather than ignored.
+    let mut legacy = client_body(false, json!(null));
+    legacy["audiences"] = json!([uri]);
+    legacy.as_object_mut().unwrap().remove("resources");
+    assert_eq!(mint(&h, &platform, legacy).await, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // Confidential clients are allowed and receive a secret once.
+    let mut confidential = client_body(false, json!([format!("{uri}/")]));
+    confidential["confidential"] = json!(true);
+    let resp = call(&h, "POST", "/v1/oauth/clients", &platform, Some(confidential)).await;
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let body = body_json(resp).await;
+    assert!(body["client_secret"].is_string());
+    assert_eq!(body["confidential"], true);
+    assert_eq!(body["registration_source"], "platform");
+    assert_eq!(body["registrar_service_id"], json!(platform_id));
+    assert_eq!(body["first_party"], false);
+    assert_eq!(body["trust_state"], "untrusted");
+    assert_eq!(body["audiences"], json!([uri]));
+
+    let resp = call(&h, "POST", "/v1/oauth/clients", &platform, Some(client_body(false, json!([uri])))).await;
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let body = body_json(resp).await;
+    assert!(body["client_secret"].is_null());
+    assert_eq!(body["audiences"], json!([uri]));
+    let client_id = body["client_id"].as_str().unwrap().to_string();
+
+    // The audit record names the registrar and the resources it was created for.
+    {
+        use diesel::prelude::*;
+        use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
+        use surge_engine::schema::audit_log;
+        let mut conn = AsyncPgConnection::establish(&std::env::var("DATABASE_URL").unwrap())
+            .await
+            .unwrap();
+        let (actor, subject) = audit_log::table
+            .filter(audit_log::action.eq("create_oauth_client"))
+            .filter(audit_log::subject.contains(json!({ "client_id": client_id })))
+            .select((audit_log::actor, audit_log::subject))
+            .first::<(Value, Value)>(&mut conn)
+            .await
+            .unwrap();
+        assert_eq!(actor["id"], json!(platform_id));
+        assert_eq!(subject["registrar_service_id"], json!(platform_id));
+        assert_eq!(subject["resources"], json!([uri]));
+        assert_eq!(subject["registration_source"], "platform");
+    }
+
+    // The grant gives no access to the registry's other client operations.
+    assert_eq!(status(&h, "GET", "/v1/oauth/clients", &platform, None).await, forbidden);
+
+    // Consent treats the client's self-declared name as untrusted.
+    let session = h.sign_in().await;
+    let pkce = Pkce::generate();
+    let resp = h
+        .get(
+            &h.authorize_uri(&client_id, &pkce, Some(&uri), Some("mcp:read")),
+            Some(&session),
+        )
+        .await;
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    let flow = query_param(&location(&resp), "consent_flow").expect("no consent flow");
+    let flow = body_json(h.get(&format!("/v1/oauth/consent/{flow}"), Some(&session)).await).await;
+    assert_eq!(flow["client"]["dynamically_registered"], true);
+    assert_eq!(flow["client"]["first_party"], false);
+}
+
+#[tokio::test]
+#[ignore = "requires a live Postgres via DATABASE_URL"]
+async fn an_admin_may_name_resources_and_platform_clients_are_never_swept() {
+    let h = harness().await;
+    let body = client_body(false, json!([h.resource_uri]));
+    let resp = call(&h, "POST", "/v1/oauth/clients", &h.service_token, Some(body)).await;
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let body = body_json(resp).await;
+    assert_eq!(body["registration_source"], "admin");
+    assert!(body["registrar_service_id"].is_null());
+    assert_eq!(body["audiences"], json!([h.resource_uri]));
+
+    // Platform clients are created unused and old enough to be swept if they
+    // were dynamic; the sweep must leave them alone.
     let (_, platform) = service(
         &h,
         "platform",
         &["oauth_resource_register", "oauth_client_register"],
     )
     .await;
-    let (_, client_only) = service(&h, "clients", &["oauth_client_register"]).await;
-    let uri = format!("{}-clients", h.resource_uri);
-    let created = status(
-        &h,
-        "POST",
-        "/v1/oauth/resources",
-        &platform,
-        Some(resource(&uri)),
-    )
-    .await;
-    assert_eq!(created, StatusCode::CREATED);
+    let uri = format!("{}-sweep", h.resource_uri);
+    let _ = status(&h, "POST", "/v1/oauth/resources", &platform, Some(resource(&uri))).await;
+    let resp = call(&h, "POST", "/v1/oauth/clients", &platform, Some(client_body(false, json!([uri])))).await;
+    let client_id = body_json(resp).await["client_id"].as_str().unwrap().to_string();
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    h.engine
+        .gc_unused_dynamic_clients(std::time::Duration::from_millis(1))
+        .await
+        .unwrap();
+    assert!(h.engine.get_oauth_client(&client_id).await.is_ok());
+}
 
-    let client = |first_party: bool, audiences: Value| {
-        json!({
-            "client_name": "dev app",
-            "redirect_uris": ["https://client.oauth.test/cb"],
-            "scopes": ["mcp:read"],
-            "first_party": first_party,
-            "audiences": audiences,
-        })
+#[tokio::test]
+#[ignore = "requires a live Postgres via DATABASE_URL"]
+async fn a_platform_client_cannot_bind_a_registration_it_no_longer_holds() {
+    let h = harness().await;
+    let (platform_id, _) = service(&h, "platform", &["oauth_client_register"]).await;
+    let uri = format!("{}-race", h.resource_uri);
+    let mine = h
+        .engine
+        .register_oauth_resource(
+            surge_engine::audit::AuditActor::Operator { name: "test".into() },
+            platform_id,
+            &uri,
+            None,
+            vec!["mcp:read".into()],
+            json!({}),
+        )
+        .await
+        .unwrap();
+    h.engine.delete_oauth_resource(&uri).await.unwrap();
+    // The URI is re-registered by an administrator after the check passed.
+    h.engine
+        .register_oauth_resource(
+            surge_engine::audit::AuditActor::Operator { name: "test".into() },
+            uuid::Uuid::now_v7(),
+            &uri,
+            None,
+            vec!["mcp:read".into()],
+            json!({}),
+        )
+        .await
+        .unwrap();
+    let spec = || surge_engine::oauth::NewOauthClient {
+        client_name: "dev app".into(),
+        client_uri: None,
+        logo_uri: None,
+        redirect_uris: vec![CLIENT_REDIRECT.into()],
+        grant_types: vec!["authorization_code".into()],
+        scopes: vec!["mcp:read".into()],
+        confidential: false,
+        first_party: false,
+        registration_source: surge_engine::oauth::RegistrationSource::Platform,
+        audiences: None,
     };
-
-    assert_eq!(
-        mint(&h, &platform, client(true, json!([uri]))).await,
-        StatusCode::FORBIDDEN
-    );
-    // No audience, an operator-registered audience and another's are all refused.
-    assert!(
-        mint(&h, &platform, client(false, json!([])))
-            .await
-            .is_client_error()
-    );
-    assert_eq!(
-        mint(&h, &platform, client(false, json!([h.resource_uri]))).await,
-        StatusCode::FORBIDDEN
-    );
-    assert_eq!(
-        mint(&h, &client_only, client(false, json!([uri]))).await,
-        StatusCode::FORBIDDEN
-    );
-    assert_eq!(
-        mint(&h, &platform, client(false, json!([uri]))).await,
-        StatusCode::CREATED
-    );
-
-    // The grant gives no access to the registry's other client operations.
-    assert_eq!(
-        status(&h, "GET", "/v1/oauth/clients", &platform, None).await,
-        StatusCode::FORBIDDEN
-    );
+    let err = h
+        .engine
+        .create_platform_oauth_client(platform_id, spec(), vec![mine.registration_id])
+        .await;
+    assert!(matches!(err, Err(surge_engine::types::AuthError::Forbidden)));
+    let clients = h.engine.list_oauth_clients().await.unwrap();
+    assert!(clients.iter().all(|c| c.registrar_service_id != Some(platform_id)));
 }

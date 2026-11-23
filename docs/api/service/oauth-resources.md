@@ -21,7 +21,7 @@ The registrar is always the authenticated service. It cannot be supplied in the 
 }
 ```
 
-`scope_descriptions`, `owner_service_id` and `registration_source` (`service` or `delegated`) are optional. For an `oauth_admin` caller the source defaults to `service` and the owner to the authenticated service. A `delegated` registration has no owner, so supplying `owner_service_id` with it is rejected: HTTP 400 for an administrator, HTTP 403 for a Platform credential. Unknown fields are rejected. A successful request returns HTTP 201 with the registration:
+`scope_descriptions`, `owner_service_id` and `registration_source` (`service` or `delegated`) are optional. For an `oauth_admin` caller the source defaults to `service` and the owner to the authenticated service. A `delegated` registration has no owner, so supplying `owner_service_id` with it is rejected: HTTP 422 for an administrator, HTTP 403 for a Platform credential. Unknown fields are rejected with HTTP 422. A successful request returns HTTP 201 with the registration:
 
 | Field | Meaning |
 | --- | --- |
@@ -39,6 +39,23 @@ Deleting a registration removes every grant bound to it. If the same URI is regi
 
 A caller holding neither grant, or a Platform credential asking for a service registration or an owner, receives HTTP 403. An unknown owner receives HTTP 404. An already registered URI receives HTTP 409 (`resource_already_registered`) and keeps its original registration, owner, registrar and scopes, whoever asks and whichever form of the URI they use.
 
-## Register a client as a Platform
+## Register a client
 
-`POST /v1/oauth/clients` also accepts a service holding `oauth_client_register`, a separate grant from `oauth_resource_register`. It can only create third-party clients, and each request must list `audiences`, every one a delegated registration that same service created. `first_party: true` and any other audience return HTTP 403. This grant does not allow listing or revoking clients.
+`POST /v1/oauth/clients` is open to `oauth_admin` and, with limits, to `oauth_client_register`. Unknown body fields are rejected with HTTP 422.
+
+| Field | Meaning |
+| --- | --- |
+| `client_name`, `redirect_uris` | Required. |
+| `client_uri`, `logo_uri`, `scopes`, `confidential` | Optional. `confidential: true` is allowed for both grants and returns `client_secret` once. |
+| `first_party` | Optional, `oauth_admin` only. |
+| `resources` | Optional list of resource URIs the client is approved for. Absent means no list. |
+
+`oauth_admin` may pass any registered `resources`. The client is recorded with `registration_source` `admin` and no registrar.
+
+`oauth_client_register` is a separate grant from `oauth_resource_register`. A holder can only create third-party clients, and `resources` is required and non-empty. Every resource must be a delegated registration that same service created. The check and the binding happen in one transaction, so a URI that is deleted and registered again by someone else cannot be bound. `first_party: true`, a missing grant, and any resource that is unknown, operator-registered, or registered by another service (including an administrator) return HTTP 403. A missing or empty `resources` returns HTTP 422. The grant does not allow listing or revoking clients.
+
+The client is recorded with `registration_source` `platform` and `registrar_service_id` set to the authenticated service, and the response carries both, along with `audiences` (the canonical URIs bound). Consent and the connections list mark it `dynamically_registered: true`, meaning its name and logo are supplied by a developer and are untrusted, as for a dynamically registered client. Unlike dynamic clients, platform clients are not removed by the unused-client sweep (`SURGE_OAUTH_DCR_TTL_DAYS`); the registrar manages their lifecycle.
+
+The audit entry `create_oauth_client` records the client, `registration_source`, `registrar_service_id` and the requested `resources` for both grants.
+
+Restricting a client to its `resources` is enforced when tokens are issued. That enforcement ships in the same release as this endpoint, so treat `resources` as the stored approval list until you deploy that release.

@@ -16,7 +16,7 @@ use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::json;
 use surge_engine::AuthError;
-use surge_engine::oauth::{AuthorizationGrant, RegistrationSource};
+use surge_engine::oauth::AuthorizationGrant;
 
 use super::AsState;
 use super::authorize::{issue_code_redirect, resolve_authorization_session};
@@ -62,7 +62,7 @@ pub(crate) async fn get_consent_flow(
             // client's name and logo are attacker-supplied text and an
             // attacker-supplied image.
             "dynamically_registered":
-                client.registration_source == RegistrationSource::Dynamic,
+                client.registration_source.metadata_is_untrusted(),
             "first_party": client.first_party,
         },
         "resource": {

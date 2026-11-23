@@ -442,6 +442,7 @@ pub(crate) async fn unlink_identity(
 // that can set it is deliberately narrow.
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct CreateOauthClientBody {
     client_name: String,
     #[serde(default)]
@@ -455,49 +456,54 @@ pub(crate) struct CreateOauthClientBody {
     confidential: bool,
     #[serde(default)]
     first_party: bool,
+    /// Resources the client is approved for. Absent means no list.
     #[serde(default)]
-    audiences: Option<Vec<String>>,
+    resources: Option<Vec<String>>,
 }
 
-/// What a caller may do with the client registry. `oauth_admin` is trusted
+/// How a caller may register a client. `oauth_admin` is trusted
 /// administration. `oauth_client_register` is the Platform's separately
 /// bounded authority: it can only mint third-party clients, and only ones
 /// approved for resources that same service registered as a delegated
-/// registrar.
+/// registrar. The Platform variant carries the registration IDs that passed
+/// this check; the engine re-checks them under lock when it binds them.
+enum ClientAuthority {
+    Admin,
+    Platform(Vec<Uuid>),
+}
+
 async fn authorize_client_registration(
     state: &AppState,
     auth: &ServiceAuth,
     body: &CreateOauthClientBody,
-) -> Result<bool, AuthError> {
+) -> Result<ClientAuthority, AuthError> {
     if require_grant(auth, "oauth_admin").is_ok() {
-        return Ok(false);
+        return Ok(ClientAuthority::Admin);
     }
     require_grant(auth, "oauth_client_register").map_err(|_| AuthError::Forbidden)?;
     if body.first_party {
         return Err(AuthError::Forbidden);
     }
-    let audiences = body.audiences.as_deref().unwrap_or_default();
-    if audiences.is_empty() {
+    let resources = body.resources.as_deref().unwrap_or_default();
+    if resources.is_empty() {
         return Err(AuthError::Validation(ValidationError::Field {
-            field: "audiences",
+            field: "resources",
             message: "a delegated registrar must name the resources the client is for".into(),
         }));
     }
-    for uri in audiences {
-        let resource = state
-            .engine
-            .get_oauth_resource(uri)
-            .await
-            .map_err(|e| match e {
-                // An unknown audience and another registrar's look the same.
-                AuthError::NotFound => AuthError::Forbidden,
-                other => other,
-            })?;
+    let mut ids = Vec::with_capacity(resources.len());
+    for uri in resources {
+        let resource = state.engine.get_oauth_resource(uri).await.map_err(|e| match e {
+            // An unknown resource and another registrar's look the same.
+            AuthError::NotFound => AuthError::Forbidden,
+            other => other,
+        })?;
         if !ResourceAuthority::Registrar(auth.service_id).can_manage(&resource) {
             return Err(AuthError::Forbidden);
         }
+        ids.push(resource.registration_id);
     }
-    Ok(true)
+    Ok(ClientAuthority::Platform(ids))
 }
 
 pub(crate) async fn create_oauth_client(
@@ -505,23 +511,29 @@ pub(crate) async fn create_oauth_client(
     Extension(auth): Extension<ServiceAuth>,
     Json(body): Json<CreateOauthClientBody>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let delegated = authorize_client_registration(&state, &auth, &body).await?;
+    let authority = authorize_client_registration(&state, &auth, &body).await?;
 
-    let (client, secret) = state
-        .engine
-        .create_oauth_client(surge_engine::oauth::NewOauthClient {
-            client_name: body.client_name,
-            client_uri: body.client_uri,
-            logo_uri: body.logo_uri,
-            redirect_uris: body.redirect_uris,
-            grant_types: vec!["authorization_code".to_string(), "refresh_token".to_string()],
-            scopes: body.scopes,
-            confidential: body.confidential,
-            first_party: body.first_party,
-            registration_source: surge_engine::oauth::RegistrationSource::Admin,
-            audiences: body.audiences,
-        })
-        .await?;
+    let spec = surge_engine::oauth::NewOauthClient {
+        client_name: body.client_name,
+        client_uri: body.client_uri,
+        logo_uri: body.logo_uri,
+        redirect_uris: body.redirect_uris,
+        grant_types: vec!["authorization_code".to_string(), "refresh_token".to_string()],
+        scopes: body.scopes,
+        confidential: body.confidential,
+        first_party: body.first_party,
+        registration_source: surge_engine::oauth::RegistrationSource::Admin,
+        audiences: body.resources,
+    };
+    let (client, secret) = match authority {
+        ClientAuthority::Admin => state.engine.create_oauth_client(spec).await?,
+        ClientAuthority::Platform(ids) => {
+            state
+                .engine
+                .create_platform_oauth_client(auth.service_id, spec, ids)
+                .await?
+        }
+    };
 
     state
         .engine
@@ -534,7 +546,9 @@ pub(crate) async fn create_oauth_client(
             json!({
                 "client_id": client.client_id,
                 "first_party": client.first_party,
-                "registrar_service_id": delegated.then_some(auth.service_id),
+                "registration_source": client.registration_source,
+                "registrar_service_id": client.registrar_service_id,
+                "resources": client.audiences,
             }),
             None,
         )
