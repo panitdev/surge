@@ -587,9 +587,10 @@ async fn cimd_client(client_id: &str) {
     diesel::sql_query(
         "INSERT INTO surge.oauth_client \
          (client_id, client_name, redirect_uris, grant_types, scopes, \
-          token_endpoint_auth_method, registration_source, first_party, trust_state) \
+          token_endpoint_auth_method, registration_source, first_party, trust_state, \
+                 scope_ceiling_explicit) \
          VALUES ($1, 'CIMD app', ARRAY[$2], ARRAY['authorization_code','refresh_token'], \
-                 ARRAY['mcp:read','mcp:write'], 'none', 'dynamic', false, 'untrusted')",
+                 ARRAY['mcp:read','mcp:write'], 'none', 'dynamic', false, 'untrusted', true)",
     )
     .bind::<diesel::sql_types::Text, _>(client_id)
     .bind::<diesel::sql_types::Text, _>(CLIENT_REDIRECT)
@@ -601,7 +602,7 @@ async fn cimd_client(client_id: &str) {
 #[tokio::test]
 #[ignore = "requires a live Postgres via DATABASE_URL"]
 async fn removing_a_cimd_client_ends_its_grants_and_restoring_it_needs_fresh_consent() {
-    let h = dcr_harness().await;
+    let h = harness().await;
     let session = h.sign_in().await;
     let (_, token) = registrar(&h, "cimd").await;
     let rs = uri(&h, "cimd");
