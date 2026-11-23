@@ -503,3 +503,30 @@ pub fn rand_suffix() -> u32 {
 pub fn percent_encode(s: &str) -> String {
     url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
 }
+
+/// Signs arbitrary claims with the AS's active key, with the JOSE `typ` of
+/// the caller's choosing (`None` omits it) -- for the tests that need a token
+/// that is genuine in every way except one.
+pub async fn forge_jwt(engine: &surge_engine::Engine, typ: Option<&str>, claims: Value) -> String {
+    let key = engine.active_oauth_signing_key().await.unwrap();
+    let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::ES256);
+    header.kid = Some(key.kid.clone());
+    header.typ = typ.map(str::to_string);
+    jsonwebtoken::encode(
+        &header,
+        &claims,
+        &jsonwebtoken::EncodingKey::from_ec_der(&key.pkcs8_der),
+    )
+    .unwrap()
+}
+
+/// Claims of a well-formed access token for `aud`, issued `iat_offset`
+/// seconds from now.
+pub fn access_claims(iss: &str, sub: &str, aud: &str, scope: &str, iat_offset: i64) -> Value {
+    let now = chrono::Utc::now().timestamp() + iat_offset;
+    json!({
+        "iss": iss, "sub": sub, "aud": aud, "client_id": "aeg_cid_forged",
+        "scope": scope, "sid": uuid::Uuid::now_v7().to_string(),
+        "jti": uuid::Uuid::now_v7().to_string(), "iat": now, "exp": now + 600,
+    })
+}

@@ -16,14 +16,16 @@ mod chooser;
 mod client;
 mod code;
 mod consent;
+mod eligibility;
 mod key;
 mod resource;
 mod token;
 
 pub use chooser::ChooserCredential;
-pub use client::validate_redirect_uri;
+pub use client::{validate_redirect_uri, MAX_PLATFORM_RESOURCES};
 pub use code::{AuthorizationSession, verify_pkce, AUTHORIZATION_CODE_TTL_SECS};
 pub use consent::ConsentFlowRequest;
+pub use eligibility::client_may_use_resource;
 pub use key::ES256;
 pub use resource::canonicalize_resource_uri;
 pub use token::RotatedRefresh;
@@ -45,7 +47,8 @@ pub enum RegistrationSource {
     Admin,
     Dynamic,
     /// Registered by a Platform service holding `oauth_client_register`.
-    /// Third-party and untrusted, and never swept: its registrar manages it.
+    /// Third-party and untrusted, and never swept: an administrator revokes it
+    /// (registrar revoke is future work, surge-lll).
     Platform,
 }
 
@@ -68,7 +71,11 @@ impl RegistrationSource {
         match s {
             "dynamic" => Self::Dynamic,
             "platform" => Self::Platform,
-            _ => Self::Admin,
+            "admin" => Self::Admin,
+            // Unknown must not fail open to the trusted variant. `Dynamic`
+            // is the most restricted: untrusted metadata, never first-party,
+            // and held to the DCR opt-in at issuance.
+            _ => Self::Dynamic,
         }
     }
 }

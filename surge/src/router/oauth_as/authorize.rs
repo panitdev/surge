@@ -15,7 +15,7 @@ use axum_extra::extract::CookieJar;
 use serde::{Deserialize, Serialize};
 use surge_engine::oauth::{
     AuthorizationGrant, AuthorizationSession, ConsentFlowRequest, OauthClient, OauthResource,
-    canonicalize_resource_uri,
+    canonicalize_resource_uri, client_may_use_resource,
 };
 use surge_engine::{AuthError, Session, SessionToken};
 
@@ -125,6 +125,10 @@ pub(super) async fn authorize_query(
             OauthErrorCode::InvalidTarget,
             "the resource was registered again since this request began; authorize again",
         );
+    }
+
+    if !client_may_use_resource(&client, &resource) {
+        return fail(OauthErrorCode::InvalidTarget, INELIGIBLE_TARGET);
     }
 
     let scopes = match resolve_scopes(query.scope.as_deref(), &client, &resource) {
@@ -299,6 +303,11 @@ pub(super) async fn authorize_query(
     }
 }
 
+/// The one message for every ineligible target. It does not say whether the
+/// resource exists, is delegated, or is merely not approved for this client.
+pub(crate) const INELIGIBLE_TARGET: &str =
+    "this client is not permitted to request tokens for the requested resource";
+
 /// Mints a code and builds the success redirect. Shared with the consent
 /// decision endpoint, which reaches this point by a different road.
 pub(crate) async fn issue_code_redirect(
@@ -362,11 +371,10 @@ async fn resolve_resource(
 
     match state.engine.get_oauth_resource(&canonical).await {
         Ok(resource) => Ok(resource),
-        Err(AuthError::NotFound) => Err((
-            OauthErrorCode::InvalidTarget,
-            "unknown resource; this audience is not registered with this authorization server"
-                .to_string(),
-        )),
+        // Indistinguishable from an ineligible target.
+        Err(AuthError::NotFound) => {
+            Err((OauthErrorCode::InvalidTarget, INELIGIBLE_TARGET.to_string()))
+        }
         Err(e) => Err((OauthErrorCode::ServerError, e.to_string())),
     }
 }

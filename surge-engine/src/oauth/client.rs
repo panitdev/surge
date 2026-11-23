@@ -8,9 +8,9 @@ use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_async::{AsyncConnection, RunQueryDsl};
 use uuid::Uuid;
 
-use super::resource::canonicalize_resource_uri;
+use super::resource::{canonicalize_resource_uri, row_to_resource};
 use super::{now, NewOauthClient, OauthClient, RegistrationSource, ResourceSource};
-use crate::models::{NewOauthClient as NewOauthClientRow, OauthClientRow};
+use crate::models::{NewOauthClient as NewOauthClientRow, OauthClientRow, OauthResourceRow};
 use crate::schema::{oauth_client, oauth_client_audience, oauth_refresh_token, oauth_resource};
 use crate::types::*;
 use crate::Engine;
@@ -22,6 +22,9 @@ use crate::Engine;
 const MAX_CLIENT_NAME_LEN: usize = 120;
 const MAX_URI_LEN: usize = 2000;
 const MAX_REDIRECT_URIS: usize = 10;
+/// Most resources one Platform-registered client may be bound to. Bounds the
+/// per-request lookups and locks.
+pub const MAX_PLATFORM_RESOURCES: usize = 10;
 
 impl Engine {
     pub async fn create_oauth_client(
@@ -52,6 +55,12 @@ impl Engine {
     ) -> Result<(OauthClient, Option<ClientSecret>), AuthError> {
         if registration_ids.is_empty() {
             return Err(field("resources", "at least one resource is required"));
+        }
+        if registration_ids.len() > MAX_PLATFORM_RESOURCES {
+            return Err(field(
+                "resources",
+                format!("at most {MAX_PLATFORM_RESOURCES} are allowed"),
+            ));
         }
         spec.registration_source = RegistrationSource::Platform;
         spec.audiences = None;
@@ -103,9 +112,29 @@ impl Engine {
             registrar_service_id: platform.as_ref().map(|p| p.registrar_service_id),
         };
 
+        let token_endpoint_auth_method = row.token_endpoint_auth_method.to_string();
+        let trust_state = row.trust_state.to_string();
+        let client = OauthClient {
+            client_id: client_id.as_str().to_string(),
+            client_name: spec.client_name.clone(),
+            client_uri: spec.client_uri.clone(),
+            logo_uri: spec.logo_uri.clone(),
+            redirect_uris: spec.redirect_uris.clone(),
+            grant_types: spec.grant_types.clone(),
+            scopes: spec.scopes.clone(),
+            token_endpoint_auth_method,
+            registration_source: spec.registration_source,
+            first_party: spec.first_party,
+            trust_state,
+            confidential: spec.confidential,
+            audiences,
+            registrar_service_id: None,
+            created_at,
+        };
+
         let mut conn = self.conn().await?;
         let row_ref = &row;
-        let audience_uris = audiences.as_deref();
+        let client_ref = &client;
         let platform_ref = platform.as_ref();
         let bound = conn
             .transaction::<_, AuthError, _>(|conn| {
@@ -122,49 +151,27 @@ impl Engine {
                         .await
                         .map_err(|e| AuthError::Internal(e.into()))?;
                     if let Some(bound) = &bound {
+                        // Locked registrations of this registrar: bound
+                        // directly, not through the DCR-oriented admin check.
                         approve_registrations(conn, row_ref.client_id, bound).await?;
-                    } else if let Some(uris) = audience_uris {
-                        approve_audiences(conn, row_ref.client_id, uris).await?;
+                    } else if let Some(uris) = &client_ref.audiences {
+                        approve_audiences(conn, client_ref, uris).await?;
                     }
                     Ok(bound)
                 }
                 .scope_boxed()
             })
             .await?;
-        let audiences = match bound {
-            Some(bound) => Some(
-                bound
-                    .into_iter()
-                    .map(|(_, uri)| uri)
-                    .collect::<Vec<_>>(),
-            ),
-            None => audiences,
-        };
+        // A Platform client is always audience-restricted: its stored list is
+        // exactly the registrations just locked, so the shared eligibility
+        // rule confines it to them at issuance.
+        let mut client = client;
+        if let Some(bound) = bound {
+            client.audiences = Some(bound.into_iter().map(|(_, uri)| uri).collect());
+        }
+        client.registrar_service_id = platform.map(|p| p.registrar_service_id);
 
-        let token_endpoint_auth_method = row.token_endpoint_auth_method.to_string();
-        let trust_state = row.trust_state.to_string();
-        drop(row);
-
-        Ok((
-            OauthClient {
-                client_id: client_id.as_str().to_string(),
-                client_name: spec.client_name,
-                client_uri: spec.client_uri,
-                logo_uri: spec.logo_uri,
-                redirect_uris: spec.redirect_uris,
-                grant_types: spec.grant_types,
-                scopes: spec.scopes,
-                token_endpoint_auth_method,
-                registration_source: spec.registration_source,
-                first_party: spec.first_party,
-                trust_state,
-                confidential: spec.confidential,
-                audiences,
-                registrar_service_id: platform.map(|p| p.registrar_service_id),
-                created_at,
-            },
-            secret,
-        ))
+        Ok((client, secret))
     }
 
     /// Look up a live client. A revoked client is `NotFound`: nothing outside
@@ -377,32 +384,60 @@ fn canonical_audiences(uris: &[String]) -> Result<Vec<String>, AuthError> {
 }
 
 /// Records approvals against the registrations that hold `uris` right now.
-/// Every URI must resolve; the approval names the registration id, so a URI
-/// that is later deleted and registered again is not approved.
+/// Every URI must resolve, and the client must be eligible for each under the
+/// shared rule; the approval names the registration id, so a URI that is
+/// later deleted and registered again is not approved.
 async fn approve_audiences(
     conn: &mut diesel_async::AsyncPgConnection,
-    client_id: &str,
+    client: &OauthClient,
     uris: &[String],
 ) -> Result<(), AuthError> {
-    let ids: Vec<uuid::Uuid> = oauth_resource::table
+    let resources: Vec<OauthResourceRow> = oauth_resource::table
         .filter(oauth_resource::resource_uri.eq_any(uris))
-        .select(oauth_resource::id)
+        .select(OauthResourceRow::as_select())
         .for_share()
         .load(conn)
         .await
         .map_err(|e| AuthError::Internal(e.into()))?;
-    if ids.len() != uris.len() {
+    // Unauthenticated dynamic registration gets one message for "unknown" and
+    // "not permitted", so it cannot probe which resources exist or have
+    // opted in. Operators and services get the detail.
+    let dynamic = client.registration_source == RegistrationSource::Dynamic;
+    const DYNAMIC_REFUSAL: &str = "every resource must be registered and available to this client";
+    if resources.len() != uris.len() {
         return Err(field(
-            "audiences",
-            "every audience must be a registered resource",
+            "resources",
+            if dynamic {
+                DYNAMIC_REFUSAL.to_string()
+            } else {
+                "every audience must be a registered resource".to_string()
+            },
         ));
     }
-    let rows: Vec<_> = ids
-        .into_iter()
-        .map(|id| {
+    let resources: Vec<_> = resources.into_iter().map(row_to_resource).collect();
+    if let Some(denied) = resources
+        .iter()
+        .find(|resource| !super::client_may_use_resource(client, resource))
+    {
+        return Err(field(
+            "resources",
+            if dynamic {
+                DYNAMIC_REFUSAL.to_string()
+            } else {
+                format!(
+                    "this client may not be bound to {}: it is delegated and has not opted in \
+                     to dynamic registration",
+                    denied.resource_uri
+                )
+            },
+        ));
+    }
+    let rows: Vec<_> = resources
+        .iter()
+        .map(|resource| {
             (
-                oauth_client_audience::client_id.eq(client_id),
-                oauth_client_audience::registration_id.eq(id),
+                oauth_client_audience::client_id.eq(&client.client_id),
+                oauth_client_audience::registration_id.eq(resource.registration_id),
             )
         })
         .collect();

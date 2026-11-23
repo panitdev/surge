@@ -13,7 +13,7 @@ use axum::response::{IntoResponse, Response};
 use axum::{Form, Json};
 use serde::Deserialize;
 use serde_json::json;
-use surge_engine::oauth::{verify_pkce, OauthClient, RefreshGrant};
+use surge_engine::oauth::{client_may_use_resource, verify_pkce, OauthClient, RefreshGrant};
 use surge_engine::{AuthError, AuthorizationCode, ClientSecret, RefreshToken};
 
 use super::error::{OauthError, OauthErrorCode};
@@ -181,6 +181,8 @@ async fn authorization_code_grant(
         }
     }
 
+    ensure_eligible(state, &client, grant.registration_id).await?;
+
     let refresh_grant = RefreshGrant {
         client_id: grant.client_id.clone(),
         identity_id: grant.identity_id,
@@ -237,17 +239,52 @@ async fn refresh_token_grant(
             ),
         })?;
 
+    // Eligibility is current-state, not a fact about the day of consent: a
+    // client dropped from a resource's audience list stops refreshing there.
+    //
+    // The rotation has already spent the presented token and minted its
+    // successor, so a failure here must end the grant: the whole family is
+    // revoked, leaving no live refresh token behind to keep
+    // `oauth_grant_is_live` (and so introspection) answering for it.
+    if let Err(e) = ensure_eligible(state, &client, rotated.grant.registration_id).await {
+        if e.code == OauthErrorCode::InvalidTarget {
+            // Ineligibility is per (client, registration), so every family
+            // the client holds there ends, not only the one that refreshed.
+            if let Err(revoke) = state
+                .engine
+                .revoke_oauth_grants_for_registration(
+                    &client.client_id,
+                    rotated.grant.registration_id,
+                )
+                .await
+            {
+                tracing::warn!(error = %revoke, client_id = %client.client_id, "failed to end refused grants");
+            }
+        } else {
+            // Anything else (a database error, a registration that is gone)
+            // says nothing about eligibility, so it must not take down
+            // grants it knows nothing about; only the presented family ends.
+            end_grant(state, &client, &rotated.token).await;
+        }
+        return Err(e);
+    }
+
     // The grant is bound to the identity, so this is the check that matters:
     // a disabled account stops refreshing within one access-token lifetime,
     // with no resource server changing anything (internal/oauth-as.md §7).
     let identity = state
         .provider
         .identity(rotated.grant.identity_id)
-        .await
-        .map_err(|_| {
-            OauthError::new(OauthErrorCode::InvalidGrant, "the account is no longer active")
-        })?;
+        .await;
+    let Ok(identity) = identity else {
+        end_grant(state, &client, &rotated.token).await;
+        return Err(OauthError::new(
+            OauthErrorCode::InvalidGrant,
+            "the account is no longer active",
+        ));
+    };
     if identity.state != surge_engine::IdentityState::Active {
+        end_grant(state, &client, &rotated.token).await;
         return Err(OauthError::new(
             OauthErrorCode::InvalidGrant,
             "the account is disabled",
@@ -265,6 +302,47 @@ async fn refresh_token_grant(
 
     let response = build_token_body(state, &client, &grant, None, false).await?;
     Ok(Json(with_refresh(response, rotated.token.expose_secret())).into_response())
+}
+
+/// Revokes the whole refresh family `successor` belongs to. Best-effort: the
+/// request is failing regardless, and a failure to revoke is logged.
+async fn end_grant(state: &AsState, client: &OauthClient, successor: &RefreshToken) {
+    if let Err(e) = state
+        .engine
+        .revoke_refresh_token(successor, &client.client_id)
+        .await
+    {
+        tracing::warn!(error = %e, client_id = %client.client_id, "failed to end a refused grant");
+    }
+}
+
+/// The shared eligibility rule, applied to the registration a grant is bound
+/// to. A registration that no longer exists is a dead grant (`invalid_grant`);
+/// one the client may no longer use is an `invalid_target`.
+async fn ensure_eligible(
+    state: &AsState,
+    client: &OauthClient,
+    registration_id: uuid::Uuid,
+) -> Result<(), OauthError> {
+    let registration = state
+        .engine
+        .get_oauth_registration(registration_id)
+        .await
+        .map_err(|e| match e {
+            AuthError::NotFound => OauthError::new(
+                OauthErrorCode::InvalidGrant,
+                "the resource this grant was issued for is no longer registered",
+            ),
+            other => OauthError::from(other),
+        })?;
+    if client_may_use_resource(client, &registration) {
+        Ok(())
+    } else {
+        Err(OauthError::new(
+            OauthErrorCode::InvalidTarget,
+            super::authorize::INELIGIBLE_TARGET,
+        ))
+    }
 }
 
 /// Mints the access token (and, when in play, the ID token) plus a fresh

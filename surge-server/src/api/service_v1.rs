@@ -491,6 +491,15 @@ async fn authorize_client_registration(
             message: "a delegated registrar must name the resources the client is for".into(),
         }));
     }
+    if resources.len() > surge_engine::oauth::MAX_PLATFORM_RESOURCES {
+        return Err(AuthError::Validation(ValidationError::Field {
+            field: "resources",
+            message: format!(
+                "at most {} resources are allowed",
+                surge_engine::oauth::MAX_PLATFORM_RESOURCES
+            ),
+        }));
+    }
     let mut ids = Vec::with_capacity(resources.len());
     for uri in resources {
         let resource = state.engine.get_oauth_resource(uri).await.map_err(|e| match e {

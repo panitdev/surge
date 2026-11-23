@@ -49,6 +49,11 @@ pub enum ClientCommand {
         client_uri: Option<String>,
         #[arg(long)]
         logo_uri: Option<String>,
+        /// Bind the client to these resource URIs. Once given, it is
+        /// restricted to exactly these audiences. Omit to leave the client
+        /// with its default access to service resources.
+        #[arg(long, num_args = 1..)]
+        resource: Option<Vec<String>>,
     },
     List,
     Revoke {
@@ -106,6 +111,7 @@ async fn client(cmd: ClientCommand, engine: Arc<Engine>) -> anyhow::Result<()> {
             first_party,
             client_uri,
             logo_uri,
+            resource,
         } => {
             let (client, secret) = engine
                 .create_oauth_client(NewOauthClient {
@@ -121,7 +127,7 @@ async fn client(cmd: ClientCommand, engine: Arc<Engine>) -> anyhow::Result<()> {
                     confidential,
                     first_party,
                     registration_source: RegistrationSource::Admin,
-                    audiences: None,
+                    audiences: resource,
                 })
                 .await?;
 
@@ -146,6 +152,7 @@ async fn client(cmd: ClientCommand, engine: Arc<Engine>) -> anyhow::Result<()> {
                     serde_json::json!({
                         "client_id": client.client_id,
                         "first_party": client.first_party,
+                        "resources": client.audiences,
                     }),
                     None,
                 )

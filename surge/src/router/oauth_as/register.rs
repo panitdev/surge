@@ -10,6 +10,8 @@
 //! - scope capped by what registered resources declare — a client cannot
 //!   invent a scope, only ask for one that already exists;
 //! - redirect URIs `https`, or `http` on loopback for native clients;
+//! - an optional `resources` list binds the client to registered audiences,
+//!   each checked against the shared eligibility rule;
 //! - unused registrations swept after `SURGE_OAUTH_DCR_TTL_DAYS`.
 //!
 //! There is no registration access token and no RFC 7592 configuration
@@ -41,6 +43,11 @@ pub(crate) struct RegisterBody {
     response_types: Option<Vec<String>>,
     scope: Option<String>,
     token_endpoint_auth_method: Option<String>,
+    /// Optional canonical resource URIs to bind the client to. Each must be a
+    /// currently registered resource this client is eligible for; the list
+    /// then restricts every audience the client can request. Absent means no
+    /// list. An empty list is a client that can be issued nothing.
+    resources: Option<Vec<String>>,
 }
 
 pub(crate) async fn register(
@@ -130,7 +137,7 @@ async fn run(
         // first-party, and the database refuses it independently.
         first_party: false,
         registration_source: RegistrationSource::Dynamic,
-        audiences: None,
+        audiences: body.resources,
     };
 
     let (client, secret) = state
@@ -154,6 +161,9 @@ async fn run(
         "token_endpoint_auth_method": client.token_endpoint_auth_method,
         "client_id_issued_at": client.created_at.timestamp(),
     });
+    if let Some(resources) = &client.audiences {
+        response["resources"] = json!(resources);
+    }
 
     if let Some(secret) = secret {
         response["client_secret"] = json!(secret.expose_secret());

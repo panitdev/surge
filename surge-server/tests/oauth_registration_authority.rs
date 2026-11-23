@@ -439,3 +439,91 @@ async fn a_platform_client_cannot_bind_a_registration_it_no_longer_holds() {
     let clients = h.engine.list_oauth_clients().await.unwrap();
     assert!(clients.iter().all(|c| c.registrar_service_id != Some(platform_id)));
 }
+
+/// The registrar's binding is not merely recorded: the shared eligibility
+/// rule confines a Platform client to exactly the registrations it was bound
+/// to, at authorization and at redemption.
+#[tokio::test]
+#[ignore = "requires a live Postgres via DATABASE_URL"]
+async fn a_platform_client_is_issued_tokens_only_for_its_bound_resource() {
+    let h = harness().await;
+    let session = h.sign_in().await;
+    let (_, platform) = service(
+        &h,
+        "platform",
+        &["oauth_resource_register", "oauth_client_register"],
+    )
+    .await;
+    let uri = format!("{}-delegated", h.resource_uri);
+    let resp = call(&h, "POST", "/v1/oauth/resources", &platform, Some(resource(&uri))).await;
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let resp = call(
+        &h,
+        "POST",
+        "/v1/oauth/clients",
+        &platform,
+        Some(client_body(false, json!([uri]))),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let created = body_json(resp).await;
+    assert_eq!(created["audiences"], json!([uri]));
+    let client_id = created["client_id"].as_str().unwrap().to_string();
+
+    // The bound, delegated resource: authorize, consent, redeem.
+    let pkce = Pkce::generate();
+    let resp = h
+        .get(
+            &h.authorize_uri(&client_id, &pkce, Some(&uri), Some("mcp:read")),
+            Some(&session),
+        )
+        .await;
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    let target = location(&resp);
+    let flow = query_param(&target, "consent_flow")
+        .unwrap_or_else(|| panic!("bound resource must reach consent: {target}"));
+    let csrf = body_json(h.get(&format!("/v1/oauth/consent/{flow}"), Some(&session)).await).await
+        ["csrf_token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let resp = h
+        .post_json(
+            &format!("/v1/oauth/consent/{flow}"),
+            json!({ "approve": true, "csrf_token": csrf }),
+            Some(&session),
+        )
+        .await;
+    let redirect = body_json(resp).await["redirect_to"].as_str().unwrap().to_string();
+    let code = query_param(&redirect, "code").expect("code");
+    let resp = h
+        .post_form(
+            "/oauth2/token",
+            &[
+                ("grant_type", "authorization_code"),
+                ("code", &code),
+                ("redirect_uri", CLIENT_REDIRECT),
+                ("client_id", &client_id),
+                ("code_verifier", &pkce.verifier),
+            ],
+        )
+        .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(body_json(resp).await["access_token"].is_string());
+
+    // A first-party service resource the client was not bound to.
+    let pkce = Pkce::generate();
+    let resp = h
+        .get(
+            &h.authorize_uri(&client_id, &pkce, Some(&h.resource_uri), Some("mcp:read")),
+            Some(&session),
+        )
+        .await;
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    let target = location(&resp);
+    assert_eq!(
+        query_param(&target, "error").as_deref(),
+        Some("invalid_target"),
+        "{target}"
+    );
+}

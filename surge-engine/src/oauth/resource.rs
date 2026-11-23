@@ -241,7 +241,7 @@ async fn insert_resource(
     Ok(row_to_resource(row))
 }
 
-fn row_to_resource(row: OauthResourceRow) -> OauthResource {
+pub(super) fn row_to_resource(row: OauthResourceRow) -> OauthResource {
     OauthResource {
         registration_id: row.id,
         resource_uri: row.resource_uri,
