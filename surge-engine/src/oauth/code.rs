@@ -128,6 +128,9 @@ impl Engine {
                     &grant.scopes,
                 )
                 .await?;
+                let session_expiry = binding
+                    .validate(conn, grant.session_id, grant.identity_id)
+                    .await?;
                 // A saved consent is read by the caller outside this
                 // transaction; a code issued on the strength of it must still
                 // be covered when the registration is locked. (A consent flow
@@ -158,9 +161,6 @@ impl Engine {
                         }
                     }
                 }
-                let session_expiry = binding
-                    .validate(conn, grant.session_id, grant.identity_id)
-                    .await?;
                 let mut flow_expiry = None;
                 if let Some(flow_id) = consent_flow {
                     flow_expiry = Some(super::consent::consume_flow(conn, flow_id).await?);

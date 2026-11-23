@@ -445,6 +445,7 @@ async fn exercise(url: String) {
     drop(engine);
 
     // And the migration reverses cleanly.
+    conn.revert_last_migration(MIGRATIONS).unwrap(); // 15, access-token high water
     conn.revert_last_migration(MIGRATIONS).unwrap(); // 14, resource lifecycle
     conn.revert_last_migration(MIGRATIONS).unwrap(); // 13, client registrar
     conn.revert_last_migration(MIGRATIONS).unwrap();
