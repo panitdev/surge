@@ -39,6 +39,8 @@ pub async fn svc(cmd: SvcCommand, engine: Arc<Engine>) -> anyhow::Result<()> {
                 "external_auth",
                 "external_link",
                 "oauth_admin",
+                "oauth_resource_register",
+                "oauth_client_register",
             ];
             for g in &grant {
                 if !valid_grants.contains(&g.as_str()) {

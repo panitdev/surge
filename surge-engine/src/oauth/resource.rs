@@ -30,7 +30,7 @@ impl Engine {
         insert_resource(
             &mut conn,
             resource_uri,
-            service_id,
+            Some(service_id),
             None,
             scopes,
             scope_descriptions,
@@ -38,14 +38,16 @@ impl Engine {
         .await
     }
 
-    /// Registers a service resource on behalf of an authenticated service,
-    /// which is recorded as the registrar whoever ends up owning it.
+    /// Registers a resource on behalf of an authenticated service, which is
+    /// recorded as the registrar whoever ends up owning it. `owner` is the
+    /// owning service of a service registration; `None` registers a
+    /// delegated resource, which no service owns.
     pub async fn register_oauth_resource(
         &self,
         actor: AuditActor,
         registrar_service_id: Uuid,
         resource_uri: &str,
-        service_id: Uuid,
+        owner: Option<Uuid>,
         scopes: Vec<String>,
         scope_descriptions: serde_json::Value,
     ) -> Result<OauthResource, AuthError> {
@@ -55,7 +57,7 @@ impl Engine {
                 let resource = insert_resource(
                     conn,
                     resource_uri,
-                    service_id,
+                    owner,
                     Some(registrar_service_id),
                     scopes,
                     scope_descriptions,
@@ -69,7 +71,7 @@ impl Engine {
                         "registration_id": resource.registration_id,
                         "resource_uri": resource.resource_uri,
                         "registration_source": resource.registration_source,
-                        "owner_service_id": service_id,
+                        "owner_service_id": owner,
                         "registrar_service_id": registrar_service_id,
                     }),
                     None,
@@ -114,6 +116,23 @@ impl Engine {
     pub async fn list_oauth_resources(&self) -> Result<Vec<OauthResource>, AuthError> {
         let mut conn = self.conn().await?;
         let rows: Vec<OauthResourceRow> = oauth_resource::table
+            .order(oauth_resource::resource_uri.asc())
+            .select(OauthResourceRow::as_select())
+            .load(&mut conn)
+            .await
+            .map_err(|e| AuthError::Internal(e.into()))?;
+        Ok(rows.into_iter().map(row_to_resource).collect())
+    }
+
+    /// Registrations a service created, whoever owns them — the set a
+    /// delegated registrar may see and manage.
+    pub async fn oauth_resources_for_registrar(
+        &self,
+        registrar_service_id: Uuid,
+    ) -> Result<Vec<OauthResource>, AuthError> {
+        let mut conn = self.conn().await?;
+        let rows: Vec<OauthResourceRow> = oauth_resource::table
+            .filter(oauth_resource::registrar_service_id.eq(registrar_service_id))
             .order(oauth_resource::resource_uri.asc())
             .select(OauthResourceRow::as_select())
             .load(&mut conn)
@@ -177,7 +196,7 @@ fn not_found(e: Error) -> AuthError {
 async fn insert_resource(
     conn: &mut AsyncPgConnection,
     resource_uri: &str,
-    service_id: Uuid,
+    owner: Option<Uuid>,
     registrar_service_id: Option<Uuid>,
     scopes: Vec<String>,
     scope_descriptions: serde_json::Value,
@@ -194,8 +213,13 @@ async fn insert_resource(
         .values(&NewOauthResource {
             id: Uuid::now_v7(),
             resource_uri: &canonical,
-            registration_source: ResourceSource::Service.as_str(),
-            service_id: Some(service_id),
+            registration_source: if owner.is_some() {
+                ResourceSource::Service
+            } else {
+                ResourceSource::Delegated
+            }
+            .as_str(),
+            service_id: owner,
             registrar_service_id,
             scopes,
             scope_descriptions,
