@@ -30,7 +30,10 @@ pub use cimd::{
 pub use client::{validate_redirect_uri, MAX_PLATFORM_RESOURCES};
 pub use code::{AuthorizationSession, verify_pkce, AUTHORIZATION_CODE_TTL_SECS};
 pub use consent::ConsentFlowRequest;
-pub use eligibility::{client_may_use_resource, EligibilityPolicy, offers_scopes_to_dcr, permitted_scopes};
+pub use eligibility::{
+    EligibilityPolicy, cimd_client_may_use_resource, client_may_use_resource, offers_scopes_to_dcr,
+    permitted_scopes,
+};
 pub use key::ES256;
 pub use lifecycle::{
     reuse_window, DeleteOutcome, ResourceManager, ResourcePatch, ACCESS_TOKEN_CLOCK_SKEW,
@@ -62,7 +65,7 @@ pub enum RegistrationSource {
     /// client ID URL (surge-bcc). Its name, logo and redirect URIs are
     /// self-declared, so it is untrusted and never first-party; the row is a
     /// cache of the last document validated for a consent flow, and is
-    /// admitted to a resource only by that resource's exact allowlist.
+    /// admitted by the resource's CIMD policy.
     Cimd,
     /// A stored value this build does not recognise (the database constrains
     /// it, so this is a newer or corrupted row). Fails closed: untrusted
@@ -220,6 +223,9 @@ pub struct OauthResource {
     pub scope_descriptions: serde_json::Value,
     /// Exact CIMD client-ID URLs allowed to use this resource.
     pub allowed_cimd_client_ids: Vec<String>,
+    /// Admit valid public CIMD clients independently of the exact allowlist.
+    #[serde(default)]
+    pub cimd_open: bool,
     /// Whether dynamically registered clients may use this resource without
     /// an explicit audience binding.
     pub dcr_enabled: bool,

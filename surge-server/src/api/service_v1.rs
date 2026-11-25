@@ -665,6 +665,8 @@ pub(crate) struct CreateOauthResourceBody {
     scopes: Vec<String>,
     #[serde(default)]
     scope_descriptions: Option<serde_json::Value>,
+    #[serde(default)]
+    cimd_open: bool,
 }
 
 pub(crate) async fn create_oauth_resource(
@@ -710,7 +712,7 @@ pub(crate) async fn create_oauth_resource(
 
     let resource = state
         .engine
-        .register_oauth_resource(
+        .register_oauth_resource_with_cimd(
             surge_engine::audit::AuditActor::Service {
                 id: auth.service_id.to_string(),
                 name: auth.service_name,
@@ -719,8 +721,8 @@ pub(crate) async fn create_oauth_resource(
             &body.resource_uri,
             owner,
             body.scopes,
-            body.scope_descriptions
-                .unwrap_or_else(|| json!({})),
+            body.scope_descriptions.unwrap_or_else(|| json!({})),
+            body.cimd_open,
         )
         .await?;
 
@@ -846,6 +848,8 @@ pub(crate) struct UpdateOauthResourceBody {
     #[serde(default)]
     allowed_cimd_client_ids: Option<Vec<String>>,
     #[serde(default)]
+    cimd_open: Option<bool>,
+    #[serde(default)]
     dcr_enabled: Option<bool>,
 }
 
@@ -870,6 +874,7 @@ pub(crate) async fn update_oauth_resource(
                 scopes: body.scopes,
                 scope_descriptions: body.scope_descriptions,
                 allowed_cimd_client_ids: body.allowed_cimd_client_ids,
+                cimd_open: body.cimd_open,
                 dcr_enabled: body.dcr_enabled,
             },
         )

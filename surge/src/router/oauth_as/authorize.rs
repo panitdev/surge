@@ -16,7 +16,7 @@ use axum_extra::extract::CookieJar;
 use serde::{Deserialize, Serialize};
 use surge_engine::oauth::{
     AuthorizationGrant, AuthorizationSession, ConsentFlowRequest, OauthClient, OauthResource,
-    canonicalize_resource_uri, client_may_use_resource,
+    canonicalize_resource_uri, cimd_client_may_use_resource, client_may_use_resource,
 };
 use surge_engine::{AuthError, Session, SessionToken};
 
@@ -175,6 +175,14 @@ pub(super) async fn authorize_query(
             );
         }
     };
+    let chooser_error = |error: crate::router::error::ApiError| {
+        if cimd.is_some()
+            && let Some((code, message)) = admission_refusal(&error.0)
+        {
+            return fail(code, message);
+        }
+        error.into_response()
+    };
     if original.is_some() && picker {
         if !state.multi_account {
             return fail(
@@ -182,16 +190,9 @@ pub(super) async fn authorize_query(
                 "account selection is unavailable",
             );
         }
-        return start_request(
-            state,
-            headers,
-            &query,
-            &resource,
-            &scopes,
-            true,
-        )
-        .await
-        .unwrap_or_else(IntoResponse::into_response);
+        return start_request(state, headers, &query, &resource, &scopes, true)
+            .await
+            .unwrap_or_else(chooser_error);
     }
     let resolved = match selected {
         Some(selected) => Ok(selected),
@@ -207,16 +208,9 @@ pub(super) async fn authorize_query(
                 );
             }
             if state.multi_account {
-                return start_request(
-                    state,
-                    headers,
-                    &query,
-                    &resource,
-                    &scopes,
-                    false,
-                )
-                .await
-                .unwrap_or_else(IntoResponse::into_response);
+                return start_request(state, headers, &query, &resource, &scopes, false)
+                    .await
+                    .unwrap_or_else(chooser_error);
             }
             let Some(uri) = original else {
                 return fail(OauthErrorCode::LoginRequired, "session expired");
@@ -328,9 +322,8 @@ pub(super) async fn authorize_query(
 /// as. Nothing is stored here: the row is written when the consent flow is
 /// created, once every other check has passed.
 ///
-/// The document is fetched only for a URL the requested resource's allowlist
-/// names exactly, so an unauthenticated request cannot aim the fetcher at an
-/// arbitrary host. Every refusal here is an error page, not a redirect: until
+/// Resource policy and revocation are checked before any metadata fetch.
+/// Every refusal here is an error page, not a redirect: until
 /// the document is verified there is no redirect URI to trust.
 async fn resolve_cimd_client(
     state: &AsState,
@@ -345,7 +338,7 @@ async fn resolve_cimd_client(
         Ok(resource) => resource,
         Err((code, message)) => return Err(page(code, &message)),
     };
-    if !resource.allowed_cimd_client_ids.iter().any(|id| id == client_id) {
+    if !cimd_client_may_use_resource(client_id, &resource) {
         return Err(page(OauthErrorCode::InvalidTarget, INELIGIBLE_TARGET));
     }
     // A revoked client stays revoked, whatever its document now says.

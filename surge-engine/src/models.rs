@@ -258,6 +258,7 @@ pub struct OauthResourceRow {
     pub scopes: Vec<String>,
     pub scope_descriptions: serde_json::Value,
     pub allowed_cimd_client_ids: Vec<String>,
+    pub cimd_open: bool,
     pub dcr_enabled: bool,
     pub created_at: DateTime<Utc>,
 }
@@ -273,6 +274,7 @@ pub struct NewOauthResource<'a> {
     pub scopes: Vec<String>,
     pub scope_descriptions: serde_json::Value,
     pub allowed_cimd_client_ids: Vec<String>,
+    pub cimd_open: bool,
     pub dcr_enabled: bool,
     pub created_at: DateTime<Utc>,
 }

@@ -64,6 +64,7 @@ use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
 use uuid::Uuid;
 
+use super::eligibility::{cimd_client_may_use_resource, is_cimd_client_id};
 use super::resource::{canonicalize_resource_uri, row_to_resource};
 use super::{client_may_use_resource, OauthResource, ResourceSource};
 use crate::audit::{audit_conn, AuditActor};
@@ -121,6 +122,7 @@ pub struct ResourcePatch {
     pub scopes: Option<Vec<String>>,
     pub scope_descriptions: Option<serde_json::Value>,
     pub allowed_cimd_client_ids: Option<Vec<String>>,
+    pub cimd_open: Option<bool>,
     pub dcr_enabled: Option<bool>,
 }
 
@@ -349,11 +351,12 @@ impl Engine {
         if patch.scopes.is_none()
             && patch.scope_descriptions.is_none()
             && patch.allowed_cimd_client_ids.is_none()
+            && patch.cimd_open.is_none()
             && patch.dcr_enabled.is_none()
         {
             return Err(field(
                 "body",
-                "provide at least one of scopes, scope_descriptions, allowed_cimd_client_ids, dcr_enabled",
+                "provide at least one of scopes, scope_descriptions, allowed_cimd_client_ids, cimd_open, dcr_enabled",
             ));
         }
         let scopes = patch.scopes.map(validate_scopes).transpose()?;
@@ -389,6 +392,7 @@ impl Engine {
 
                 let new_scopes = scopes.unwrap_or_else(|| old.scopes.clone());
                 let new_cimd = cimd.unwrap_or_else(|| old.allowed_cimd_client_ids.clone());
+                let new_cimd_open = patch.cimd_open.unwrap_or(old.cimd_open);
                 let new_dcr = dcr.unwrap_or(old.dcr_enabled);
                 if let Some(map) = descriptions.as_ref().and_then(|d| d.as_object())
                     && let Some(stray) = map.keys().find(|k| !new_scopes.contains(k))
@@ -426,6 +430,7 @@ impl Engine {
 
                 if new_scopes == old.scopes
                     && new_cimd == old.allowed_cimd_client_ids
+                    && new_cimd_open == old.cimd_open
                     && new_dcr == old.dcr_enabled
                     && new_descriptions == old.scope_descriptions
                 {
@@ -437,6 +442,7 @@ impl Engine {
                         oauth_resource::scopes.eq(&new_scopes),
                         oauth_resource::scope_descriptions.eq(&new_descriptions),
                         oauth_resource::allowed_cimd_client_ids.eq(&new_cimd),
+                        oauth_resource::cimd_open.eq(new_cimd_open),
                         oauth_resource::dcr_enabled.eq(new_dcr),
                     ))
                     .returning(OauthResourceRow::as_returning())
@@ -449,9 +455,11 @@ impl Engine {
                 if !removed_scopes.is_empty() {
                     ended.add(trim_removed_scopes(conn, updated.registration_id, &removed_scopes).await?);
                 }
-                if !removed_cimd.is_empty() || (old.dcr_enabled && !new_dcr) {
+                let cimd_narrowed = !new_cimd_open && (old.cimd_open || !removed_cimd.is_empty());
+                let dcr_disabled = old.dcr_enabled && !new_dcr;
+                if cimd_narrowed || dcr_disabled {
                     ended.add(
-                        end_ineligible_grants(conn, &updated, &removed_cimd, policy).await?,
+                        end_ineligible_grants(conn, &old, &updated, dcr_disabled, policy).await?,
                     );
                 }
 
@@ -466,6 +474,7 @@ impl Engine {
                         "scope_descriptions_changed": new_descriptions != old.scope_descriptions,
                         "cimd_client_ids_removed": removed_cimd,
                         "cimd_client_ids_added": added_cimd,
+                        "cimd_open": { "from": old.cimd_open, "to": new_cimd_open },
                         "dcr_enabled": { "from": old.dcr_enabled, "to": new_dcr },
                         "invalidated": ended,
                     })),
@@ -754,21 +763,16 @@ async fn trim_removed_scopes(
     Ok(ended)
 }
 
-/// Eligibility narrowed (a CIMD client left the allowlist, or DCR was turned
-/// off): ends every grant, flow, code and pending choice of each client that
-/// the registration's new policy no longer admits.
-///
-/// `removed_cimd` are the client IDs just taken off the allowlist. They are
-/// ended by name rather than evaluated, which also covers a grant whose CIMD
-/// row was removed since (surge-bcc stores one per client once a consent flow
-/// exists). Every other client holding anything at the registration
-/// is evaluated with the shared rule against the new policy.
+/// Ends affected grants and pending requests after CIMD admission narrows or
+/// DCR is disabled. CIMD requests can be parked before a client row exists,
+/// so compare the old and new resource policies directly against their IDs.
 // `redundant_field_names` is a false positive from `QueryableByName`.
 #[allow(clippy::field_reassign_with_default, clippy::redundant_field_names)]
 async fn end_ineligible_grants(
     conn: &mut AsyncPgConnection,
+    old: &OauthResource,
     resource: &OauthResource,
-    removed_cimd: &[String],
+    dcr_disabled: bool,
     policy: super::EligibilityPolicy,
 ) -> Result<Invalidated, AuthError> {
     let id = resource.registration_id;
@@ -831,11 +835,18 @@ async fn end_ineligible_grants(
 
     let mut to_end: Vec<String> = candidates
         .iter()
-        .filter(|c| removed_cimd.contains(c))
+        .filter(|c| {
+            is_cimd_client_id(c)
+                && cimd_client_may_use_resource(c, old)
+                && !cimd_client_may_use_resource(c, resource)
+        })
         .cloned()
         .collect();
-    let rest: Vec<&String> = candidates.iter().filter(|c| !removed_cimd.contains(c)).collect();
-    if !rest.is_empty() {
+    if dcr_disabled {
+        let rest: Vec<&String> = candidates
+            .iter()
+            .filter(|c| !is_cimd_client_id(c))
+            .collect();
         let rows: Vec<OauthClientRow> = oauth_client::table
             .filter(oauth_client::client_id.eq_any(&rest))
             .select(OauthClientRow::as_select())
@@ -854,9 +865,6 @@ async fn end_ineligible_grants(
             }
         }
     }
-    // Clients named by the allowlist that held nothing still need no work,
-    // but one that holds something under a CIMD ID outside `candidates`
-    // cannot exist.
     if to_end.is_empty() {
         return Ok(Invalidated::default());
     }

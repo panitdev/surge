@@ -63,6 +63,8 @@ struct Registration {
     cimd: i64,
     #[diesel(sql_type = Bool)]
     dcr_enabled: bool,
+    #[diesel(sql_type = Bool)]
+    cimd_open: bool,
 }
 
 #[derive(QueryableByName)]
@@ -80,7 +82,7 @@ fn count(conn: &mut PgConnection, sql: &str) -> i64 {
 fn registration(conn: &mut PgConnection, uri: &str) -> Registration {
     diesel::sql_query(format!(
         "SELECT id, registration_source, service_id, registrar_service_id, \
-                cardinality(allowed_cimd_client_ids)::BIGINT AS cimd, dcr_enabled \
+                cardinality(allowed_cimd_client_ids)::BIGINT AS cimd, dcr_enabled, cimd_open \
            FROM surge.oauth_resource WHERE resource_uri = '{uri}'"
     ))
     .get_result(conn)
@@ -249,6 +251,7 @@ async fn exercise(url: String) {
     assert_eq!(kept.registrar_service_id, None, "an unknown registrar stays unknown");
     assert_eq!(kept.cimd, 0);
     assert!(!kept.dcr_enabled);
+    assert!(!kept.cimd_open);
     let reused = registration(&mut conn, REUSED);
     assert_eq!(reused.service_id, Some(creator));
     assert_ne!(kept.id, reused.id);
@@ -447,6 +450,7 @@ async fn exercise(url: String) {
     drop(engine);
 
     // And the migration reverses cleanly.
+    conn.revert_last_migration(MIGRATIONS).unwrap(); // 18, open CIMD
     conn.revert_last_migration(MIGRATIONS).unwrap(); // 17, scope ceiling
     conn.revert_last_migration(MIGRATIONS).unwrap(); // 16, CIMD clients
     conn.revert_last_migration(MIGRATIONS).unwrap(); // 15, access-token high water

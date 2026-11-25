@@ -49,6 +49,21 @@ async fn call(
     h.app.clone().oneshot(req).await.unwrap()
 }
 
+async fn open(h: &Harness) {
+    let resp = call(
+        h,
+        "PATCH",
+        &format!("/v1/oauth/resources/{}", percent_encode(&h.resource_uri)),
+        &h.service_token,
+        Some(json!({ "cimd_open": true })),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["cimd_open"], true);
+    assert_eq!(body["allowed_cimd_client_ids"], json!([]));
+}
+
 /// Allows exactly `ids` on the harness's service resource.
 async fn allow(h: &Harness, ids: &[&str]) {
     let resp = call(
@@ -169,7 +184,7 @@ async fn metadata_advertises_cimd_support() {
 
 #[tokio::test]
 #[ignore = "requires a live Postgres via DATABASE_URL"]
-async fn an_allowed_client_gets_a_consent_flow_and_an_untrusted_shared_row() {
+async fn an_unlisted_open_client_gets_consent_with_its_publisher_hostname() {
     let docs = CimdDocs::new();
     let h = harness_cimd(&docs).await;
     let session = h.sign_in().await;
@@ -183,7 +198,7 @@ async fn an_allowed_client_gets_a_consent_flow_and_an_untrusted_shared_row() {
             "token_endpoint_auth_method": "none",
         }),
     );
-    allow(&h, &[&id]).await;
+    open(&h).await;
     assert!(row(&id).await.is_none());
 
     let resp = authorize(&h, &id, Some(&session)).await;
@@ -272,6 +287,18 @@ async fn delegated_resources_require_an_exact_entry_too() {
     assert_eq!(go().await.status(), StatusCode::BAD_REQUEST);
     assert_eq!(docs.fetches(), 0);
 
+    // The same client can use a different service resource whose policy is open.
+    open(&h).await;
+    assert!(
+        query_param(
+            &location(&authorize(&h, &id, Some(&session)).await),
+            "consent_flow"
+        )
+        .is_some()
+    );
+    assert_eq!(go().await.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(docs.fetches(), 1);
+
     let resp = call(
         &h,
         "PATCH",
@@ -283,6 +310,68 @@ async fn delegated_resources_require_an_exact_entry_too() {
     assert_eq!(resp.status(), StatusCode::OK);
     assert!(query_param(&location(&go().await), "consent_flow").is_some());
     assert_eq!(row(&id).await.unwrap().source, "cimd");
+}
+
+#[tokio::test]
+#[ignore = "requires a live Postgres via DATABASE_URL"]
+async fn open_resources_share_the_outbound_fetch_budget() {
+    let docs = CimdDocs::new();
+    let h = harness_cimd(&docs).await;
+    open(&h).await;
+    let other = format!("https://other.cimd.test/mcp-{}", h.suffix);
+    let created = call(
+        &h,
+        "POST",
+        "/v1/oauth/resources",
+        &h.service_token,
+        Some(json!({
+            "resource_uri": other,
+            "scopes": ["mcp:read"],
+            "cimd_open": true,
+        })),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+
+    let limit = surge::router::CimdLimits::default().outbound_burst;
+    let pkce = Pkce::generate();
+    for i in 0..limit {
+        let id = cimd_url(&h, &format!("budget{i}"));
+        docs.publish_default(&id);
+        let audience = if i % 2 == 0 { &h.resource_uri } else { &other };
+        let response = h
+            .get(
+                &h.authorize_uri(&id, &pkce, Some(audience), Some("mcp:read")),
+                None,
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    }
+    let extra = cimd_url(&h, "over-budget");
+    docs.publish_default(&extra);
+    let response = h
+        .get(
+            &h.authorize_uri(&extra, &pkce, Some(&other), Some("mcp:read")),
+            None,
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert!(
+        body_text(response)
+            .await
+            .contains("temporarily_unavailable")
+    );
+
+    // Reuse metadata fetched for the first audience on the second audience.
+    let cached = cimd_url(&h, "budget0");
+    let response = h
+        .get(
+            &h.authorize_uri(&cached, &pkce, Some(&other), Some("mcp:read")),
+            None,
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(docs.fetches(), limit);
 }
 
 #[tokio::test]
@@ -312,8 +401,7 @@ async fn documents_that_do_not_validate_are_refused_and_leave_no_row() {
     }
     // And one that is not published at all.
     ids.push(cimd_url(&h, "missing"));
-    let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
-    allow(&h, &refs).await;
+    open(&h).await;
 
     for id in &ids {
         let resp = authorize(&h, id, Some(&session)).await;
@@ -426,7 +514,7 @@ async fn redemption_and_refresh_use_the_stored_binding_without_fetching() {
     let session = h.sign_in().await;
     let id = cimd_url(&h, "redeem");
     docs.publish_default(&id);
-    allow(&h, &[&id]).await;
+    open(&h).await;
 
     let (code, pkce) = code_for(&h, &id, &session).await;
     let fetched = docs.fetches();
@@ -459,16 +547,6 @@ async fn redemption_and_refresh_use_the_stored_binding_without_fetching() {
         )
         .await;
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-
-    // Current resource policy still governs: removing the entry ends it.
-    allow(&h, &[]).await;
-    let resp = h
-        .post_form(
-            "/oauth2/token",
-            &[("grant_type", "refresh_token"), ("refresh_token", &refresh), ("client_id", &id)],
-        )
-        .await;
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
@@ -479,7 +557,7 @@ async fn a_revoked_row_stays_a_tombstone() {
     let session = h.sign_in().await;
     let id = cimd_url(&h, "tomb");
     docs.publish_default(&id);
-    allow(&h, &[&id]).await;
+    open(&h).await;
     let (code, pkce) = code_for(&h, &id, &session).await;
     assert_eq!(redeem(&h, &id, &code, &pkce).await.0, StatusCode::OK);
 

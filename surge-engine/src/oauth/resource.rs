@@ -37,6 +37,7 @@ impl Engine {
                     None,
                     scopes,
                     scope_descriptions,
+                    false,
                 )
                 .await
             }
@@ -66,6 +67,7 @@ impl Engine {
                     None,
                     scopes,
                     scope_descriptions,
+                    false,
                 )
                 .await?;
                 audit_conn(
@@ -102,6 +104,29 @@ impl Engine {
         scopes: Vec<String>,
         scope_descriptions: serde_json::Value,
     ) -> Result<OauthResource, AuthError> {
+        self.register_oauth_resource_with_cimd(
+            actor,
+            registrar_service_id,
+            resource_uri,
+            owner,
+            scopes,
+            scope_descriptions,
+            false,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn register_oauth_resource_with_cimd(
+        &self,
+        actor: AuditActor,
+        registrar_service_id: Uuid,
+        resource_uri: &str,
+        owner: Option<Uuid>,
+        scopes: Vec<String>,
+        scope_descriptions: serde_json::Value,
+        cimd_open: bool,
+    ) -> Result<OauthResource, AuthError> {
         let mut conn = self.conn().await?;
         conn.transaction(|conn| {
             async move {
@@ -112,6 +137,7 @@ impl Engine {
                     Some(registrar_service_id),
                     scopes,
                     scope_descriptions,
+                    cimd_open,
                 )
                 .await?;
                 audit_conn(
@@ -124,6 +150,7 @@ impl Engine {
                         "registration_source": resource.registration_source,
                         "owner_service_id": owner,
                         "registrar_service_id": registrar_service_id,
+                        "cimd_open": resource.cimd_open,
                     }),
                     None,
                 )
@@ -234,6 +261,7 @@ async fn insert_resource(
     registrar_service_id: Option<Uuid>,
     scopes: Vec<String>,
     scope_descriptions: serde_json::Value,
+    cimd_open: bool,
 ) -> Result<OauthResource, AuthError> {
     let canonical = canonicalize_resource_uri(resource_uri)?;
     if !scope_descriptions.is_object() {
@@ -258,6 +286,7 @@ async fn insert_resource(
             scopes,
             scope_descriptions,
             allowed_cimd_client_ids: Vec::new(),
+            cimd_open,
             dcr_enabled: false,
             created_at: now(),
         })
@@ -289,6 +318,7 @@ pub(super) fn row_to_resource(row: OauthResourceRow) -> OauthResource {
         scopes: row.scopes,
         scope_descriptions: row.scope_descriptions,
         allowed_cimd_client_ids: row.allowed_cimd_client_ids,
+        cimd_open: row.cimd_open,
         dcr_enabled: row.dcr_enabled,
         created_at: row.created_at,
     }

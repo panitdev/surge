@@ -1,0 +1,1 @@
+ALTER TABLE surge.oauth_resource ADD COLUMN cimd_open BOOLEAN NOT NULL DEFAULT FALSE;

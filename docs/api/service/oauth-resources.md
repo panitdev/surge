@@ -22,7 +22,7 @@ The registrar is always the authenticated service. It cannot be supplied in the 
 }
 ```
 
-`scope_descriptions`, `owner_service_id` and `registration_source` (`service` or `delegated`) are optional. For an `oauth_admin` caller the source defaults to `service` and the owner to the authenticated service. A `delegated` registration has no owner, so supplying `owner_service_id` with it is rejected: HTTP 422 for an administrator, HTTP 403 for a Platform credential. Unknown fields are rejected with HTTP 422. A successful request returns HTTP 201 with the registration:
+`scope_descriptions`, `owner_service_id`, `cimd_open` and `registration_source` (`service` or `delegated`) are optional. For an `oauth_admin` caller the source defaults to `service` and the owner to the authenticated service. A `delegated` registration has no owner, so supplying `owner_service_id` with it is rejected: HTTP 422 for an administrator, HTTP 403 for a Platform credential. Unknown fields are rejected with HTTP 422. A successful request returns HTTP 201 with the registration:
 
 | Field | Meaning |
 | --- | --- |
@@ -32,7 +32,8 @@ The registrar is always the authenticated service. It cannot be supplied in the 
 | `service_id` | The owner's UUID. Only the owner can introspect tokens for this audience. `null` for a delegated registration. |
 | `registrar_service_id` | The authenticated service that made the request. `null` for registrations that predate registrar tracking or were created with the CLI. |
 | `scopes`, `scope_descriptions` | As supplied. |
-| `allowed_cimd_client_ids` | Exact CIMD client IDs allowed to use the resource. Empty by default. |
+| `allowed_cimd_client_ids` | Exact CIMD client IDs admitted in restricted mode. Empty by default. |
+| `cimd_open` | Whether any valid public CIMD client may use this resource. Defaults to `false` for new and existing registrations. |
 | `dcr_enabled` | Whether dynamically registered clients can use the resource without an audience binding. `false` by default. |
 | `created_at` | Creation time. |
 
@@ -51,11 +52,12 @@ Both calls address the registration by its **canonical URI, percent-encoded as o
   "scopes": ["mcp:read"],
   "scope_descriptions": {"mcp:read": "Read your data"},
   "allowed_cimd_client_ids": ["https://app.example/client.json"],
+  "cimd_open": true,
   "dcr_enabled": true
 }
 ```
 
-All fields are optional but at least one is required. Each field replaces the stored value. Scopes are non-empty printable tokens without spaces (not `openid`, `profile` or `offline_access`); CIMD entries are exact `https` URLs with a path and no userinfo or fragment, stored as given; `dcr_enabled` applies to delegated registrations only. The response is the updated registration. A change that alters nothing writes and audits nothing. `scope_descriptions` keys must name scopes the registration will have after the change. `dcr_enabled: false` is accepted on a service registration as a no-op.
+All fields are optional but at least one is required. Each field replaces the stored value. Scopes are non-empty printable tokens without spaces (not `openid`, `profile` or `offline_access`); CIMD entries are exact `https` URLs with a path and no userinfo or fragment, stored as given; `dcr_enabled` applies to delegated registrations only. Omitting `cimd_open` preserves its value. Setting it to `true` preserves the stored list, which takes effect again when it is set to `false`. The response is the updated registration. A change that alters nothing writes and audits nothing. `scope_descriptions` keys must name scopes the registration will have after the change. `dcr_enabled: false` is accepted on a service registration as a no-op.
 
 A change waits for issuance transactions already in flight to finish (they are short and do no network I/O), so under sustained heavy issuance it can take longer to apply.
 
@@ -63,11 +65,11 @@ What a change does to existing grants (all in one transaction, serialized agains
 
 | Change | Effect |
 | --- | --- |
-| Description only, or adding scopes, CIMD entries or enabling DCR | Nothing. Grants are preserved. |
+| Description only, adding scopes or CIMD entries, enabling open CIMD or DCR, or editing the CIMD list while open | Nothing. Grants are preserved. |
 | Removing a scope | Saved consents lose the scope and are deleted if left empty. Every refresh family that carries it is revoked. Unredeemed codes and pending consent flows that carry it are deleted. |
-| Removing a CIMD client ID, or disabling DCR | For each affected client (the removed CIMD client, or each client the new policy no longer admits): its refresh families at this registration are revoked and its consents, pending flows, codes and pending account choices are deleted. |
+| Narrowing CIMD admission or disabling DCR | For each affected client (a client excluded by the resulting policy, including when one patch closes CIMD and edits the list): its refresh families at this registration are revoked and its consents, pending flows, codes and pending account choices are deleted. |
 
-Revoking refresh families is what makes introspection report earlier access tokens as inactive. Access tokens already issued remain valid at resource servers that verify offline until they expire. Restoring a scope, a CIMD entry or the DCR opt-in restores nothing: the client must authorize again.
+Revoking refresh families is what makes introspection report earlier access tokens as inactive. Access tokens already issued remain valid at resource servers that verify offline until they expire. Restoring scope, CIMD or DCR eligibility restores nothing: the client must authorize again.
 
 ### `DELETE`
 

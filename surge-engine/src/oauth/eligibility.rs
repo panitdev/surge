@@ -10,7 +10,7 @@
 //! The rule, in order:
 //!
 //! 1. A client-ID-metadata-document (CIMD) client may use a resource only
-//!    if its exact client ID URL is in the resource's allowlist.
+//!    if the resource opts into open CIMD or lists its exact client ID URL.
 //! 2. With the global DCR switch off, a dynamically registered client is
 //!    ineligible for every resource.
 //! 3. A client with an explicit audience list (`Some`) is restricted to it,
@@ -39,6 +39,16 @@ pub struct EligibilityPolicy {
 
 use super::{OauthClient, OauthResource, RegistrationSource, ResourceSource};
 
+/// Resource policy for an already classified CIMD client ID.
+pub fn cimd_client_may_use_resource(client_id: &str, resource: &OauthResource) -> bool {
+    resource.registration_source != ResourceSource::Unknown
+        && (resource.cimd_open
+            || resource
+                .allowed_cimd_client_ids
+                .iter()
+                .any(|id| id == client_id))
+}
+
 /// True when `client` may be issued tokens for `resource`.
 pub fn client_may_use_resource(
     client: &OauthClient,
@@ -57,13 +67,13 @@ pub fn client_may_use_resource(
     // list alone: it is never admitted through the no-list branch.
     let dynamic = client.registration_source == RegistrationSource::Dynamic;
 
-    // First, so a CIMD client is always held to the allowlist whatever else
+    // First, so a CIMD client is always held to CIMD policy whatever else
     // is stored for it. The `https://` check is belt and braces: the
     // database ties that prefix to the `cimd` source.
     if client.registration_source == RegistrationSource::Cimd
         || is_cimd_client_id(&client.client_id)
     {
-        return resource.allowed_cimd_client_ids.contains(&client.client_id);
+        return cimd_client_may_use_resource(&client.client_id, resource);
     }
 
     // The global kill switch. After the CIMD rule: a CIMD client is not a
@@ -123,7 +133,7 @@ pub fn offers_scopes_to_dcr(resource: &OauthResource) -> bool {
 /// A CIMD client's identifier is the HTTPS URL of its metadata document;
 /// every other client gets a generated `aeg_cid_…` identifier, so the two
 /// cannot be confused.
-fn is_cimd_client_id(client_id: &str) -> bool {
+pub(super) fn is_cimd_client_id(client_id: &str) -> bool {
     client_id.starts_with("https://")
 }
 
@@ -172,6 +182,7 @@ mod tests {
             scopes: vec![],
             scope_descriptions: serde_json::json!({}),
             allowed_cimd_client_ids: cimd.into_iter().map(String::from).collect(),
+            cimd_open: false,
             dcr_enabled: dcr,
             created_at: Utc::now(),
         }

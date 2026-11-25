@@ -142,7 +142,13 @@ async fn code_for(
             Some(session),
         )
         .await;
-    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    if resp.status() != StatusCode::SEE_OTHER {
+        panic!(
+            "authorize failed for {client_id}: {} {}",
+            resp.status(),
+            body_text(resp).await
+        );
+    }
     let mut target = location(&resp);
     if let Some(flow) = query_param(&target, "consent_flow") {
         let csrf = body_json(
@@ -633,6 +639,166 @@ async fn removing_a_cimd_client_ends_its_grants_and_restoring_it_needs_fresh_con
 
 #[tokio::test]
 #[ignore = "requires a live Postgres via DATABASE_URL"]
+async fn closing_open_cimd_uses_the_new_list_and_preserves_other_grants() {
+    let docs = CimdDocs::new();
+    let h = harness_cimd(&docs).await;
+    let session = h.sign_in().await;
+    let (_, token) = registrar(&h, "open-cimd").await;
+    let (_, foreign) = registrar(&h, "foreign-cimd").await;
+    let rs = uri(&h, "open-cimd");
+    let created = call(
+        &h,
+        "POST",
+        "/v1/oauth/resources",
+        &token,
+        Some(json!({
+            "resource_uri": rs, "scopes": ["mcp:read", "mcp:write"], "cimd_open": true,
+        })),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let created = body_json(created).await;
+    assert_eq!(created["cimd_open"], true);
+    let reg = created["registration_id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let list = body_json(call(&h, "GET", "/v1/oauth/resources", &token, None).await).await;
+    assert_eq!(list["resources"][0]["cimd_open"], true);
+    let read = body_json(call(&h, "GET", &path(&rs), &token, None).await).await;
+    assert_eq!(read["cimd_open"], true);
+    assert_eq!(
+        patch(&h, &foreign, &rs, json!({ "cimd_open": false }))
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+
+    let excluded = format!("https://excluded.lifecycle.test/{}.json", h.suffix);
+    let retained = format!("https://retained.lifecycle.test/{}.json", h.suffix);
+    docs.publish_default(&excluded);
+    docs.publish_default(&retained);
+    let bystander = client(&h, RegistrationSource::Admin, Some(vec![rs.clone()])).await;
+    let (_, excluded_refresh) = grant(&h, &excluded, &session, &rs, "mcp:read").await;
+    let (_, retained_refresh) = grant(&h, &retained, &session, &rs, "mcp:read").await;
+    let (_, bystander_refresh) = grant(&h, &bystander, &session, &rs, "mcp:read").await;
+    let (code, pkce) = code_for(&h, &excluded, &session, &rs, "mcp:read").await;
+
+    // While open, list edits leave even an excluded client's consent intact.
+    assert_eq!(
+        patch(
+            &h,
+            &token,
+            &rs,
+            json!({ "allowed_cimd_client_ids": [&excluded] })
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        patch(&h, &token, &rs, json!({ "allowed_cimd_client_ids": [] }))
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    assert!(consent_scopes(&h, &excluded, reg).await.is_some());
+    let browser = h.engine.create_chooser_browser().await.unwrap();
+    let request_id = h
+        .engine
+        .save_chooser_request(
+            &surge_engine::oauth::ChooserCredential::Browser(browser.token),
+            reg,
+            json!({ "client_id": excluded }),
+        )
+        .await
+        .unwrap();
+    let pending = h
+        .get(
+            &h.authorize_uri(&excluded, &Pkce::generate(), Some(&rs), Some("mcp:write")),
+            Some(&session),
+        )
+        .await;
+    let pending = query_param(&location(&pending), "consent_flow").unwrap();
+    let pending_path = format!("/v1/oauth/consent/{pending}");
+    assert_eq!(
+        h.get(&pending_path, Some(&session)).await.status(),
+        StatusCode::OK
+    );
+
+    let closed = patch(
+        &h,
+        &token,
+        &rs,
+        json!({
+            "cimd_open": false, "allowed_cimd_client_ids": [&retained],
+        }),
+    )
+    .await;
+    assert_eq!(closed.status(), StatusCode::OK);
+    let closed = body_json(closed).await;
+    assert_eq!(closed["cimd_open"], false);
+    assert_eq!(closed["allowed_cimd_client_ids"], json!([retained]));
+    assert_eq!(consent_scopes(&h, &excluded, reg).await, None);
+    use surge_engine::schema::oauth_authorization_request;
+    assert_eq!(
+        oauth_authorization_request::table
+            .find(request_id)
+            .count()
+            .get_result::<i64>(&mut db().await)
+            .await
+            .unwrap(),
+        0
+    );
+    assert_ne!(
+        h.get(&pending_path, Some(&session)).await.status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        redeem(&h, &excluded, &code, &pkce).await.0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        refresh(&h, &excluded, &excluded_refresh).await.0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        refresh(&h, &retained, &retained_refresh).await.0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        refresh(&h, &bystander, &bystander_refresh).await.0,
+        StatusCode::OK
+    );
+
+    let reopened = patch(&h, &token, &rs, json!({ "cimd_open": true })).await;
+    assert_eq!(reopened.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(reopened).await["allowed_cimd_client_ids"],
+        json!([retained])
+    );
+    assert_eq!(
+        refresh(&h, &excluded, &excluded_refresh).await.0,
+        StatusCode::BAD_REQUEST
+    );
+
+    let details: Vec<Option<Value>> = audit_log::table
+        .filter(audit_log::action.eq("update_oauth_resource"))
+        .filter(audit_log::subject.contains(json!({ "registration_id": reg })))
+        .select(audit_log::detail)
+        .load(&mut db().await)
+        .await
+        .unwrap();
+    assert!(details.into_iter().flatten().any(|detail| {
+        detail["cimd_open"] == json!({ "from": true, "to": false })
+            && detail["invalidated"]["flows_removed"].as_u64().unwrap_or(0) >= 1
+            && detail["invalidated"]["requests_removed"] == 1
+    }));
+}
+
+#[tokio::test]
+#[ignore = "requires a live Postgres via DATABASE_URL"]
 async fn disabling_dcr_ends_dynamic_client_grants_flows_and_codes() {
     let h = dcr_harness().await;
     let session = h.sign_in().await;
@@ -988,6 +1154,77 @@ async fn issuance_waits_for_a_policy_change_and_is_judged_by_it() {
     assert_eq!(body["error"], "invalid_target");
     let (status, body) = redeeming.await.unwrap();
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(live_tokens(reg).await, 0);
+}
+
+#[tokio::test]
+#[ignore = "requires a live Postgres via DATABASE_URL"]
+async fn cimd_authorization_and_token_writes_recheck_after_a_resource_closes() {
+    let docs = CimdDocs::new();
+    let h = harness_cimd(&docs).await;
+    let session = h.sign_in().await;
+    let (_, token) = registrar(&h, "cimd-race").await;
+    let rs = uri(&h, "cimd-race");
+    let reg = register(&h, &token, &rs, &["mcp:read"]).await;
+    assert_eq!(
+        patch(&h, &token, &rs, json!({ "cimd_open": true }))
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    let id = format!("https://race.lifecycle.test/{}.json", h.suffix);
+    let newcomer = format!("https://newcomer.lifecycle.test/{}.json", h.suffix);
+    docs.publish_default(&id);
+    docs.publish_default(&newcomer);
+    let (_, refresh_token) = grant(&h, &id, &session, &rs, "mcp:read").await;
+    let (code, pkce) = code_for(&h, &id, &session, &rs, "mcp:read").await;
+    let uri = h.authorize_uri(&newcomer, &Pkce::generate(), Some(&rs), Some("mcp:read"));
+
+    // Hold the policy lock and update without grant cleanup to exercise
+    // the issuance recheck independently of the cleanup.
+    let mut change = hold_policy_lock(reg).await;
+    diesel::sql_query("UPDATE surge.oauth_resource SET cimd_open = FALSE WHERE id = $1")
+        .bind::<diesel::sql_types::Uuid, _>(reg)
+        .execute(&mut change)
+        .await
+        .unwrap();
+
+    let h = std::sync::Arc::new(h);
+    let authorizing = tokio::spawn({
+        let h = h.clone();
+        async move { h.get(&uri, Some(&session)).await }
+    });
+    let redeeming = tokio::spawn({
+        let (h, id) = (h.clone(), id.clone());
+        async move { redeem(&h, &id, &code, &pkce).await }
+    });
+    let rotating = tokio::spawn({
+        let h = h.clone();
+        async move { refresh(&h, &id, &refresh_token).await }
+    });
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while docs.fetches() < 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(!authorizing.is_finished());
+    assert!(!redeeming.is_finished());
+    assert!(!rotating.is_finished());
+    diesel::sql_query("COMMIT")
+        .execute(&mut change)
+        .await
+        .unwrap();
+
+    let response = authorizing.await.unwrap();
+    assert_eq!(
+        query_param(&location(&response), "error").as_deref(),
+        Some("invalid_target")
+    );
+    assert!(h.engine.get_oauth_client(&newcomer).await.is_err());
+    assert_eq!(redeeming.await.unwrap().0, StatusCode::BAD_REQUEST);
+    assert_eq!(rotating.await.unwrap().0, StatusCode::BAD_REQUEST);
     assert_eq!(live_tokens(reg).await, 0);
 }
 

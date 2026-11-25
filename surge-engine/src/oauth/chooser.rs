@@ -127,6 +127,16 @@ impl Engine {
             .await?
             .transaction(|conn| {
                 async move {
+                    if let Some(client_id) = payload.get("client_id").and_then(|id| id.as_str())
+                        && super::eligibility::is_cimd_client_id(client_id)
+                    {
+                        let resource =
+                            super::lifecycle::lock_registration_shared(conn, registration_id)
+                                .await?;
+                        if !super::cimd_client_may_use_resource(client_id, &resource) {
+                            return Err(AuthError::Forbidden);
+                        }
+                    }
                     let (browser, legacy) = Self::chooser_owner(conn, credential).await?;
                     let id = FlowId::generate().to_string();
                     diesel::insert_into(request::table)

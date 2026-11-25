@@ -335,6 +335,8 @@ pub struct CimdLimits {
     /// How long a failure is remembered, so a broken or hostile document
     /// cannot be used to make this server fetch repeatedly.
     pub negative_ttl: Duration,
+    pub outbound_burst: usize,
+    pub outbound_window: Duration,
     pub host_burst: usize,
     pub host_window: Duration,
     pub max_cache_entries: usize,
@@ -347,6 +349,8 @@ impl Default for CimdLimits {
             default_ttl: Duration::from_secs(300),
             max_ttl: Duration::from_secs(3600),
             negative_ttl: Duration::from_secs(60),
+            outbound_burst: 120,
+            outbound_window: Duration::from_secs(60),
             host_burst: 10,
             host_window: Duration::from_secs(60),
             max_cache_entries: 1024,
@@ -369,6 +373,7 @@ struct Entry {
 struct State {
     cache: HashMap<String, Entry>,
     hosts: HashMap<String, VecDeque<Instant>>,
+    outbound: VecDeque<Instant>,
 }
 
 pub struct CimdResolver {
@@ -394,9 +399,9 @@ impl CimdResolver {
         let url =
             validate_cimd_client_id(client_id).map_err(|m| CimdError::Invalid(m.to_string()))?;
         let host = url.host_str().unwrap_or_default().to_string();
-        let now = Instant::now();
-        {
+        let _permit = {
             let mut state = self.state.lock().unwrap();
+            let now = Instant::now();
             if let Some(entry) = state.cache.get(client_id)
                 && entry.expires > now
             {
@@ -406,6 +411,16 @@ impl CimdResolver {
                 };
             }
             // Rate limit what would reach the network.
+            while state
+                .outbound
+                .front()
+                .is_some_and(|t| now.duration_since(*t) >= self.limits.outbound_window)
+            {
+                state.outbound.pop_front();
+            }
+            if state.outbound.len() >= self.limits.outbound_burst {
+                return Err(CimdError::RateLimited);
+            }
             let window = self.limits.host_window;
             let hits = state.hosts.entry(host.clone()).or_default();
             while hits.front().is_some_and(|t| now.duration_since(*t) >= window) {
@@ -414,15 +429,18 @@ impl CimdResolver {
             if hits.len() >= self.limits.host_burst {
                 return Err(CimdError::RateLimited);
             }
+            let permit = self
+                .in_flight
+                .try_acquire()
+                .map_err(|_| CimdError::RateLimited)?;
             hits.push_back(now);
+            state.outbound.push_back(now);
             if state.hosts.len() > 4096 {
                 state.hosts.retain(|_, h| {
                     h.back().is_some_and(|t| now.duration_since(*t) < window)
                 });
             }
-        }
-        let Ok(_permit) = self.in_flight.try_acquire() else {
-            return Err(CimdError::RateLimited);
+            permit
         };
 
         let outcome = match tokio::time::timeout(
@@ -705,6 +723,29 @@ mod tests {
         tokio::time::advance(Duration::from_secs(61)).await;
         r.resolve("https://busy.example/c9.json").await.unwrap();
         assert_eq!(f.calls.load(Ordering::SeqCst), 5);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn outbound_budget_is_shared_across_hosts_and_replenishes() {
+        let f = counting(ok_doc(None));
+        let limits = CimdLimits {
+            outbound_burst: 2,
+            host_burst: 1,
+            ..CimdLimits::default()
+        };
+        let window = limits.outbound_window;
+        let r = CimdResolver::new(f.clone(), limits);
+        r.resolve(ID).await.unwrap();
+        r.resolve("https://other.example/client.json")
+            .await
+            .unwrap();
+        let next = "https://third.example/client.json";
+        assert_eq!(r.resolve(next).await, Err(CimdError::RateLimited));
+        r.resolve(ID).await.unwrap();
+        assert_eq!(f.calls.load(Ordering::SeqCst), 2);
+        tokio::time::advance(window).await;
+        r.resolve(next).await.unwrap();
+        assert_eq!(f.calls.load(Ordering::SeqCst), 3);
     }
 
     #[tokio::test(start_paused = true)]
