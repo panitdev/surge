@@ -154,10 +154,8 @@ pub fn validate_cimd_client_id(id: &str) -> Result<url::Url, &'static str> {
 /// Parses and validates a fetched document.
 ///
 /// Requires the exact self-declared `client_id`, a name, valid redirect URIs
-/// and `token_endpoint_auth_method: "none"`. Anything that smells of client
-/// authentication (a secret, or any other method) is refused rather than
-/// ignored: confidential CIMD clients are not supported, and a document that
-/// asks for one must not be quietly downgraded to public.
+/// and an explicit offer of public-client authentication. A supported-methods
+/// list takes precedence over the singular method. Client secrets are forbidden.
 pub fn parse_cimd_document(client_id: &str, body: &[u8]) -> Result<CimdMetadata, String> {
     validate_cimd_client_id(client_id).map_err(str::to_string)?;
     if body.len() > MAX_CIMD_DOCUMENT_BYTES {
@@ -177,9 +175,25 @@ pub fn parse_cimd_document(client_id: &str, body: &[u8]) -> Result<CimdMetadata,
             return Err(format!("{forbidden} must not be published"));
         }
     }
-    match obj.get("token_endpoint_auth_method") {
-        Some(serde_json::Value::String(m)) if m == "none" => {}
-        _ => return Err("token_endpoint_auth_method must be \"none\"".into()),
+    const AUTH_METHODS: &str = "token_endpoint_auth_methods_supported";
+    match obj.get(AUTH_METHODS) {
+        Some(serde_json::Value::Array(methods)) => {
+            if !methods.iter().all(|method| {
+                method.as_str().is_some_and(|name| {
+                    !name.is_empty() && name.bytes().all(|byte| byte.is_ascii_graphic())
+                })
+            }) {
+                return Err(format!("{AUTH_METHODS} must be an array of method names"));
+            }
+            if !methods.iter().any(|method| method.as_str() == Some("none")) {
+                return Err(format!("{AUTH_METHODS} must include \"none\""));
+            }
+        }
+        Some(_) => return Err(format!("{AUTH_METHODS} must be an array of method names")),
+        None => match obj.get("token_endpoint_auth_method") {
+            Some(serde_json::Value::String(method)) if method == "none" => {}
+            _ => return Err("token_endpoint_auth_method must be \"none\"".into()),
+        },
     }
 
     let string = |key: &str, max: usize| -> Result<Option<String>, String> {
@@ -482,6 +496,52 @@ mod tests {
         }
         assert!(parse_cimd_document(ID, &doc(r#","client_secret":"s""#)).is_err());
         assert!(parse_cimd_document(ID, &doc(r#","client_secret_expires_at":0"#)).is_err());
+    }
+
+    #[test]
+    fn chatgpt_metadata_offers_public_authentication() {
+        let body = br#"{
+            "client_id": "https://chatgpt.example/oauth/client.json",
+            "client_name": "ChatGPT",
+            "redirect_uris": ["https://chatgpt.example/connector/oauth/callback"],
+            "token_endpoint_auth_method": "private_key_jwt",
+            "token_endpoint_auth_methods_supported": ["none", "private_key_jwt"],
+            "token_endpoint_auth_signing_alg": "RS256",
+            "jwks_uri": "https://chatgpt.example/oauth/jwks.json",
+            "grant_types": ["authorization_code", "refresh_token"],
+            "response_types": ["code"]
+        }"#;
+        assert!(parse_cimd_document("https://chatgpt.example/oauth/client.json", body).is_ok());
+    }
+
+    #[test]
+    fn supported_auth_methods_must_be_well_formed_and_offer_none() {
+        let mut document: serde_json::Value = serde_json::from_slice(&doc("")).unwrap();
+        for methods in [
+            serde_json::json!(null),
+            serde_json::json!("none"),
+            serde_json::json!([]),
+            serde_json::json!(["private_key_jwt"]),
+            serde_json::json!(["none", 1]),
+            serde_json::json!(["none", ""]),
+            serde_json::json!(["none", "bad method"]),
+        ] {
+            // A singular value of "none" cannot rescue an invalid plural field.
+            document["token_endpoint_auth_methods_supported"] = methods.clone();
+            assert!(
+                parse_cimd_document(ID, document.to_string().as_bytes()).is_err(),
+                "{methods}"
+            );
+        }
+
+        document
+            .as_object_mut()
+            .unwrap()
+            .remove("token_endpoint_auth_method");
+        document["token_endpoint_auth_methods_supported"] = serde_json::json!(["none"]);
+        assert!(parse_cimd_document(ID, document.to_string().as_bytes()).is_ok());
+        document["client_secret"] = serde_json::json!("secret");
+        assert!(parse_cimd_document(ID, document.to_string().as_bytes()).is_err());
     }
 
     #[test]
