@@ -77,7 +77,7 @@ fn check_startup_coherence(
         if engine_resource_count == 0 {
             warn!(
                 "the OAuth authorization server is enabled but no resources are registered; \
-                 every authorize request will fail resource validation until one is (see \
+                 authorization requests for API resources will fail until one is registered (see \
                  `surge-server oauth resource create`)"
             );
         }

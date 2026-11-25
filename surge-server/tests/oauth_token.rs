@@ -50,6 +50,63 @@ async fn a_code_becomes_an_audience_restricted_access_token() {
 
 #[tokio::test]
 #[ignore = "requires a live Postgres via DATABASE_URL"]
+async fn openid_only_sign_in_without_resource_issues_a_userinfo_token() {
+    let h = harness().await;
+    let session = h.sign_in().await;
+    let client_id = h.client(false).await;
+    let pkce = Pkce::generate();
+
+    let mixed = h
+        .get(
+            &h.authorize_uri(&client_id, &pkce, None, Some("openid mcp:read")),
+            Some(&session),
+        )
+        .await;
+    assert_eq!(
+        query_param(&location(&mixed), "error").as_deref(),
+        Some("invalid_target")
+    );
+
+    let auth = h
+        .get(
+            &h.authorize_uri(&client_id, &pkce, None, Some("openid")),
+            Some(&session),
+        )
+        .await;
+    let flow_id = query_param(&location(&auth), "consent_flow").unwrap();
+    let path = format!("/v1/oauth/consent/{flow_id}");
+    let flow = body_json(h.get(&path, Some(&session)).await).await;
+    let approval = h
+        .post_json(
+            &path,
+            serde_json::json!({ "approve": true, "csrf_token": flow["csrf_token"] }),
+            Some(&session),
+        )
+        .await;
+    assert_eq!(approval.status(), StatusCode::OK);
+    let redirect = body_json(approval).await;
+    let code = query_param(redirect["redirect_to"].as_str().unwrap(), "code").unwrap();
+    let (status, body) = exchange(&h, &client_id, &code, &pkce).await;
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["scope"], "openid");
+    let id_token = decode_claims(body["id_token"].as_str().unwrap());
+    assert_eq!(id_token["aud"], client_id);
+    let access_token = body["access_token"].as_str().unwrap();
+    assert_eq!(
+        decode_claims(access_token)["aud"],
+        surge_engine::oauth::USERINFO_AUDIENCE
+    );
+    let userinfo = h.bearer_get("/oauth2/userinfo", access_token).await;
+    assert_eq!(userinfo.status(), StatusCode::OK);
+    assert_eq!(body_json(userinfo).await["sub"], id_token["sub"]);
+    let introspection = h.introspect(access_token, &h.service_token).await;
+    assert_eq!(introspection.status(), StatusCode::OK);
+    assert_eq!(body_json(introspection).await["active"], false);
+}
+
+#[tokio::test]
+#[ignore = "requires a live Postgres via DATABASE_URL"]
 async fn a_code_is_redeemable_exactly_once() {
     let h = harness().await;
     let session = h.sign_in().await;

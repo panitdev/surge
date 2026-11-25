@@ -166,6 +166,9 @@ pub struct NewOauthClient {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ResourceSource {
+    /// Surge’s built-in audience for UserInfo access tokens.
+    #[serde(skip_deserializing)]
+    UserInfo,
     /// A first-party resource server owned by a registered service, which is
     /// the one service allowed to introspect its tokens.
     Service,
@@ -182,6 +185,7 @@ pub enum ResourceSource {
 impl ResourceSource {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::UserInfo => "userinfo",
             Self::Service => "service",
             Self::Delegated => "delegated",
             Self::Unknown => "unknown",
@@ -190,12 +194,17 @@ impl ResourceSource {
 
     pub(crate) fn from_db(s: &str) -> Self {
         match s {
+            "userinfo" => Self::UserInfo,
             "service" => Self::Service,
             "delegated" => Self::Delegated,
             _ => Self::Unknown,
         }
     }
 }
+
+/// Reserved audience for Surge’s UserInfo endpoint. Resource registration
+/// accepts only HTTP(S) URLs, so external resource servers cannot claim it.
+pub const USERINFO_AUDIENCE: &str = "urn:surge:oauth:userinfo";
 
 /// An audience registration: one resource server at one canonical URI.
 ///

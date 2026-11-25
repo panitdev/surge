@@ -56,7 +56,9 @@ pub(super) async fn start_request(
     };
     let mut payload = serde_json::to_value(query).map_err(|e| AuthError::Internal(e.into()))?;
     payload["scope"] = scopes.join(" ").into();
-    payload["resource"] = resource.resource_uri.as_str().into();
+    if resource.registration_source != surge_engine::oauth::ResourceSource::UserInfo {
+        payload["resource"] = resource.resource_uri.as_str().into();
+    }
     let id = state
         .engine
         .save_chooser_request(&token, resource.registration_id, payload)

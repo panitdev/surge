@@ -13,11 +13,12 @@
 //!    if the resource opts into open CIMD or lists its exact client ID URL.
 //! 2. With the global DCR switch off, a dynamically registered client is
 //!    ineligible for every resource.
-//! 3. A client with an explicit audience list (`Some`) is restricted to it,
-//!    for every resource. An empty list grants nothing. Membership is by
+//! 3. The built-in UserInfo audience is available for sign-in after the checks above.
+//! 4. A client with an explicit audience list (`Some`) is restricted to it,
+//!    for API resources. An empty list grants no API access. Membership is by
 //!    registration, so an approval does not survive the resource being
 //!    deleted and registered again.
-//! 4. A client with no list (`None`, the legacy default) keeps its existing
+//! 5. A client with no list (`None`, the legacy default) keeps its existing
 //!    access to *service* resources, and has none to delegated resources
 //!    unless a dynamically registered client meets a resource that has opted
 //!    in to DCR.
@@ -41,7 +42,10 @@ use super::{OauthClient, OauthResource, RegistrationSource, ResourceSource};
 
 /// Resource policy for an already classified CIMD client ID.
 pub fn cimd_client_may_use_resource(client_id: &str, resource: &OauthResource) -> bool {
-    resource.registration_source != ResourceSource::Unknown
+    matches!(
+        resource.registration_source,
+        ResourceSource::Service | ResourceSource::Delegated
+    )
         && (resource.cimd_open
             || resource
                 .allowed_cimd_client_ids
@@ -80,6 +84,12 @@ pub fn client_may_use_resource(
     // dynamically registered one, whatever source it is stored with.
     if dynamic && !policy.dynamic_clients_enabled {
         return false;
+    }
+
+    // Audience lists control API access. The built-in sign-in audience grants
+    // UserInfo access only, and still requires consent for third-party clients.
+    if resource.registration_source == ResourceSource::UserInfo {
+        return true;
     }
 
     if let Some(approved) = &client.audiences {
@@ -126,7 +136,7 @@ pub fn offers_scopes_to_dcr(resource: &OauthResource) -> bool {
     match resource.registration_source {
         ResourceSource::Service => true,
         ResourceSource::Delegated => resource.dcr_enabled,
-        ResourceSource::Unknown => false,
+        ResourceSource::UserInfo | ResourceSource::Unknown => false,
     }
 }
 

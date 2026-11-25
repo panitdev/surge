@@ -195,6 +195,9 @@ pub(crate) async fn admit(
     if !client_may_use_resource(&client, &resource, policy) {
         return Err(AuthError::Forbidden);
     }
+    if resource.registration_source == ResourceSource::UserInfo && scopes != ["openid"] {
+        return Err(AuthError::ScopeNotGranted);
+    }
     let offered = |s: &String| {
         PSEUDO_SCOPES.contains(&s.as_str()) || resource.scopes.iter().any(|r| r == s)
     };

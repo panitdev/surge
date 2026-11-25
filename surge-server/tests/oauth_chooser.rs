@@ -69,6 +69,29 @@ async fn verify_code(h: &Harness, client: &str, target: &str, expected: &str) {
 
 #[tokio::test]
 #[ignore = "requires a live Postgres via DATABASE_URL"]
+async fn openid_only_sign_in_resumes_without_a_resource_indicator() {
+    let h = harness_mode(true, |s| s).await;
+    let client = h.client(true).await;
+    let uri = h.authorize_uri(&client, &Pkce::generate(), None, Some("openid"));
+
+    let login = h.get(&uri, None).await;
+    let empty = browser_cookie(&login);
+    let signed_in = register(&h, &location(&login), &empty).await;
+    let cookie = browser_cookie(&signed_in);
+    let signed_in = body_json(signed_in).await;
+    let resume = signed_in["return_to"].as_str().unwrap();
+    let target = location(&send(&h, resume, &cookie, None, false).await);
+    verify_code(
+        &h,
+        &client,
+        &target,
+        signed_in["session"]["id"].as_str().unwrap(),
+    )
+    .await;
+}
+
+#[tokio::test]
+#[ignore = "requires a live Postgres via DATABASE_URL"]
 async fn picker_and_normal_hosted_login_resume_once_with_exact_account() {
     let h = harness_mode(true, |s| s).await;
     let client = h.client(true).await;

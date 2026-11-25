@@ -151,6 +151,12 @@ Offline checks cannot see revocation. The access-token lifetime is the revocatio
 | `POST /oauth2/register` | RFC 7591 dynamic registration. Off unless enabled. |
 | `GET /.well-known/oauth-authorization-server` | RFC 8414 metadata. Also served at `/.well-known/openid-configuration` when OIDC is on. |
 
+With OIDC enabled, registered clients can send `scope=openid` and omit
+`resource` for sign-in. Surge uses its built-in `urn:surge:oauth:userinfo`
+audience for the access token. Requests for API scopes follow the resource
+indicator policy. Clients using Client ID Metadata Documents follow the
+resource indicator and eligibility policies.
+
 ## Tokens and keys
 
 **Access tokens are ES256-signed JWTs.** A resource server verifies them offline against JWKS; an MCP server is the audience for every request on a connection and should not need a network hop per call. Claims: `iss`, `sub` (identity UUID), `aud` (the single resource URI), `client_id`, `scope`, `sid`, `jti`, `iat`, `exp`. The header carries `typ: at+jwt` (RFC 9068), so a resource server can refuse an ID token presented as an access token.
@@ -259,7 +265,7 @@ Note the metadata path. A resource URI with a path is described at `https://host
 | `SURGE_OAUTH_REFRESH_TTL_DAYS` | `30` | Refresh lifetime, renewed on each rotation. |
 | `SURGE_OAUTH_KEY_ROTATION_DAYS` | `90` | Signing-key rotation cadence. |
 | `SURGE_OAUTH_ALLOW_DYNAMIC_REGISTRATION` | `0` | Opens `POST /oauth2/register`. Also a kill switch: when off, existing dynamic clients are ineligible everywhere. |
-| `SURGE_OAUTH_REQUIRE_RESOURCE` | `1` | Reject authorize without a resolvable `resource`. |
+| `SURGE_OAUTH_REQUIRE_RESOURCE` | `1` | Require a resolvable `resource` except for `openid`-only sign-in when OIDC is enabled. |
 | `SURGE_OAUTH_DEFAULT_RESOURCE` | (unset) | Audience assumed when `REQUIRE_RESOURCE=0` and none was sent. |
 | `SURGE_OAUTH_DCR_TTL_DAYS` | `30` | Sweep dynamic clients that never authorized, and idle unreferenced CIMD clients. |
 | `SURGE_OAUTH_ENABLE_OIDC` | `1` | ID tokens, `userinfo`, and `/.well-known/openid-configuration`. |

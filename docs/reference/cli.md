@@ -34,7 +34,7 @@ Most configuration is read from environment variables:
 | `SURGE_OAUTH_REFRESH_TTL_DAYS` | `30` | Refresh-token lifetime, renewed on each rotation |
 | `SURGE_OAUTH_KEY_ROTATION_DAYS` | `90` | Signing-key rotation cadence |
 | `SURGE_OAUTH_ALLOW_DYNAMIC_REGISTRATION` | `0` | Opens the unauthenticated `POST /oauth2/register` (RFC 7591) |
-| `SURGE_OAUTH_REQUIRE_RESOURCE` | `1` | Reject `authorize` without a resolvable `resource` (RFC 8707) |
+| `SURGE_OAUTH_REQUIRE_RESOURCE` | `1` | Require a resolvable `resource` except for `openid`-only sign-in when OIDC is enabled. |
 | `SURGE_OAUTH_DEFAULT_RESOURCE` | (unset) | Audience assumed when `REQUIRE_RESOURCE=0` and the client sent none |
 | `SURGE_OAUTH_DCR_TTL_DAYS` | `30` | Sweep dynamically registered clients that never authorized |
 | `SURGE_OAUTH_ENABLE_OIDC` | `1` | ID tokens, `userinfo`, and `/.well-known/openid-configuration` |

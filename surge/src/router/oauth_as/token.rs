@@ -395,6 +395,12 @@ async fn build_token_body(
     include_id_token: bool,
     issued_at: i64,
 ) -> Result<serde_json::Value, OauthError> {
+    if grant.resource_uri == surge_engine::oauth::USERINFO_AUDIENCE && !state.config.enable_oidc {
+        return Err(OauthError::new(
+            OauthErrorCode::InvalidGrant,
+            "OIDC is not enabled on this deployment",
+        ));
+    }
     let key = state
         .engine
         .active_oauth_signing_key()

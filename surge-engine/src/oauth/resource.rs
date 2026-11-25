@@ -175,6 +175,19 @@ impl Engine {
         Ok(row_to_resource(row))
     }
 
+    /// The built-in audience is resolved separately from client-supplied URIs.
+    pub async fn oauth_userinfo_resource(&self) -> Result<OauthResource, AuthError> {
+        let mut conn = self.conn().await?;
+        let row = oauth_resource::table
+            .filter(oauth_resource::resource_uri.eq(super::USERINFO_AUDIENCE))
+            .filter(oauth_resource::registration_source.eq(ResourceSource::UserInfo.as_str()))
+            .select(OauthResourceRow::as_select())
+            .first(&mut conn)
+            .await
+            .map_err(not_found)?;
+        Ok(row_to_resource(row))
+    }
+
     /// One registration by its immutable id. `NotFound` once it has been
     /// deleted, even if its URI has since been registered again.
     pub async fn get_oauth_registration(
@@ -194,6 +207,7 @@ impl Engine {
     pub async fn list_oauth_resources(&self) -> Result<Vec<OauthResource>, AuthError> {
         let mut conn = self.conn().await?;
         let rows: Vec<OauthResourceRow> = oauth_resource::table
+            .filter(oauth_resource::registration_source.ne(ResourceSource::UserInfo.as_str()))
             .order(oauth_resource::resource_uri.asc())
             .select(OauthResourceRow::as_select())
             .load(&mut conn)
@@ -240,6 +254,7 @@ impl Engine {
     pub async fn count_oauth_resources(&self) -> Result<i64, AuthError> {
         let mut conn = self.conn().await?;
         oauth_resource::table
+            .filter(oauth_resource::registration_source.ne(ResourceSource::UserInfo.as_str()))
             .count()
             .get_result(&mut conn)
             .await

@@ -126,7 +126,23 @@ pub(super) async fn authorize_query(
         );
     }
 
-    let resource = match resolve_resource(state, query.resource.as_deref()).await {
+    let identity_only = state.config.enable_oidc
+        && cimd.is_none()
+        && query.resource.is_none()
+        && query
+            .scope
+            .as_deref()
+            .is_some_and(|scope| scope.split_whitespace().eq(["openid"]));
+    let resource = if identity_only {
+        state
+            .engine
+            .oauth_userinfo_resource()
+            .await
+            .map_err(|e| (OauthErrorCode::ServerError, e.to_string()))
+    } else {
+        resolve_resource(state, query.resource.as_deref()).await
+    };
+    let resource = match resource {
         Ok(resource) => resource,
         Err((code, message)) => return fail(code, &message),
     };
