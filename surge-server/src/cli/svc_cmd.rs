@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use clap::Subcommand;
-use surge_engine::types::ServiceToken;
 use surge_engine::Engine;
+use surge_engine::types::ServiceToken;
 
 #[derive(Subcommand)]
 pub enum SvcCommand {

@@ -13,10 +13,7 @@ use surge_engine::types::*;
 pub trait AuthProvider: Send + Sync {
     /// `None` means the request carried no usable session token. Each
     /// provider decides whether that authenticates the request.
-    async fn verify_session(
-        &self,
-        token: Option<SessionToken>,
-    ) -> Result<Session, AuthError>;
+    async fn verify_session(&self, token: Option<SessionToken>) -> Result<Session, AuthError>;
 
     /// Validate a legacy browser cookie against current session state.
     async fn verify_browser_cookie(&self, token: SessionToken) -> Result<Session, AuthError> {
@@ -53,8 +50,10 @@ pub trait AuthProvider: Send + Sync {
 
     /// Atomically creates an identity and mints a session for it: one
     /// identity + one session, or neither. Never re-authenticates.
-    async fn register_and_authenticate(&self, req: RegisterRequest)
-        -> Result<IssuedSession, AuthError>;
+    async fn register_and_authenticate(
+        &self,
+        req: RegisterRequest,
+    ) -> Result<IssuedSession, AuthError>;
 
     async fn authenticate_password(
         &self,
@@ -96,7 +95,10 @@ pub trait AuthProvider: Send + Sync {
         Err(AuthError::Forbidden)
     }
 
-    async fn identity_links(&self, identity_id: IdentityId) -> Result<Vec<IdentityLink>, AuthError> {
+    async fn identity_links(
+        &self,
+        identity_id: IdentityId,
+    ) -> Result<Vec<IdentityLink>, AuthError> {
         let _ = identity_id;
         Err(AuthError::Forbidden)
     }

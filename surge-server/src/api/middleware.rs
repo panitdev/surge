@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
+use axum::Json;
 use axum::extract::{Request, State};
 use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use serde_json::json;
 
 use crate::api::AppState;
@@ -34,7 +34,7 @@ pub async fn service_auth(
                 StatusCode::UNAUTHORIZED,
                 Json(json!({"error": "missing_service_token"})),
             )
-                .into_response()
+                .into_response();
         }
     };
 

@@ -171,5 +171,13 @@ pub(crate) async fn resume_login(
         return Err(AuthError::InvalidToken.into());
     }
     let query = serde_json::from_value(payload).map_err(|e| AuthError::Internal(e.into()))?;
-    Ok(authorize_query(&state, query, &headers, None, Some(selected), Some(registration)).await)
+    Ok(authorize_query(
+        &state,
+        query,
+        &headers,
+        None,
+        Some(selected),
+        Some(registration),
+    )
+    .await)
 }

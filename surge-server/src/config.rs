@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use secrecy::SecretString;
-use surge::router::{FactorPolicy, RegistrationMode};
 use surge::EmbeddedConfig;
+use surge::router::{FactorPolicy, RegistrationMode};
 
 pub struct ServerConfig {
     pub database_url: SecretString,
@@ -74,8 +74,7 @@ impl ServerConfig {
         let pepper = SecretString::from(
             std::env::var("SURGE_PEPPER").unwrap_or_else(|_| "dev-pepper-change-me".to_string()),
         );
-        let bind_addr =
-            std::env::var("SURGE_BIND").unwrap_or_else(|_| "0.0.0.0:3000".to_string());
+        let bind_addr = std::env::var("SURGE_BIND").unwrap_or_else(|_| "0.0.0.0:3000".to_string());
         let cookie_domain =
             std::env::var("SURGE_COOKIE_DOMAIN").unwrap_or_else(|_| ".panit.dev".to_string());
         let auth_ui_origin = std::env::var("SURGE_AUTH_UI_ORIGIN")
@@ -103,7 +102,12 @@ impl ServerConfig {
         };
         let session_cors_origins = std::env::var("SURGE_SESSION_CORS_ORIGINS")
             .ok()
-            .map(|v| v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+            .map(|v| {
+                v.split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            })
             .unwrap_or_default();
         let allow_served_inline = std::env::var("SURGE_ALLOW_SERVED_INLINE")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
@@ -114,7 +118,10 @@ impl ServerConfig {
                 let issuer = validate_issuer(&issuer, &bind_addr)?;
                 Some(OauthAsSettings {
                     issuer,
-                    access_ttl: Duration::from_secs(env_u64("SURGE_OAUTH_ACCESS_TTL_SECS", DEFAULT_ACCESS_TTL_SECS)),
+                    access_ttl: Duration::from_secs(env_u64(
+                        "SURGE_OAUTH_ACCESS_TTL_SECS",
+                        DEFAULT_ACCESS_TTL_SECS,
+                    )),
                     refresh_ttl: Duration::from_secs(
                         env_u64("SURGE_OAUTH_REFRESH_TTL_DAYS", 30) * 86_400,
                     ),
@@ -147,7 +154,8 @@ impl ServerConfig {
             factor_policy,
             session_cors_origins,
             allow_served_inline,
-            multi_account: std::env::var("SURGE_MULTI_ACCOUNT").is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true")),
+            multi_account: std::env::var("SURGE_MULTI_ACCOUNT")
+                .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true")),
             oauth_as,
         })
     }
@@ -193,8 +201,14 @@ fn env_flag(key: &str, default: bool) -> bool {
 /// Whether the bind address is loopback — the one case where a plaintext
 /// issuer is legitimate, because nothing leaves the machine.
 fn is_loopback(bind_addr: &str) -> bool {
-    let host = bind_addr.rsplit_once(':').map(|(h, _)| h).unwrap_or(bind_addr);
-    matches!(host.trim_matches(['[', ']']), "127.0.0.1" | "::1" | "localhost")
+    let host = bind_addr
+        .rsplit_once(':')
+        .map(|(h, _)| h)
+        .unwrap_or(bind_addr);
+    matches!(
+        host.trim_matches(['[', ']']),
+        "127.0.0.1" | "::1" | "localhost"
+    )
 }
 
 /// Validate `SURGE_OAUTH_ISSUER` and return its canonical (slash-less) form.
@@ -236,9 +250,18 @@ mod tests {
 
     #[test]
     fn bare_origin_issuers_are_accepted_and_canonicalized() {
-        assert_eq!(validate_issuer("https://auth.example.com", PUBLIC).unwrap(), "https://auth.example.com");
-        assert_eq!(validate_issuer("https://auth.example.com/", PUBLIC).unwrap(), "https://auth.example.com");
-        assert_eq!(validate_issuer("https://auth.example.com:8443", PUBLIC).unwrap(), "https://auth.example.com:8443");
+        assert_eq!(
+            validate_issuer("https://auth.example.com", PUBLIC).unwrap(),
+            "https://auth.example.com"
+        );
+        assert_eq!(
+            validate_issuer("https://auth.example.com/", PUBLIC).unwrap(),
+            "https://auth.example.com"
+        );
+        assert_eq!(
+            validate_issuer("https://auth.example.com:8443", PUBLIC).unwrap(),
+            "https://auth.example.com:8443"
+        );
     }
 
     #[test]
@@ -251,14 +274,24 @@ mod tests {
 
     #[test]
     fn query_fragment_and_credentials_are_rejected() {
-        for issuer in ["https://host?x=1", "https://host/#frag", "https://user:pw@host"] {
-            assert!(validate_issuer(issuer, PUBLIC).is_err(), "{issuer} accepted");
+        for issuer in [
+            "https://host?x=1",
+            "https://host/#frag",
+            "https://user:pw@host",
+        ] {
+            assert!(
+                validate_issuer(issuer, PUBLIC).is_err(),
+                "{issuer} accepted"
+            );
         }
     }
 
     #[test]
     fn plaintext_issuer_needs_a_loopback_bind() {
         assert!(validate_issuer("http://127.0.0.1:8080", PUBLIC).is_err());
-        assert_eq!(validate_issuer("http://127.0.0.1:8080", "127.0.0.1:8080").unwrap(), "http://127.0.0.1:8080");
+        assert_eq!(
+            validate_issuer("http://127.0.0.1:8080", "127.0.0.1:8080").unwrap(),
+            "http://127.0.0.1:8080"
+        );
     }
 }

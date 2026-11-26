@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use axum::extract::FromRequestParts;
-use axum::http::request::Parts;
 use axum::http::StatusCode;
+use axum::http::request::Parts;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum_extra::extract::CookieJar;
@@ -271,9 +271,11 @@ mod tests {
         resolve_request_parts(&first, &mut parts, true)
             .await
             .unwrap();
-        assert!(resolve_request_parts(&first, &mut parts, false)
-            .await
-            .is_err());
+        assert!(
+            resolve_request_parts(&first, &mut parts, false)
+                .await
+                .is_err()
+        );
 
         let (mut parts, _) = http::Request::builder()
             .header(

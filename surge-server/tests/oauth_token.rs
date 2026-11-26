@@ -37,7 +37,12 @@ async fn a_code_becomes_an_audience_restricted_access_token() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["token_type"], "Bearer");
     assert_eq!(body["scope"], "mcp:read");
-    assert!(body["refresh_token"].as_str().unwrap().starts_with("aeg_rt_"));
+    assert!(
+        body["refresh_token"]
+            .as_str()
+            .unwrap()
+            .starts_with("aeg_rt_")
+    );
 
     // The claims are the contract a resource server verifies against.
     let claims = decode_claims(body["access_token"].as_str().unwrap());
@@ -425,7 +430,11 @@ async fn unsupported_grant_types_are_refused_by_name() {
                 &[("grant_type", grant), ("client_id", &client_id)],
             )
             .await;
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{grant} was accepted");
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "{grant} was accepted"
+        );
         assert_eq!(body_json(resp).await["error"], "unsupported_grant_type");
     }
 }
@@ -474,7 +483,13 @@ async fn token_bearing_responses_are_never_cacheable() {
     let access = tokens["access_token"].as_str().unwrap();
 
     let refused = h
-        .post_form("/oauth2/token", &[("grant_type", "authorization_code"), ("client_id", &client_id)])
+        .post_form(
+            "/oauth2/token",
+            &[
+                ("grant_type", "authorization_code"),
+                ("client_id", &client_id),
+            ],
+        )
         .await;
     assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
     assert_uncacheable(&refused, "token error");
@@ -486,7 +501,10 @@ async fn token_bearing_responses_are_never_cacheable() {
     let revoked = h
         .post_form(
             "/oauth2/revoke",
-            &[("token", tokens["refresh_token"].as_str().unwrap()), ("client_id", &client_id)],
+            &[
+                ("token", tokens["refresh_token"].as_str().unwrap()),
+                ("client_id", &client_id),
+            ],
         )
         .await;
     assert_eq!(revoked.status(), StatusCode::OK);
@@ -506,7 +524,10 @@ async fn failed_basic_client_auth_is_challenged_in_kind() {
     let (client_id, _secret) = h
         .client_with(false, vec![CLIENT_REDIRECT.to_string()], true)
         .await;
-    let refresh = [("grant_type", "refresh_token"), ("refresh_token", "aeg_rt_nope")];
+    let refresh = [
+        ("grant_type", "refresh_token"),
+        ("refresh_token", "aeg_rt_nope"),
+    ];
 
     for endpoint in ["/oauth2/token", "/oauth2/revoke"] {
         let wrong = h
@@ -518,16 +539,27 @@ async fn failed_basic_client_auth_is_challenged_in_kind() {
         assert_eq!(body_json(wrong).await["error"], "invalid_client");
 
         // A Basic header too malformed to name a client is still an attempt.
-        let malformed = h.post_form_authorized(endpoint, "Basic !!!", &refresh).await;
+        let malformed = h
+            .post_form_authorized(endpoint, "Basic !!!", &refresh)
+            .await;
         assert_eq!(malformed.status(), StatusCode::UNAUTHORIZED, "{endpoint}");
-        assert!(malformed.headers().contains_key("www-authenticate"), "{endpoint}");
+        assert!(
+            malformed.headers().contains_key("www-authenticate"),
+            "{endpoint}"
+        );
 
         // Credentials in the body: §5.2 makes the challenge optional; none is sent.
         let mut form = refresh.to_vec();
-        form.extend([("client_id", client_id.as_str()), ("client_secret", "aeg_cs_wrong")]);
+        form.extend([
+            ("client_id", client_id.as_str()),
+            ("client_secret", "aeg_cs_wrong"),
+        ]);
         let body_auth = h.post_form(endpoint, &form).await;
         assert_eq!(body_auth.status(), StatusCode::UNAUTHORIZED, "{endpoint}");
-        assert!(!body_auth.headers().contains_key("www-authenticate"), "{endpoint}");
+        assert!(
+            !body_auth.headers().contains_key("www-authenticate"),
+            "{endpoint}"
+        );
     }
 }
 

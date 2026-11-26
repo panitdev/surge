@@ -7,21 +7,18 @@
 
 use std::sync::Arc;
 
+use axum::Json;
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use serde_json::json;
 use surge_engine::IdentityId;
 
+use super::AsState;
 use super::error::{OauthError, OauthErrorCode};
 use super::jwt;
-use super::AsState;
 
-pub(crate) async fn userinfo(
-    State(state): State<Arc<AsState>>,
-    headers: HeaderMap,
-) -> Response {
+pub(crate) async fn userinfo(State(state): State<Arc<AsState>>, headers: HeaderMap) -> Response {
     match run(&state, &headers).await {
         Ok(response) => response,
         Err(e) => e.into_response(),
@@ -37,7 +34,10 @@ async fn run(state: &AsState, headers: &HeaderMap) -> Result<Response, OauthErro
     }
 
     let token = jwt::bearer_token(headers).ok_or_else(|| {
-        OauthError::bearer(OauthErrorCode::InvalidToken, "a bearer access token is required")
+        OauthError::bearer(
+            OauthErrorCode::InvalidToken,
+            "a bearer access token is required",
+        )
     })?;
 
     let keys = state

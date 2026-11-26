@@ -37,7 +37,10 @@ pub(crate) async fn get_consent_flow(
     verify_flow_session(&state, &headers, &flow).await?;
 
     let client = state.engine.get_oauth_client(&flow.client_id).await?;
-    let resource = state.engine.get_oauth_registration(flow.registration_id).await?;
+    let resource = state
+        .engine
+        .get_oauth_registration(flow.registration_id)
+        .await?;
 
     let scopes: Vec<serde_json::Value> = flow
         .scopes
@@ -125,14 +128,22 @@ pub(crate) async fn decide_consent_flow(
         .get_oauth_registration(flow.registration_id)
         .await
     {
-        Ok(registration) => client_may_use_resource(&client, &registration, state.engine.eligibility_policy()),
+        Ok(registration) => {
+            client_may_use_resource(&client, &registration, state.engine.eligibility_policy())
+        }
         // Deleted since the flow began: the same answer as ineligible.
         Err(AuthError::NotFound) => false,
         Err(e) => return Err(e.into()),
     };
     if !eligible {
-        return refuse_flow(&state, &flow, &binding, OauthErrorCode::InvalidTarget, INELIGIBLE_TARGET)
-            .await;
+        return refuse_flow(
+            &state,
+            &flow,
+            &binding,
+            OauthErrorCode::InvalidTarget,
+            INELIGIBLE_TARGET,
+        )
+        .await;
     }
 
     let approved = match decision.scopes {

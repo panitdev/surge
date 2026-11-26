@@ -600,11 +600,16 @@ async fn the_service_api_binds_a_new_client_to_resources() {
 
     let resp = create(json!([h.resource_uri])).await.unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
-    let client_id = body_json(resp).await["client_id"].as_str().unwrap().to_string();
+    let client_id = body_json(resp).await["client_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
     let stored = h.engine.get_oauth_client(&client_id).await.unwrap();
     assert_eq!(stored.audiences, Some(vec![h.resource_uri.clone()]));
 
-    let resp = create(json!(["https://nowhere.oauth.test/mcp"])).await.unwrap();
+    let resp = create(json!(["https://nowhere.oauth.test/mcp"]))
+        .await
+        .unwrap();
     assert!(resp.status().is_client_error(), "{}", resp.status());
 }
 
@@ -680,6 +685,12 @@ async fn an_ineligible_refresh_ends_every_family_at_that_registration() {
 
     assert!(!active(&h, &x_a1).await);
     assert!(!active(&h, &x_a2).await);
-    assert!(active(&h, &x_b).await, "the same client at another resource");
-    assert!(active(&h, &y_a).await, "another client at the same resource");
+    assert!(
+        active(&h, &x_b).await,
+        "the same client at another resource"
+    );
+    assert!(
+        active(&h, &y_a).await,
+        "another client at the same resource"
+    );
 }

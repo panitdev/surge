@@ -6,15 +6,15 @@
 
 use std::sync::Arc;
 
+use axum::Json;
 use axum::extract::State;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use serde_json::json;
 
 use surge_engine::oauth::ResourceSource;
 
-use super::error::OauthError;
 use super::AsState;
+use super::error::OauthError;
 
 pub(crate) async fn metadata(State(state): State<Arc<AsState>>) -> Response {
     // Advertised scopes are the union of what *service* resources define.

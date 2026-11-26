@@ -21,9 +21,9 @@ use serde::Deserialize;
 use serde_json::json;
 use surge_engine::{IdentityId, ServiceToken};
 
+use super::AsState;
 use super::error::{OauthError, OauthErrorCode};
 use super::jwt;
-use super::AsState;
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct IntrospectForm {
@@ -62,9 +62,7 @@ async fn run(
         .engine
         .verify_service_token(&service_token.hash())
         .await
-        .map_err(|_| {
-            OauthError::bearer(OauthErrorCode::InvalidClient, "invalid service token")
-        })?;
+        .map_err(|_| OauthError::bearer(OauthErrorCode::InvalidClient, "invalid service token"))?;
 
     if !service.grants.iter().any(|g| g == "introspect") {
         return Err(OauthError::new(

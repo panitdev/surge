@@ -34,7 +34,7 @@ use std::time::Duration;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use secrecy::SecretString;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use surge::{EmbeddedConfig, EmbeddedProvider};
@@ -149,11 +149,17 @@ async fn test_app_inner() -> (axum::Router, Arc<surge_engine::Engine>, String, S
 
 fn rand_suffix() -> u32 {
     use std::time::{SystemTime, UNIX_EPOCH};
-    (SystemTime::now().duration_since(UNIX_EPOCH).unwrap().subsec_nanos()) ^ std::process::id()
+    (SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .subsec_nanos())
+        ^ std::process::id()
 }
 
 async fn body_json(resp: axum::response::Response) -> Value {
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
     serde_json::from_slice(&bytes).unwrap_or(Value::Null)
 }
 
@@ -264,7 +270,11 @@ fn extract_cookie_value(set_cookie: &str, name: &str) -> String {
 }
 
 /// Introspects via the browser-facing surface at `version`.
-async fn whoami_browser(app: &axum::Router, version: &str, raw_token: &str) -> axum::response::Response {
+async fn whoami_browser(
+    app: &axum::Router,
+    version: &str,
+    raw_token: &str,
+) -> axum::response::Response {
     app.clone()
         .oneshot(
             Request::builder()
@@ -280,7 +290,13 @@ async fn whoami_browser(app: &axum::Router, version: &str, raw_token: &str) -> a
 }
 
 /// Mints a session through the service-facing surface at `version`.
-async fn mint_service(app: &axum::Router, version: &str, token: &str, username: &str, password: &str) -> String {
+async fn mint_service(
+    app: &axum::Router,
+    version: &str,
+    token: &str,
+    username: &str,
+    password: &str,
+) -> String {
     let resp = app
         .clone()
         .oneshot(
@@ -296,13 +312,22 @@ async fn mint_service(app: &axum::Router, version: &str, token: &str, username: 
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK, "authenticate_password failed");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "authenticate_password failed"
+    );
     let body = body_json(resp).await;
     body["token"].as_str().unwrap().to_string()
 }
 
 /// Introspects via the service-facing surface at `version`.
-async fn verify_service(app: &axum::Router, version: &str, token: &str, raw_session_token: &str) -> axum::response::Response {
+async fn verify_service(
+    app: &axum::Router,
+    version: &str,
+    token: &str,
+    raw_session_token: &str,
+) -> axum::response::Response {
     app.clone()
         .oneshot(
             Request::builder()
@@ -310,7 +335,9 @@ async fn verify_service(app: &axum::Router, version: &str, token: &str, raw_sess
                 .uri(format!("/{version}/sessions/verify"))
                 .header("authorization", format!("Bearer {token}"))
                 .header("content-type", "application/json")
-                .body(Body::from(json!({ "token": raw_session_token }).to_string()))
+                .body(Body::from(
+                    json!({ "token": raw_session_token }).to_string(),
+                ))
                 .unwrap(),
         )
         .await
@@ -326,7 +353,11 @@ async fn lane1_mint_browser_introspect_browser_across_versions() {
 
     let raw = mint_browser(&app, "v1", &username, &password).await;
     let resp = whoami_browser(&app, "v1", &raw).await;
-    assert_eq!(resp.status(), StatusCode::OK, "browser-minted session must resolve on browser whoami");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "browser-minted session must resolve on browser whoami"
+    );
     let session = body_json(resp).await;
     assert_eq!(session["identity"]["username"], username);
 }
@@ -340,7 +371,11 @@ async fn lane2_mint_service_introspect_service_across_versions() {
 
     let raw = mint_service(&app, "v1", &token, &username, &password).await;
     let resp = verify_service(&app, "v1", &token, &raw).await;
-    assert_eq!(resp.status(), StatusCode::OK, "service-minted session must resolve on service verify");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "service-minted session must resolve on service verify"
+    );
     let session = body_json(resp).await;
     assert_eq!(session["identity"]["username"], username);
 }
@@ -397,7 +432,10 @@ async fn lane4_revoking_every_session_deactivates_the_oauth_grant() {
             client_uri: None,
             logo_uri: None,
             redirect_uris: vec![OAUTH_CLIENT_REDIRECT.to_string()],
-            grant_types: vec!["authorization_code".to_string(), "refresh_token".to_string()],
+            grant_types: vec![
+                "authorization_code".to_string(),
+                "refresh_token".to_string(),
+            ],
             scopes: vec!["mcp:read".to_string()],
             confidential: false,
             first_party: true,
@@ -430,7 +468,11 @@ async fn lane4_revoking_every_session_deactivates_the_oauth_grant() {
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::SEE_OTHER, "authorize must issue a code");
+    assert_eq!(
+        resp.status(),
+        StatusCode::SEE_OTHER,
+        "authorize must issue a code"
+    );
     let redirect = resp
         .headers()
         .get(axum::http::header::LOCATION)
@@ -465,7 +507,11 @@ async fn lane4_revoking_every_session_deactivates_the_oauth_grant() {
         .unwrap();
     let status = resp.status();
     let token_body = body_json(resp).await;
-    assert_eq!(status, StatusCode::OK, "token exchange failed: {token_body}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "token exchange failed: {token_body}"
+    );
     let access = token_body["access_token"].as_str().unwrap().to_string();
 
     let introspect = |access: String, token: String, app: axum::Router| async move {
@@ -483,12 +529,14 @@ async fn lane4_revoking_every_session_deactivates_the_oauth_grant() {
     };
 
     let body = body_json(introspect(access.clone(), token.clone(), app.clone()).await).await;
-    assert_eq!(body["active"], true, "a freshly minted token must introspect live");
+    assert_eq!(
+        body["active"], true,
+        "a freshly minted token must introspect live"
+    );
     assert_eq!(body["aud"], resource_uri);
 
-    let identity_id = surge_engine::types::IdentityId::from_uuid(
-        body["sub"].as_str().unwrap().parse().unwrap(),
-    );
+    let identity_id =
+        surge_engine::types::IdentityId::from_uuid(body["sub"].as_str().unwrap().parse().unwrap());
     engine.revoke_all_sessions(identity_id).await.unwrap();
 
     let body = body_json(introspect(access, token, app).await).await;

@@ -66,7 +66,10 @@ async fn a_registered_client_is_untrusted_third_party_and_scope_capped() {
     let client_id = body["client_id"].as_str().unwrap();
     assert!(client_id.starts_with("aeg_cid_"));
     assert_eq!(body["token_endpoint_auth_method"], "none");
-    assert!(body["client_secret"].is_null(), "a public client gets no secret");
+    assert!(
+        body["client_secret"].is_null(),
+        "a public client gets no secret"
+    );
     assert_eq!(body["scope"], "mcp:read");
 
     let client = h.engine.get_oauth_client(client_id).await.unwrap();
@@ -139,7 +142,11 @@ async fn redirect_uris_must_be_https_or_loopback_http() {
         if ok {
             assert_eq!(resp.status(), StatusCode::CREATED, "{uri} should register");
         } else {
-            assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{uri} should not register");
+            assert_eq!(
+                resp.status(),
+                StatusCode::BAD_REQUEST,
+                "{uri} should not register"
+            );
             assert_eq!(body_json(resp).await["error"], "invalid_client_metadata");
         }
     }

@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use clap::Subcommand;
-use surge_engine::types::*;
 use surge_engine::Engine;
+use surge_engine::types::*;
 
 #[derive(Subcommand)]
 pub enum IdentityCommand {
@@ -118,7 +118,10 @@ pub async fn identity(cmd: IdentityCommand, engine: Arc<Engine>) -> anyhow::Resu
             println!("WARNING: Renaming {} -> {}", username, new_username);
             println!();
             println!("Downstream systems to update manually:");
-            println!("  - Herald: update mailbox address {}@panit.dev -> {}@panit.dev", username, new_username);
+            println!(
+                "  - Herald: update mailbox address {}@panit.dev -> {}@panit.dev",
+                username, new_username
+            );
             println!("  - Any service storing username as display string");
             println!();
             println!("This operation is NOT atomic across services.");

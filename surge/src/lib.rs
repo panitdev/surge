@@ -14,7 +14,7 @@ pub mod router;
 #[cfg(feature = "resource-server")]
 pub mod resource;
 
-pub use extract::{require_header_csrf, AuthRejection, AuthSession};
+pub use extract::{AuthRejection, AuthSession, require_header_csrf};
 pub use traits::AuthProvider;
 
 #[cfg(feature = "embedded")]
@@ -26,9 +26,9 @@ pub use test_provider::{TestConfig, TestProvider};
 pub use remote::{RemoteConfig, RemoteProvider};
 
 pub use surge_engine::types::{
-    AuthError, AuthMethod, BrowserSessionToken, Identity, IdentityId, IdentityLink, IdentityState, IssuedSession,
-    LinkAuth, LinkSeed, Password, ProfilePatch, RegisterRequest, Session, SessionId, SessionToken,
-    Username, ValidationError,
+    AuthError, AuthMethod, BrowserSessionToken, Identity, IdentityId, IdentityLink, IdentityState,
+    IssuedSession, LinkAuth, LinkSeed, Password, ProfilePatch, RegisterRequest, Session, SessionId,
+    SessionToken, Username, ValidationError,
 };
 
 #[cfg(feature = "embedded")]

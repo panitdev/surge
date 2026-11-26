@@ -85,7 +85,10 @@ async fn approval_mints_a_code_persists_consent_and_is_not_asked_again() {
         )
         .await;
     assert_eq!(resp.status(), StatusCode::OK);
-    let redirect = body_json(resp).await["redirect_to"].as_str().unwrap().to_string();
+    let redirect = body_json(resp).await["redirect_to"]
+        .as_str()
+        .unwrap()
+        .to_string();
     assert!(redirect.starts_with(CLIENT_REDIRECT));
     assert!(query_param(&redirect, "code").is_some());
     assert_eq!(query_param(&redirect, "state").as_deref(), Some("xyz"));
@@ -140,8 +143,14 @@ async fn denial_returns_access_denied_to_the_client() {
         )
         .await;
     assert_eq!(resp.status(), StatusCode::OK);
-    let redirect = body_json(resp).await["redirect_to"].as_str().unwrap().to_string();
-    assert_eq!(query_param(&redirect, "error").as_deref(), Some("access_denied"));
+    let redirect = body_json(resp).await["redirect_to"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        query_param(&redirect, "error").as_deref(),
+        Some("access_denied")
+    );
     assert!(query_param(&redirect, "code").is_none());
 }
 

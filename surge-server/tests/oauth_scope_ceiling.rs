@@ -55,7 +55,9 @@ async fn delegated_resource(h: &Harness, name: &str, scopes: &[&str], dcr: bool)
 async fn patch(h: &Harness, uri: &str, patch: ResourcePatch) {
     h.engine
         .update_oauth_resource(
-            surge_engine::audit::AuditActor::Operator { name: "test".into() },
+            surge_engine::audit::AuditActor::Operator {
+                name: "test".into(),
+            },
             surge_engine::oauth::ResourceManager::Admin,
             uri,
             None,
@@ -72,25 +74,46 @@ async fn register(h: &Harness, body: Value) -> (StatusCode, Value) {
     (resp.status(), body_json(resp).await)
 }
 
-async fn authorize(h: &Harness, client_id: &str, session: &str, resource: &str, scope: Option<&str>) -> String {
+async fn authorize(
+    h: &Harness,
+    client_id: &str,
+    session: &str,
+    resource: &str,
+    scope: Option<&str>,
+) -> String {
     let pkce = Pkce::generate();
     let resp = h
-        .get(&h.authorize_uri(client_id, &pkce, Some(resource), scope), Some(session))
+        .get(
+            &h.authorize_uri(client_id, &pkce, Some(resource), scope),
+            Some(session),
+        )
         .await;
     assert_eq!(resp.status(), StatusCode::SEE_OTHER);
     location(&resp)
 }
 
 /// Authorize -> consent -> code -> tokens. Returns the token response.
-async fn full_grant(h: &Harness, client_id: &str, session: &str, resource: &str, scope: Option<&str>) -> Value {
+async fn full_grant(
+    h: &Harness,
+    client_id: &str,
+    session: &str,
+    resource: &str,
+    scope: Option<&str>,
+) -> Value {
     let pkce = Pkce::generate();
     let resp = h
-        .get(&h.authorize_uri(client_id, &pkce, Some(resource), scope), Some(session))
+        .get(
+            &h.authorize_uri(client_id, &pkce, Some(resource), scope),
+            Some(session),
+        )
         .await;
     let mut target = location(&resp);
     if let Some(flow) = query_param(&target, "consent_flow") {
-        let csrf = body_json(h.get(&format!("/v1/oauth/consent/{flow}"), Some(session)).await).await
-            ["csrf_token"]
+        let csrf = body_json(
+            h.get(&format!("/v1/oauth/consent/{flow}"), Some(session))
+                .await,
+        )
+        .await["csrf_token"]
             .as_str()
             .unwrap()
             .to_string();
@@ -102,7 +125,10 @@ async fn full_grant(h: &Harness, client_id: &str, session: &str, resource: &str,
             )
             .await;
         assert_eq!(resp.status(), StatusCode::OK);
-        target = body_json(resp).await["redirect_to"].as_str().unwrap().to_string();
+        target = body_json(resp).await["redirect_to"]
+            .as_str()
+            .unwrap()
+            .to_string();
     }
     let code = query_param(&target, "code").unwrap_or_else(|| panic!("no code: {target}"));
     let resp = h
@@ -121,7 +147,12 @@ async fn full_grant(h: &Harness, client_id: &str, session: &str, resource: &str,
     body_json(resp).await
 }
 
-async fn refresh(h: &Harness, client_id: &str, token: &str, scope: Option<&str>) -> (StatusCode, Value) {
+async fn refresh(
+    h: &Harness,
+    client_id: &str,
+    token: &str,
+    scope: Option<&str>,
+) -> (StatusCode, Value) {
     let mut form = vec![
         ("grant_type", "refresh_token"),
         ("refresh_token", token),
@@ -164,8 +195,7 @@ async fn anonymous_registration_never_reveals_delegated_scopes_that_did_not_opt_
 
     // Asking for a hidden scope fails exactly like asking for an invented one.
     let (status_hidden, hidden_body) = register(&h, json!({ "scope": hidden })).await;
-    let (status_nowhere, nowhere_body) =
-        register(&h, json!({ "scope": "nowhere:nothing" })).await;
+    let (status_nowhere, nowhere_body) = register(&h, json!({ "scope": "nowhere:nothing" })).await;
     assert_eq!(status_hidden, StatusCode::BAD_REQUEST);
     assert_eq!(status_hidden, status_nowhere);
     assert_eq!(hidden_body, nowhere_body);
@@ -198,7 +228,11 @@ async fn registration_records_whether_a_scope_ceiling_was_requested() {
     assert!(stored.scope_ceiling_explicit);
 
     // Every other path, admin included, is an explicit ceiling.
-    let admin = h.engine.get_oauth_client(&h.client(false).await).await.unwrap();
+    let admin = h
+        .engine
+        .get_oauth_client(&h.client(false).await)
+        .await
+        .unwrap();
     assert!(admin.scope_ceiling_explicit);
 }
 
@@ -231,18 +265,32 @@ async fn adding_write_never_widens_an_explicit_read_client_and_refresh_cannot_wi
 
     // Authorization: write is refused for the explicit client...
     let target = authorize(&h, explicit_id, &session, &rs, Some("mcp:write")).await;
-    assert_eq!(query_param(&target, "error").as_deref(), Some("invalid_scope"), "{target}");
+    assert_eq!(
+        query_param(&target, "error").as_deref(),
+        Some("invalid_scope"),
+        "{target}"
+    );
     // ...and its default stays read.
     let tokens = full_grant(&h, explicit_id, &session, &rs, None).await;
     assert_eq!(scope_set(&tokens), vec!["mcp:read"]);
 
     // Refresh cannot widen past the grant, nor past the ceiling.
-    let (status, body) =
-        refresh(&h, explicit_id, e_tokens["refresh_token"].as_str().unwrap(), Some("mcp:read mcp:write")).await;
+    let (status, body) = refresh(
+        &h,
+        explicit_id,
+        e_tokens["refresh_token"].as_str().unwrap(),
+        Some("mcp:read mcp:write"),
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert_eq!(body["error"], "invalid_scope");
-    let (status, body) =
-        refresh(&h, omitted_id, o_tokens["refresh_token"].as_str().unwrap(), Some("mcp:write")).await;
+    let (status, body) = refresh(
+        &h,
+        omitted_id,
+        o_tokens["refresh_token"].as_str().unwrap(),
+        Some("mcp:write"),
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert_eq!(body["error"], "invalid_scope");
 
@@ -311,7 +359,11 @@ async fn a_legacy_scope_list_is_an_explicit_ceiling() {
     )
     .await;
     let target = authorize(&h, &client.client_id, &session, &rs, Some("mcp:write")).await;
-    assert_eq!(query_param(&target, "error").as_deref(), Some("invalid_scope"), "{target}");
+    assert_eq!(
+        query_param(&target, "error").as_deref(),
+        Some("invalid_scope"),
+        "{target}"
+    );
 }
 
 #[tokio::test]
@@ -328,12 +380,24 @@ async fn disabling_opt_in_cuts_off_registered_dynamic_clients_end_to_end() {
     let tokens = full_grant(&h, bound_id, &session, &rs, None).await;
     let refresh_token = tokens["refresh_token"].as_str().unwrap().to_string();
 
-    patch(&h, &rs, ResourcePatch { dcr_enabled: Some(false), ..Default::default() }).await;
+    patch(
+        &h,
+        &rs,
+        ResourcePatch {
+            dcr_enabled: Some(false),
+            ..Default::default()
+        },
+    )
+    .await;
 
     let (status, body) = refresh(&h, bound_id, &refresh_token, None).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     let target = authorize(&h, bound_id, &session, &rs, None).await;
-    assert_eq!(query_param(&target, "error").as_deref(), Some("invalid_target"), "{target}");
+    assert_eq!(
+        query_param(&target, "error").as_deref(),
+        Some("invalid_target"),
+        "{target}"
+    );
 
     // Registering against the closed resource is refused with the same
     // message as an unknown one.
@@ -365,7 +429,10 @@ async fn the_global_switch_is_a_kill_switch_for_existing_dynamic_clients() {
     // delegated resource, and an admin client as a control.
     let (_, a) = register(&h, json!({ "scope": "mcp:read" })).await;
     let (_, b) = register(&h, json!({ "scope": "mcp:read", "resources": [open] })).await;
-    let (a_id, b_id) = (a["client_id"].as_str().unwrap(), b["client_id"].as_str().unwrap());
+    let (a_id, b_id) = (
+        a["client_id"].as_str().unwrap(),
+        b["client_id"].as_str().unwrap(),
+    );
     let admin = h.client(false).await;
     let a_tokens = full_grant(&h, a_id, &session, &h.resource_uri, Some("mcp:read")).await;
     let b_tokens = full_grant(&h, b_id, &session, &open, None).await;
@@ -377,7 +444,11 @@ async fn the_global_switch_is_a_kill_switch_for_existing_dynamic_clients() {
     // Authorize: invalid_target, whatever the resource.
     for (id, rs) in [(a_id, h.resource_uri.as_str()), (b_id, open.as_str())] {
         let target = authorize(&h, id, &session, rs, Some("mcp:read")).await;
-        assert_eq!(query_param(&target, "error").as_deref(), Some("invalid_target"), "{target}");
+        assert_eq!(
+            query_param(&target, "error").as_deref(),
+            Some("invalid_target"),
+            "{target}"
+        );
     }
     // Refresh: invalid_target, and the grant ends.
     for (id, tokens) in [(a_id, &a_tokens), (b_id, &b_tokens)] {
@@ -387,7 +458,13 @@ async fn the_global_switch_is_a_kill_switch_for_existing_dynamic_clients() {
         assert_eq!(body["error"], "invalid_target", "{body}");
     }
     // The non-dynamic control is untouched.
-    let (status, _) = refresh(&h, &admin, admin_tokens["refresh_token"].as_str().unwrap(), None).await;
+    let (status, _) = refresh(
+        &h,
+        &admin,
+        admin_tokens["refresh_token"].as_str().unwrap(),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
 
     // Turning it back on does not resurrect what ended.
@@ -453,16 +530,18 @@ async fn only_self_registered_clients_may_omit_a_ceiling() {
         registration_source: source,
         audiences: None,
     };
-    assert!(h
-        .engine
-        .create_oauth_client_with_ceiling(spec(RegistrationSource::Admin), false)
-        .await
-        .is_err());
-    assert!(h
-        .engine
-        .create_oauth_client_with_ceiling(spec(RegistrationSource::Dynamic), false)
-        .await
-        .is_ok());
+    assert!(
+        h.engine
+            .create_oauth_client_with_ceiling(spec(RegistrationSource::Admin), false)
+            .await
+            .is_err()
+    );
+    assert!(
+        h.engine
+            .create_oauth_client_with_ceiling(spec(RegistrationSource::Dynamic), false)
+            .await
+            .is_ok()
+    );
 
     // ...and so does the database, and it has no default to fall back on.
     let mut conn = AsyncPgConnection::establish(&std::env::var("DATABASE_URL").unwrap())

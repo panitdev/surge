@@ -7,19 +7,19 @@
 
 use std::sync::Arc;
 
-use axum::extract::rejection::FormRejection;
 use axum::extract::State;
+use axum::extract::rejection::FormRejection;
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use axum::{Form, Json};
 use serde::Deserialize;
 use serde_json::json;
-use surge_engine::oauth::{client_may_use_resource, verify_pkce, OauthClient, RefreshGrant};
+use surge_engine::oauth::{OauthClient, RefreshGrant, client_may_use_resource, verify_pkce};
 use surge_engine::{AuthError, AuthorizationCode, ClientSecret, RefreshToken};
 
+use super::AsState;
 use super::error::{OauthError, OauthErrorCode};
 use super::jwt::{self, AccessTokenSpec, IdClaims};
-use super::AsState;
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct TokenForm {
@@ -93,35 +93,39 @@ async fn authenticate_client(
         .as_ref()
         .map(|(id, _)| id.clone())
         .or_else(|| form.client_id.clone())
-        .ok_or_else(|| {
-            OauthError::new(OauthErrorCode::InvalidClient, "client_id is required")
-        })?;
+        .ok_or_else(|| OauthError::new(OauthErrorCode::InvalidClient, "client_id is required"))?;
 
     let secret = basic
         .as_ref()
         .and_then(|(_, secret)| secret.clone())
         .or_else(|| form.client_secret.clone());
 
-    let client = state.engine.get_oauth_client(&client_id).await.map_err(|e| {
-        match e {
-            AuthError::NotFound => {
-                OauthError::new(OauthErrorCode::InvalidClient, "unknown client")
-            }
+    let client = state
+        .engine
+        .get_oauth_client(&client_id)
+        .await
+        .map_err(|e| match e {
+            AuthError::NotFound => OauthError::new(OauthErrorCode::InvalidClient, "unknown client"),
             other => OauthError::from(other),
-        }
-    })?;
+        })?;
 
     match (client.confidential, secret) {
         (true, Some(secret)) => {
             let parsed = ClientSecret::from_raw(&secret).ok_or_else(|| {
-                OauthError::new(OauthErrorCode::InvalidClient, "client authentication failed")
+                OauthError::new(
+                    OauthErrorCode::InvalidClient,
+                    "client authentication failed",
+                )
             })?;
             state
                 .engine
                 .verify_client_secret(&client_id, &parsed)
                 .await
                 .map_err(|_| {
-                    OauthError::new(OauthErrorCode::InvalidClient, "client authentication failed")
+                    OauthError::new(
+                        OauthErrorCode::InvalidClient,
+                        "client authentication failed",
+                    )
                 })
         }
         (true, None) => Err(OauthError::new(
@@ -177,7 +181,11 @@ async fn authorization_code_grant(
         ));
     }
 
-    if !verify_pkce(&grant.code_challenge, &grant.code_challenge_method, verifier) {
+    if !verify_pkce(
+        &grant.code_challenge,
+        &grant.code_challenge_method,
+        verifier,
+    ) {
         return Err(OauthError::new(
             OauthErrorCode::InvalidGrant,
             "PKCE verification failed",
@@ -295,10 +303,7 @@ async fn refresh_token_grant(
     // The grant is bound to the identity, so this is the check that matters:
     // a disabled account stops refreshing within one access-token lifetime,
     // with no resource server changing anything (internal/oauth-as.md §7).
-    let identity = state
-        .provider
-        .identity(rotated.grant.identity_id)
-        .await;
+    let identity = state.provider.identity(rotated.grant.identity_id).await;
     let Ok(identity) = identity else {
         end_grant(state, &client, &rotated.token).await;
         return Err(OauthError::new(
@@ -522,7 +527,9 @@ pub(super) fn basic_auth(headers: &HeaderMap) -> Option<(String, Option<String>)
         .to_str()
         .ok()?
         .strip_prefix("Basic ")?;
-    let decoded = base64::engine::general_purpose::STANDARD.decode(raw.trim()).ok()?;
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(raw.trim())
+        .ok()?;
     let decoded = String::from_utf8(decoded).ok()?;
 
     let (id, secret) = match decoded.split_once(':') {
@@ -546,18 +553,16 @@ fn form_decode(s: &str) -> String {
                 out.push(b' ');
                 i += 1;
             }
-            b'%' if i + 2 < bytes.len() => {
-                match u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                    Ok(byte) => {
-                        out.push(byte);
-                        i += 3;
-                    }
-                    Err(_) => {
-                        out.push(b'%');
-                        i += 1;
-                    }
+            b'%' if i + 2 < bytes.len() => match u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                Ok(byte) => {
+                    out.push(byte);
+                    i += 3;
                 }
-            }
+                Err(_) => {
+                    out.push(b'%');
+                    i += 1;
+                }
+            },
             byte => {
                 out.push(byte);
                 i += 1;
@@ -575,8 +580,7 @@ mod tests {
     fn basic_auth_decodes_the_rfc_6749_encoding() {
         use base64::Engine as _;
 
-        let raw = base64::engine::general_purpose::STANDARD
-            .encode("aeg_cid_abc:aeg_cs_x%2Fy+z");
+        let raw = base64::engine::general_purpose::STANDARD.encode("aeg_cid_abc:aeg_cs_x%2Fy+z");
         let mut headers = HeaderMap::new();
         headers.insert(
             axum::http::header::AUTHORIZATION,

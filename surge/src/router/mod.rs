@@ -15,18 +15,18 @@ pub mod rate_limit;
 mod test;
 mod trusted_proxy;
 
-pub use browser::{BrowserRouterConfig, FactorPolicy, RegistrationMode};
-pub use browser::{spawn_maintenance, DEFAULT_MAINTENANCE_INTERVAL};
 pub(crate) use browser::embedded_browser_router;
-pub(crate) use proxy::{proxy_browser_router, ProxyConfig};
-#[cfg(feature = "test-provider")]
-pub(crate) use test::test_browser_router;
+pub use browser::{BrowserRouterConfig, FactorPolicy, RegistrationMode};
+pub use browser::{DEFAULT_MAINTENANCE_INTERVAL, spawn_maintenance};
 #[cfg(feature = "oauth-as")]
 pub use oauth_as::{
-    is_public_ip, CimdDocumentFetcher, CimdError, CimdLimits, CimdResolver, FetchError,
-    FetchedDocument, HttpDocumentFetcher, OauthAsConfig,
+    CimdDocumentFetcher, CimdError, CimdLimits, CimdResolver, FetchError, FetchedDocument,
+    HttpDocumentFetcher, OauthAsConfig, is_public_ip,
 };
+pub(crate) use proxy::{ProxyConfig, proxy_browser_router};
 pub use rate_limit::{PostgresRateLimiter, RateLimitConfig, RateLimitPolicy, RateLimiter};
+#[cfg(feature = "test-provider")]
+pub(crate) use test::test_browser_router;
 
 /// `Cache-Control: no-store` plus `Pragma: no-cache`: the pair RFC 6749 §5.1
 /// requires on any response carrying tokens or credentials. `Pragma` is for
@@ -37,7 +37,10 @@ async fn no_store(mut response: axum::response::Response) -> axum::response::Res
         http::header::CACHE_CONTROL,
         http::HeaderValue::from_static("no-store"),
     );
-    headers.insert(http::header::PRAGMA, http::HeaderValue::from_static("no-cache"));
+    headers.insert(
+        http::header::PRAGMA,
+        http::HeaderValue::from_static("no-cache"),
+    );
     response
 }
 

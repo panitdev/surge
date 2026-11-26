@@ -114,7 +114,8 @@ impl RateLimiter for PostgresRateLimiter {
         };
 
         if let Some(ip) = ip {
-            self.bump(&format!("{scope}|{action}|ip|{ip}"), policy).await?;
+            self.bump(&format!("{scope}|{action}|ip|{ip}"), policy)
+                .await?;
         }
         if let Some(username) = username {
             self.bump(&format!("{scope}|{action}|user|{username}"), policy)

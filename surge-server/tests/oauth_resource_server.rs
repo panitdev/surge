@@ -12,9 +12,9 @@ mod oauth_support;
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::Router;
 use axum::http::StatusCode;
 use axum::routing::get;
-use axum::Router;
 use oauth_support::*;
 use secrecy::SecretString;
 use serde_json::json;
@@ -138,10 +138,7 @@ async fn mint_access_token(
     let username = format!("oauth-user-{suffix}");
     let password = "correct horse battery staple";
     let identity = engine
-        .create_identity(
-            &surge_engine::Username::new(&username).unwrap(),
-            &username,
-        )
+        .create_identity(&surge_engine::Username::new(&username).unwrap(), &username)
         .await
         .unwrap();
     engine
@@ -304,13 +301,14 @@ async fn a_token_for_another_audience_does_not_validate_here() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-    assert!(resp
-        .headers()
-        .get("www-authenticate")
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .contains("invalid_token"));
+    assert!(
+        resp.headers()
+            .get("www-authenticate")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains("invalid_token")
+    );
 }
 
 #[tokio::test]
@@ -353,7 +351,10 @@ async fn a_token_without_the_required_scope_is_forbidden_not_unauthorized() {
     assert!(challenge.contains("insufficient_scope"));
     // The whole set the route needs (config floor + the guard's own), so a
     // client re-authorizing with it gets through on the next attempt.
-    assert!(challenge.contains("scope=\"mcp:write mcp:read\""), "{challenge}");
+    assert!(
+        challenge.contains("scope=\"mcp:write mcp:read\""),
+        "{challenge}"
+    );
 }
 
 /// The token's header says what it is. A JWT this issuer signed that does not

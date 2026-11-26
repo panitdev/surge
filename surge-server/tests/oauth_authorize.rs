@@ -84,7 +84,10 @@ async fn pkce_is_mandatory_and_plain_is_refused() {
     assert_eq!(resp.status(), StatusCode::SEE_OTHER);
     let target = location(&resp);
     assert!(target.starts_with(CLIENT_REDIRECT));
-    assert_eq!(query_param(&target, "error").as_deref(), Some("invalid_request"));
+    assert_eq!(
+        query_param(&target, "error").as_deref(),
+        Some("invalid_request")
+    );
     assert_eq!(query_param(&target, "state").as_deref(), Some("xyz"));
 
     // `plain`, which OAuth 2.1 removed and which offers no protection at all
@@ -100,7 +103,10 @@ async fn pkce_is_mandatory_and_plain_is_refused() {
         )
         .await;
     let target = location(&resp);
-    assert_eq!(query_param(&target, "error").as_deref(), Some("invalid_request"));
+    assert_eq!(
+        query_param(&target, "error").as_deref(),
+        Some("invalid_request")
+    );
 }
 
 #[tokio::test]
@@ -118,15 +124,24 @@ async fn an_unregistered_audience_is_rejected_and_an_absent_one_is_required() {
         )
         .await;
     let target = location(&resp);
-    assert_eq!(query_param(&target, "error").as_deref(), Some("invalid_target"));
+    assert_eq!(
+        query_param(&target, "error").as_deref(),
+        Some("invalid_target")
+    );
 
     // SURGE_OAUTH_REQUIRE_RESOURCE defaults on: a token with no stated
     // audience is one that would validate anywhere.
     let resp = h
-        .get(&h.authorize_uri(&client_id, &pkce, None, None), Some(&session))
+        .get(
+            &h.authorize_uri(&client_id, &pkce, None, None),
+            Some(&session),
+        )
         .await;
     let target = location(&resp);
-    assert_eq!(query_param(&target, "error").as_deref(), Some("invalid_target"));
+    assert_eq!(
+        query_param(&target, "error").as_deref(),
+        Some("invalid_target")
+    );
 }
 
 #[tokio::test]
@@ -149,7 +164,10 @@ async fn a_scope_the_resource_does_not_define_is_refused() {
         )
         .await;
     let target = location(&resp);
-    assert_eq!(query_param(&target, "error").as_deref(), Some("invalid_scope"));
+    assert_eq!(
+        query_param(&target, "error").as_deref(),
+        Some("invalid_scope")
+    );
 }
 
 #[tokio::test]

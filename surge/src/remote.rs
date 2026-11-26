@@ -372,7 +372,10 @@ impl AuthProvider for RemoteProvider {
         Self::parse_or_error(resp).await
     }
 
-    async fn identity_links(&self, identity_id: IdentityId) -> Result<Vec<IdentityLink>, AuthError> {
+    async fn identity_links(
+        &self,
+        identity_id: IdentityId,
+    ) -> Result<Vec<IdentityLink>, AuthError> {
         let resp = self
             .authed(
                 reqwest::Method::GET,

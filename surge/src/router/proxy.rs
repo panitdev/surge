@@ -11,12 +11,12 @@
 use std::net::SocketAddr;
 use std::sync::{Arc, Once};
 
+use axum::Router;
 use axum::body::Body;
 use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
-use axum::Router;
 use reqwest::Client;
 use secrecy::{ExposeSecret, SecretString};
 use tracing::warn;
@@ -28,7 +28,13 @@ use super::trusted_proxy::{CLIENT_IP_HEADER, SERVICE_TOKEN_HEADER};
 /// Request headers passed through to upstream. An allowlist rather than a
 /// denylist: anything the embedding application adds for its own purposes
 /// is not upstream's business.
-const FORWARDED_REQUEST_HEADERS: &[&str] = &["content-type", "accept", "origin", "x-surge-csrf", crate::extract::ACCOUNT_HEADER];
+const FORWARDED_REQUEST_HEADERS: &[&str] = &[
+    "content-type",
+    "accept",
+    "origin",
+    "x-surge-csrf",
+    crate::extract::ACCOUNT_HEADER,
+];
 
 /// Only Surge's own cookies cross the boundary — the embedding
 /// application's session, analytics, and consent cookies are none of
@@ -153,7 +159,9 @@ async fn proxy_handler(
 
     let listing = uri.path() == "/v1/accounts";
     if listing {
-        let Some(origin) = cors::list_origin(&headers, &uri, config.browser_public_origin.as_deref()) else {
+        let Some(origin) =
+            cors::list_origin(&headers, &uri, config.browser_public_origin.as_deref())
+        else {
             return StatusCode::FORBIDDEN.into_response();
         };
         upstream_req = upstream_req.header(http::header::ORIGIN, origin);
@@ -168,7 +176,9 @@ async fn proxy_handler(
     }
 
     for cookie in headers.get_all(axum::http::header::COOKIE) {
-        let Ok(value) = cookie.to_str() else { return StatusCode::BAD_REQUEST.into_response() };
+        let Ok(value) = cookie.to_str() else {
+            return StatusCode::BAD_REQUEST.into_response();
+        };
         if let Some(cookies) = surge_cookies(value) {
             upstream_req = upstream_req.header(axum::http::header::COOKIE, cookies);
         }
@@ -177,10 +187,7 @@ async fn proxy_handler(
     // Proves to upstream that the `X-Surge-Client-Ip` below is a
     // statement it may trust. Note that neither header is forwarded from
     // the incoming request — a browser cannot smuggle either one through.
-    upstream_req = upstream_req.header(
-        SERVICE_TOKEN_HEADER,
-        config.service_token.expose_secret(),
-    );
+    upstream_req = upstream_req.header(SERVICE_TOKEN_HEADER, config.service_token.expose_secret());
 
     match peer_ip {
         Some(ip) => {
@@ -362,10 +369,16 @@ mod tests {
             let sink = Arc::clone(&sink);
             async move {
                 *sink.lock().unwrap() = Captured {
-                    path: uri.path_and_query().map(|p| p.to_string()).unwrap_or_default(),
+                    path: uri
+                        .path_and_query()
+                        .map(|p| p.to_string())
+                        .unwrap_or_default(),
                     headers,
                 };
-                (StatusCode::NO_CONTENT, [(crate::extract::ACCOUNT_HEADER, "selected")])
+                (
+                    StatusCode::NO_CONTENT,
+                    [(crate::extract::ACCOUNT_HEADER, "selected")],
+                )
             }
         });
 
@@ -375,10 +388,7 @@ mod tests {
             axum::serve(listener, app).await.unwrap();
         });
 
-        (
-            Url::parse(&format!("http://{addr}")).unwrap(),
-            captured,
-        )
+        (Url::parse(&format!("http://{addr}")).unwrap(), captured)
     }
 
     fn test_router(upstream: Url) -> Router {
@@ -440,12 +450,21 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.headers()[crate::extract::ACCOUNT_HEADER], "selected");
-        assert_eq!(response.headers()[http::header::ACCESS_CONTROL_EXPOSE_HEADERS], crate::extract::ACCOUNT_HEADER);
+        assert_eq!(
+            response.headers()[crate::extract::ACCOUNT_HEADER],
+            "selected"
+        );
+        assert_eq!(
+            response.headers()[http::header::ACCESS_CONTROL_EXPOSE_HEADERS],
+            crate::extract::ACCOUNT_HEADER
+        );
         let received = captured.lock().unwrap();
         assert_eq!(received.path, "/v1/whoami");
         assert_eq!(received.headers[crate::extract::ACCOUNT_HEADER], "selected");
-        assert_eq!(received.headers[http::header::COOKIE], "surge_browser=browser");
+        assert_eq!(
+            received.headers[http::header::COOKIE],
+            "surge_browser=browser"
+        );
     }
 
     /// Upstream keys rate limits on the address this header states, so a

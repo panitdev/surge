@@ -21,13 +21,16 @@ use super::cors;
 use super::csrf::check_flow_csrf;
 use super::error::ApiError;
 use super::rate_limit::RateLimiter;
-use super::trusted_proxy::{trusted_proxy, TrustedClientIp, TrustedProxyState};
-use crate::extract::{browser_cookie, require_header_csrf, resolve_request_parts, ResolvedSession, ACCOUNT_HEADER};
+use super::trusted_proxy::{TrustedClientIp, TrustedProxyState, trusted_proxy};
+use crate::extract::{
+    ACCOUNT_HEADER, ResolvedSession, browser_cookie, require_header_csrf, resolve_request_parts,
+};
 use crate::traits::AuthProvider;
 use crate::*;
 
 fn legacy_cookie(headers: &HeaderMap) -> Option<SessionToken> {
-    CookieJar::from_headers(headers).get("surge_session")
+    CookieJar::from_headers(headers)
+        .get("surge_session")
         .and_then(|cookie| SessionToken::from_raw(cookie.value()))
 }
 
@@ -85,7 +88,6 @@ pub struct BrowserRouterConfig {
     pub browser_public_origin: Option<String>,
 
     // -- Embedded-only fields (ignored by RemoteProvider) --
-
     pub rate_limiter: Option<Arc<dyn RateLimiter>>,
     /// Origins `return_to` is allowed to target on `GET /login`.
     pub return_origins: Option<Vec<String>>,
@@ -151,7 +153,9 @@ pub(crate) fn embedded_browser_router(
         browser_public_origin: config.browser_public_origin,
         cookie_domain: config.cookie_domain,
         session_ttl: config.session_ttl,
-        rate_limiter: config.rate_limiter.expect("embedded mode requires rate_limiter"),
+        rate_limiter: config
+            .rate_limiter
+            .expect("embedded mode requires rate_limiter"),
         return_origins: config.return_origins.unwrap_or_default(),
         registration: config.registration.unwrap_or(RegistrationMode::Closed),
         factor_policy: config.factor_policy.unwrap_or(FactorPolicy::None),
@@ -186,7 +190,10 @@ pub(crate) fn embedded_browser_router(
             cors::union(&state.session_cors_origins)
         };
         (
-            v1.merge(super::oauth_as::v1_router(Arc::clone(&as_state), session_cors)),
+            v1.merge(super::oauth_as::v1_router(
+                Arc::clone(&as_state),
+                session_cors,
+            )),
             super::oauth_as::root_router(as_state),
         )
     } else {
@@ -195,10 +202,12 @@ pub(crate) fn embedded_browser_router(
 
     // Outside both CORS zones: it resolves who the caller is on behalf of
     // before any handler reads a rate-limit key.
-    let v1 = v1.layer(middleware::from_fn_with_state(
-        Arc::new(TrustedProxyState::new(Arc::clone(&state.engine))),
-        trusted_proxy,
-    )).layer(middleware::map_response(super::no_store));
+    let v1 = v1
+        .layer(middleware::from_fn_with_state(
+            Arc::new(TrustedProxyState::new(Arc::clone(&state.engine))),
+            trusted_proxy,
+        ))
+        .layer(middleware::map_response(super::no_store));
 
     let interval = config
         .maintenance_interval
@@ -278,27 +287,41 @@ impl V1Router {
 
         let csrf = || middleware::from_fn(require_header_csrf);
         let accounts = Router::new()
-            .route("/accounts", get(list_accounts).options(|| async { StatusCode::NO_CONTENT }))
-            .layer(middleware::from_fn_with_state(Arc::clone(&self.state), authorize_account_list))
+            .route(
+                "/accounts",
+                get(list_accounts).options(|| async { StatusCode::NO_CONTENT }),
+            )
+            .layer(middleware::from_fn_with_state(
+                Arc::clone(&self.state),
+                authorize_account_list,
+            ))
             .with_state(Arc::clone(&self.state));
         let session_management = Router::new()
             .route("/whoami", get(whoami))
-            .route("/accounts/default", axum::routing::put(set_default_account).layer(csrf()))
-            .route("/accounts/{account_id}", delete(remove_browser_account).layer(csrf()))
-            .route("/logout-all", post(logout_all).layer(csrf()))
             .route(
-                "/logout",
-                post(logout).layer(csrf()),
+                "/accounts/default",
+                axum::routing::put(set_default_account).layer(csrf()),
             )
+            .route(
+                "/accounts/{account_id}",
+                delete(remove_browser_account).layer(csrf()),
+            )
+            .route("/logout-all", post(logout_all).layer(csrf()))
+            .route("/logout", post(logout).layer(csrf()))
             .route("/factors", get(get_factors))
             .route("/factors/totp/enroll", post(enroll_totp).layer(csrf()))
             .route("/factors/totp/confirm", post(confirm_totp).layer(csrf()))
             .route("/factors/totp", delete(remove_totp).layer(csrf()))
             .route(
                 "/factors/passphrase",
-                post(enroll_passphrase).delete(remove_passphrase).layer(csrf()),
+                post(enroll_passphrase)
+                    .delete(remove_passphrase)
+                    .layer(csrf()),
             )
-            .route("/factors/passphrase/confirm", post(confirm_passphrase).layer(csrf()))
+            .route(
+                "/factors/passphrase/confirm",
+                post(confirm_passphrase).layer(csrf()),
+            )
             .route("/account/password", post(change_password).layer(csrf()))
             .layer(cors::account_scoped(session_cors))
             .with_state(self.state);
@@ -409,8 +432,14 @@ async fn start_login(
 
     let token = browser_cookie(&headers)?;
     let flow = if state.multi_account {
-        state.engine
-            .create_browser_login_flow(return_to, query.intent.is_some(), token.as_ref(), legacy_cookie(&headers).as_ref())
+        state
+            .engine
+            .create_browser_login_flow(
+                return_to,
+                query.intent.is_some(),
+                token.as_ref(),
+                legacy_cookie(&headers).as_ref(),
+            )
             .await?
     } else {
         if query.intent.is_some() || token.is_some() {
@@ -441,8 +470,13 @@ async fn get_flow(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, ApiError> {
-    let flow = state.engine
-        .get_browser_login_flow(&id, browser_cookie(&headers)?.as_ref(), legacy_cookie(&headers).as_ref())
+    let flow = state
+        .engine
+        .get_browser_login_flow(
+            &id,
+            browser_cookie(&headers)?.as_ref(),
+            legacy_cookie(&headers).as_ref(),
+        )
         .await?;
 
     Ok(Json(json!({
@@ -468,8 +502,13 @@ async fn submit_password(
     headers: HeaderMap,
     Json(body): Json<PasswordSubmit>,
 ) -> Result<Response, ApiError> {
-    let flow = state.engine
-        .get_browser_login_flow(&id, browser_cookie(&headers)?.as_ref(), legacy_cookie(&headers).as_ref())
+    let flow = state
+        .engine
+        .get_browser_login_flow(
+            &id,
+            browser_cookie(&headers)?.as_ref(),
+            legacy_cookie(&headers).as_ref(),
+        )
         .await?;
 
     if flow.state != "created" {
@@ -477,18 +516,23 @@ async fn submit_password(
     }
     check_flow_csrf(&flow.csrf_token, &body.csrf_token)?;
 
-    state.rate_limiter.check("flow", "flow_submit", ip, None).await?;
+    state
+        .rate_limiter
+        .check("flow", "flow_submit", ip, None)
+        .await?;
 
     let username = match Username::new(&body.username) {
         Ok(u) => u,
         Err(_) => {
-            state.engine.record_flow_error(&id, "invalid_credentials").await?;
+            state
+                .engine
+                .record_flow_error(&id, "invalid_credentials")
+                .await?;
             return Err(AuthError::InvalidCredentials.into());
         }
     };
 
     state
-        
         .rate_limiter
         .check("flow", "authenticate", ip, Some(username.as_str()))
         .await?;
@@ -496,7 +540,10 @@ async fn submit_password(
     let password = match Password::new(SecretString::from(body.password)) {
         Ok(p) => p,
         Err(_) => {
-            state.engine.record_flow_error(&id, "invalid_credentials").await?;
+            state
+                .engine
+                .record_flow_error(&id, "invalid_credentials")
+                .await?;
             return Err(AuthError::InvalidCredentials.into());
         }
     };
@@ -504,19 +551,23 @@ async fn submit_password(
     // Split verify from mint (unlike `provider.authenticate_password`, which
     // bundles verify+mint+audit): a user with a confirmed TOTP must clear the
     // second step before any session is minted.
-    let (identity, proof) = match state.engine.verify_login_password(&username, &password).await {
+    let (identity, proof) = match state
+        .engine
+        .verify_login_password(&username, &password)
+        .await
+    {
         Ok(identity) => identity,
         Err(e) => {
-            state.engine.record_flow_error(&id, "invalid_credentials").await?;
+            state
+                .engine
+                .record_flow_error(&id, "invalid_credentials")
+                .await?;
             return Err(e.into());
         }
     };
 
     if state.engine.has_totp(identity.id).await? {
-        state
-            .engine
-            .set_flow_awaiting_totp(&id, proof)
-            .await?;
+        state.engine.set_flow_awaiting_totp(&id, proof).await?;
         return Ok(Json(json!({
             "status": "totp_required",
             "return_to": flow.return_to,
@@ -587,7 +638,8 @@ async fn finish_login(
     let policy = policy_from_status(state.factor_policy, completed.factor_status);
     let mut body = json!({ "return_to": return_to, "session": issued.session, "policy": policy });
     if let Some(account) = completed.account_id {
-        let callback = body["return_to"].as_str()
+        let callback = body["return_to"]
+            .as_str()
             .and_then(|value| url::Url::parse(value).ok())
             .filter(|url| url.fragment() == Some("surge_account"));
         if let Some(mut url) = callback {
@@ -595,10 +647,12 @@ async fn finish_login(
             // A registry error withholds the selector while still delivering
             // the cookie for the completed login.
             let origin = url.origin().ascii_serialization();
-            let allowed = account_list_origin_allowed(state, &origin).await.unwrap_or_else(|error| {
-                tracing::warn!(%error, "could not authorize login callback account selector");
-                false
-            });
+            let allowed = account_list_origin_allowed(state, &origin)
+                .await
+                .unwrap_or_else(|error| {
+                    tracing::warn!(%error, "could not authorize login callback account selector");
+                    false
+                });
             if allowed {
                 url.set_fragment(Some(&format!("surge_account={account}")));
                 body["return_to"] = json!(url.as_str());
@@ -620,7 +674,10 @@ async fn policy_block(
     Ok(policy_from_status(state.factor_policy, status))
 }
 
-fn policy_from_status(policy: FactorPolicy, status: surge_engine::FactorStatus) -> serde_json::Value {
+fn policy_from_status(
+    policy: FactorPolicy,
+    status: surge_engine::FactorStatus,
+) -> serde_json::Value {
     let (totp_required, passphrase_required) = policy.requires();
     let compliant =
         (!totp_required || status.has_totp) && (!passphrase_required || status.has_passphrase);
@@ -646,8 +703,13 @@ async fn submit_totp(
     headers: HeaderMap,
     Json(body): Json<TotpSubmit>,
 ) -> Result<Response, ApiError> {
-    let flow = state.engine
-        .get_browser_login_flow(&id, browser_cookie(&headers)?.as_ref(), legacy_cookie(&headers).as_ref())
+    let flow = state
+        .engine
+        .get_browser_login_flow(
+            &id,
+            browser_cookie(&headers)?.as_ref(),
+            legacy_cookie(&headers).as_ref(),
+        )
         .await?;
     if flow.state != "awaiting_totp" {
         return Err(AuthError::InvalidToken.into());
@@ -655,11 +717,13 @@ async fn submit_totp(
     check_flow_csrf(&flow.csrf_token, &body.csrf_token)?;
     let identity_id = flow.identity_id.ok_or(AuthError::InvalidToken)?;
 
-    state.rate_limiter.check("flow", "flow_submit", ip, None).await?;
+    state
+        .rate_limiter
+        .check("flow", "flow_submit", ip, None)
+        .await?;
     // Per-identity limit is the real brute-force control here: the flow's
     // attempt cap bounds nothing across freshly-created flows.
     state
-        
         .rate_limiter
         .check("flow", "authenticate", ip, Some(&identity_id.to_string()))
         .await?;
@@ -696,25 +760,35 @@ async fn submit_passphrase(
     headers: HeaderMap,
     Json(body): Json<PassphraseLogin>,
 ) -> Result<Response, ApiError> {
-    let flow = state.engine
-        .get_browser_login_flow(&id, browser_cookie(&headers)?.as_ref(), legacy_cookie(&headers).as_ref())
+    let flow = state
+        .engine
+        .get_browser_login_flow(
+            &id,
+            browser_cookie(&headers)?.as_ref(),
+            legacy_cookie(&headers).as_ref(),
+        )
         .await?;
     if flow.state != "created" {
         return Err(AuthError::InvalidToken.into());
     }
     check_flow_csrf(&flow.csrf_token, &body.csrf_token)?;
 
-    state.rate_limiter.check("flow", "flow_submit", ip, None).await?;
+    state
+        .rate_limiter
+        .check("flow", "flow_submit", ip, None)
+        .await?;
 
     let username = match Username::new(&body.username) {
         Ok(u) => u,
         Err(_) => {
-            state.engine.record_flow_error(&id, "invalid_credentials").await?;
+            state
+                .engine
+                .record_flow_error(&id, "invalid_credentials")
+                .await?;
             return Err(AuthError::InvalidCredentials.into());
         }
     };
     state
-        
         .rate_limiter
         .check("flow", "authenticate", ip, Some(username.as_str()))
         .await?;
@@ -738,7 +812,10 @@ async fn submit_passphrase(
             .await
         }
         Err(e) => {
-            state.engine.record_flow_error(&id, "invalid_credentials").await?;
+            state
+                .engine
+                .record_flow_error(&id, "invalid_credentials")
+                .await?;
             Err(e.into())
         }
     }
@@ -760,25 +837,35 @@ async fn submit_recover(
     headers: HeaderMap,
     Json(body): Json<RecoverSubmit>,
 ) -> Result<Response, ApiError> {
-    let flow = state.engine
-        .get_browser_login_flow(&id, browser_cookie(&headers)?.as_ref(), legacy_cookie(&headers).as_ref())
+    let flow = state
+        .engine
+        .get_browser_login_flow(
+            &id,
+            browser_cookie(&headers)?.as_ref(),
+            legacy_cookie(&headers).as_ref(),
+        )
         .await?;
     if flow.state != "created" {
         return Err(AuthError::InvalidToken.into());
     }
     check_flow_csrf(&flow.csrf_token, &body.csrf_token)?;
 
-    state.rate_limiter.check("flow", "flow_submit", ip, None).await?;
+    state
+        .rate_limiter
+        .check("flow", "flow_submit", ip, None)
+        .await?;
 
     let username = match Username::new(&body.username) {
         Ok(u) => u,
         Err(_) => {
-            state.engine.record_flow_error(&id, "invalid_credentials").await?;
+            state
+                .engine
+                .record_flow_error(&id, "invalid_credentials")
+                .await?;
             return Err(AuthError::InvalidCredentials.into());
         }
     };
     state
-        
         .rate_limiter
         .check("flow", "authenticate", ip, Some(username.as_str()))
         .await?;
@@ -806,7 +893,10 @@ async fn submit_recover(
             .await
         }
         Err(e) => {
-            state.engine.record_flow_error(&id, "invalid_credentials").await?;
+            state
+                .engine
+                .record_flow_error(&id, "invalid_credentials")
+                .await?;
             Err(e.into())
         }
     }
@@ -821,7 +911,6 @@ async fn rate_limit_step_up(
     id: IdentityId,
 ) -> Result<(), ApiError> {
     state
-        
         .rate_limiter
         .check("account", "authenticate", ip, Some(&id.to_string()))
         .await?;
@@ -842,7 +931,10 @@ struct ChangePassword {
 impl FromRequestParts<Arc<EmbeddedState>> for ResolvedSession {
     type Rejection = ApiError;
 
-    async fn from_request_parts(parts: &mut Parts, state: &Arc<EmbeddedState>) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &Arc<EmbeddedState>,
+    ) -> Result<Self, Self::Rejection> {
         Ok(resolve_request_parts(&state.provider, parts, false).await?)
     }
 }
@@ -946,7 +1038,10 @@ async fn confirm_passphrase(
     let session = resolved.session;
     let id = session.identity.id;
     rate_limit_step_up(&state, ip, id).await?;
-    state.engine.confirm_passphrase(id, &body.passphrase).await?;
+    state
+        .engine
+        .confirm_passphrase(id, &body.passphrase)
+        .await?;
     let policy = policy_block(&state, id).await?;
     Ok(Json(json!({ "policy": policy })).into_response())
 }
@@ -1009,17 +1104,24 @@ async fn submit_register(
         RegistrationMode::Open => {}
     }
 
-    let flow = state.engine
-        .get_browser_login_flow(&id, browser_cookie(&headers)?.as_ref(), legacy_cookie(&headers).as_ref())
+    let flow = state
+        .engine
+        .get_browser_login_flow(
+            &id,
+            browser_cookie(&headers)?.as_ref(),
+            legacy_cookie(&headers).as_ref(),
+        )
         .await?;
     if flow.state != "created" {
         return Err(AuthError::InvalidToken.into());
     }
     check_flow_csrf(&flow.csrf_token, &body.csrf_token)?;
 
-    state.rate_limiter.check("flow", "flow_submit", ip, None).await?;
     state
-        
+        .rate_limiter
+        .check("flow", "flow_submit", ip, None)
+        .await?;
+    state
         .rate_limiter
         .check("flow", "register", ip, None)
         .await?;
@@ -1035,8 +1137,17 @@ async fn submit_register(
         display_name: body.display_name,
     };
 
-    let mut response = finish_login(&state, &id, &body.csrf_token, &headers, flow.return_to,
-        VerifiedLogin::Register(req), "register_and_authenticate", None).await?;
+    let mut response = finish_login(
+        &state,
+        &id,
+        &body.csrf_token,
+        &headers,
+        flow.return_to,
+        VerifiedLogin::Register(req),
+        "register_and_authenticate",
+        None,
+    )
+    .await?;
     *response.status_mut() = StatusCode::CREATED;
     Ok(response)
 }
@@ -1045,19 +1156,27 @@ async fn submit_register(
 /// who am I?" call. Read-only, so no CSRF gate — it only inspects the
 /// session cookie. Cross-origin callers need `session_cors_origins`
 /// (§8.2b); same-origin frontends work with it empty.
-async fn whoami(State(state): State<Arc<EmbeddedState>>, resolved: ResolvedSession) -> Result<impl IntoResponse, ApiError> {
+async fn whoami(
+    State(state): State<Arc<EmbeddedState>>,
+    resolved: ResolvedSession,
+) -> Result<impl IntoResponse, ApiError> {
     let session = resolved.session;
     let policy = policy_block(&state, session.identity.id).await?;
     let mut body = serde_json::to_value(&session).unwrap();
     body["policy"] = policy;
     let mut response = Json(body).into_response();
     if let Some(id) = resolved.account_id {
-        response.headers_mut().insert(ACCOUNT_HEADER, id.to_string().parse().unwrap());
+        response
+            .headers_mut()
+            .insert(ACCOUNT_HEADER, id.to_string().parse().unwrap());
     }
     Ok(response)
 }
 
-async fn account_list_origin_allowed(state: &EmbeddedState, origin: &str) -> Result<bool, AuthError> {
+async fn account_list_origin_allowed(
+    state: &EmbeddedState,
+    origin: &str,
+) -> Result<bool, AuthError> {
     if origin == state.auth_ui_origin {
         return Ok(true);
     }
@@ -1070,17 +1189,37 @@ async fn authorize_account_list(
     next: middleware::Next,
 ) -> Result<Response, ApiError> {
     use http::header::*;
-    let origin = cors::list_origin(request.headers(), request.uri(), state.browser_public_origin.as_deref()).ok_or(AuthError::Forbidden)?;
+    let origin = cors::list_origin(
+        request.headers(),
+        request.uri(),
+        state.browser_public_origin.as_deref(),
+    )
+    .ok_or(AuthError::Forbidden)?;
     if !account_list_origin_allowed(&state, &origin).await? {
         return Err(AuthError::Forbidden.into());
     }
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
-    headers.insert(ACCESS_CONTROL_ALLOW_ORIGIN, origin.parse().map_err(|_| AuthError::Forbidden)?);
-    headers.insert(ACCESS_CONTROL_ALLOW_CREDENTIALS, HeaderValue::from_static("true"));
-    headers.insert(ACCESS_CONTROL_ALLOW_METHODS, HeaderValue::from_static("GET"));
-    headers.insert(ACCESS_CONTROL_ALLOW_HEADERS, HeaderValue::from_static("content-type, x-surge-csrf"));
-    headers.append(VARY, HeaderValue::from_static("Origin, Referer, Sec-Fetch-Site"));
+    headers.insert(
+        ACCESS_CONTROL_ALLOW_ORIGIN,
+        origin.parse().map_err(|_| AuthError::Forbidden)?,
+    );
+    headers.insert(
+        ACCESS_CONTROL_ALLOW_CREDENTIALS,
+        HeaderValue::from_static("true"),
+    );
+    headers.insert(
+        ACCESS_CONTROL_ALLOW_METHODS,
+        HeaderValue::from_static("GET"),
+    );
+    headers.insert(
+        ACCESS_CONTROL_ALLOW_HEADERS,
+        HeaderValue::from_static("content-type, x-surge-csrf"),
+    );
+    headers.append(
+        VARY,
+        HeaderValue::from_static("Origin, Referer, Sec-Fetch-Site"),
+    );
     Ok(response)
 }
 

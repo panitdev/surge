@@ -14,7 +14,7 @@ use std::time::Duration;
 use axum::body::Body;
 use axum::http::{Request, Response, StatusCode};
 use secrecy::SecretString;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use totp_rs::{Algorithm, Secret, TOTP};
 use tower::ServiceExt;
 
@@ -79,11 +79,17 @@ async fn test_app(policy: FactorPolicy) -> (axum::Router, String) {
 
 fn rand_suffix() -> u32 {
     use std::time::{SystemTime, UNIX_EPOCH};
-    (SystemTime::now().duration_since(UNIX_EPOCH).unwrap().subsec_nanos()) ^ std::process::id()
+    (SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .subsec_nanos())
+        ^ std::process::id()
 }
 
 async fn body_json(resp: Response<Body>) -> Value {
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
     serde_json::from_slice(&bytes).unwrap_or(Value::Null)
 }
 
@@ -213,7 +219,11 @@ async fn totp_is_required_after_password_once_enrolled() {
     assert_eq!(resp.status(), StatusCode::OK);
     let cookie = session_cookie(&resp).expect("session cookie after password login (no TOTP yet)");
     let body = body_json(resp).await;
-    assert_eq!(body["policy"]["compliant"], json!(false), "TOTP required but absent");
+    assert_eq!(
+        body["policy"]["compliant"],
+        json!(false),
+        "TOTP required but absent"
+    );
 
     // Enroll TOTP (step-up falls back to the password: no passphrase yet).
     let resp = post_authed(
@@ -224,7 +234,10 @@ async fn totp_is_required_after_password_once_enrolled() {
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK);
-    let secret = body_json(resp).await["secret"].as_str().unwrap().to_string();
+    let secret = body_json(resp).await["secret"]
+        .as_str()
+        .unwrap()
+        .to_string();
     let totp = totp_from_secret(&secret);
 
     let resp = post_authed(
@@ -262,7 +275,10 @@ async fn totp_is_required_after_password_once_enrolled() {
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK);
-    assert!(session_cookie(&resp).is_none(), "no session before the TOTP step");
+    assert!(
+        session_cookie(&resp).is_none(),
+        "no session before the TOTP step"
+    );
     assert_eq!(body_json(resp).await["status"], json!("totp_required"));
 
     // Complete with a code for the next step (the confirm consumed this one).
@@ -303,8 +319,15 @@ async fn passphrase_logs_in_standalone_and_authorizes_recovery() {
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK);
-    let passphrase = body_json(resp).await["passphrase"].as_str().unwrap().to_string();
-    assert_eq!(passphrase.split(' ').count(), 6, "6-word Diceware passphrase");
+    let passphrase = body_json(resp).await["passphrase"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        passphrase.split(' ').count(),
+        6,
+        "6-word Diceware passphrase"
+    );
 
     // Reroll: calling again before confirm overwrites the pending passphrase.
     let resp = post_authed(
@@ -315,7 +338,10 @@ async fn passphrase_logs_in_standalone_and_authorizes_recovery() {
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK);
-    let passphrase = body_json(resp).await["passphrase"].as_str().unwrap().to_string();
+    let passphrase = body_json(resp).await["passphrase"]
+        .as_str()
+        .unwrap()
+        .to_string();
     assert_eq!(passphrase.split(' ').count(), 6, "rerolled passphrase");
 
     // Confirm the passphrase by echoing it back.
@@ -327,7 +353,11 @@ async fn passphrase_logs_in_standalone_and_authorizes_recovery() {
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK, "passphrase confirm failed");
-    assert!(body_json(resp).await["policy"]["has"]["passphrase"].as_bool().unwrap());
+    assert!(
+        body_json(resp).await["policy"]["has"]["passphrase"]
+            .as_bool()
+            .unwrap()
+    );
 
     // Standalone passphrase login bypasses the password.
     let (flow, csrf) = start_flow(&app).await;
@@ -367,6 +397,10 @@ async fn passphrase_logs_in_standalone_and_authorizes_recovery() {
         json!({ "username": username, "password": new_password, "csrf_token": csrf }),
     )
     .await;
-    assert_eq!(resp.status(), StatusCode::OK, "login with the reset password failed");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "login with the reset password failed"
+    );
     assert!(session_cookie(&resp).is_some());
 }

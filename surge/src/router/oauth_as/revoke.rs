@@ -7,15 +7,15 @@
 
 use std::sync::Arc;
 
+use axum::Form;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::Form;
 use serde::Deserialize;
 use surge_engine::{ClientSecret, RefreshToken};
 
-use super::error::{OauthError, OauthErrorCode};
 use super::AsState;
+use super::error::{OauthError, OauthErrorCode};
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct RevokeForm {
@@ -45,9 +45,9 @@ async fn run(
     let basic = super::token::basic_auth(headers);
     let basic_id = basic.as_ref().map(|(id, _)| id.clone());
     let basic_secret = basic.and_then(|(_, secret)| secret);
-    let client_id = basic_id.or(form.client_id).ok_or_else(|| {
-        OauthError::new(OauthErrorCode::InvalidClient, "client_id is required")
-    })?;
+    let client_id = basic_id
+        .or(form.client_id)
+        .ok_or_else(|| OauthError::new(OauthErrorCode::InvalidClient, "client_id is required"))?;
 
     let client = state
         .engine
@@ -70,7 +70,10 @@ async fn run(
             .verify_client_secret(&client_id, &secret)
             .await
             .map_err(|_| {
-                OauthError::new(OauthErrorCode::InvalidClient, "client authentication failed")
+                OauthError::new(
+                    OauthErrorCode::InvalidClient,
+                    "client authentication failed",
+                )
             })?;
     }
 

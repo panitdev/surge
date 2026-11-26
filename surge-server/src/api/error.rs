@@ -1,6 +1,6 @@
+use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use serde_json::json;
 use surge_engine::AuthError;
 
@@ -21,7 +21,9 @@ impl IntoResponse for ApiError {
             AuthError::InvalidCredentials => (StatusCode::UNAUTHORIZED, "invalid_credentials"),
             AuthError::RateLimited { .. } => (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
             AuthError::UsernameTaken => (StatusCode::CONFLICT, "username_taken"),
-            AuthError::ResourceAlreadyRegistered => (StatusCode::CONFLICT, "resource_already_registered"),
+            AuthError::ResourceAlreadyRegistered => {
+                (StatusCode::CONFLICT, "resource_already_registered")
+            }
             AuthError::ResourceReserved(_) => (StatusCode::CONFLICT, "resource_reserved"),
             AuthError::PreconditionFailed => {
                 (StatusCode::PRECONDITION_FAILED, "precondition_failed")
@@ -32,9 +34,7 @@ impl IntoResponse for ApiError {
             AuthError::ScopeNotGranted => (StatusCode::FORBIDDEN, "scope_not_granted"),
             AuthError::Unavailable => (StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
             AuthError::Timeout => (StatusCode::GATEWAY_TIMEOUT, "timeout"),
-            AuthError::Internal(_) => {
-                (StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
-            }
+            AuthError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal_error"),
             _ => (StatusCode::INTERNAL_SERVER_ERROR, "internal_error"),
         };
 

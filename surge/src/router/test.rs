@@ -14,9 +14,9 @@ use axum::routing::get;
 use axum::{Json, Router};
 use axum_extra::extract::CookieJar;
 
-use super::{cors, BrowserRouterConfig};
-use crate::traits::AuthProvider;
+use super::{BrowserRouterConfig, cors};
 use crate::SessionToken;
+use crate::traits::AuthProvider;
 
 /// Builds the read-only test browser router at `/v1`. Embedded-only
 /// config fields (rate limiter, registration mode, ...) are ignored:

@@ -89,34 +89,44 @@ struct Row {
 }
 
 async fn row(id: &str) -> Option<Row> {
-    type Columns = (String, String, bool, String, String, bool, bool, Vec<String>);
-    let found: Option<Columns> =
-        oauth_client::table
-            .find(id)
-            .select((
-                oauth_client::client_name,
-                oauth_client::registration_source,
-                oauth_client::first_party,
-                oauth_client::trust_state,
-                oauth_client::token_endpoint_auth_method,
-                oauth_client::client_secret_hash.is_not_null(),
-                oauth_client::revoked_at.is_not_null(),
-                oauth_client::redirect_uris,
-            ))
-            .first(&mut db().await)
-            .await
-            .optional()
-            .unwrap();
-    found.map(|(name, source, first_party, trust, auth_method, secret, revoked, redirects)| Row {
-        name,
-        source,
-        first_party,
-        trust,
-        auth_method,
-        secret,
-        revoked,
-        redirects,
-    })
+    type Columns = (
+        String,
+        String,
+        bool,
+        String,
+        String,
+        bool,
+        bool,
+        Vec<String>,
+    );
+    let found: Option<Columns> = oauth_client::table
+        .find(id)
+        .select((
+            oauth_client::client_name,
+            oauth_client::registration_source,
+            oauth_client::first_party,
+            oauth_client::trust_state,
+            oauth_client::token_endpoint_auth_method,
+            oauth_client::client_secret_hash.is_not_null(),
+            oauth_client::revoked_at.is_not_null(),
+            oauth_client::redirect_uris,
+        ))
+        .first(&mut db().await)
+        .await
+        .optional()
+        .unwrap();
+    found.map(
+        |(name, source, first_party, trust, auth_method, secret, revoked, redirects)| Row {
+            name,
+            source,
+            first_party,
+            trust,
+            auth_method,
+            secret,
+            revoked,
+            redirects,
+        },
+    )
 }
 
 async fn authorize(h: &Harness, id: &str, session: Option<&str>) -> axum::response::Response {
@@ -140,8 +150,11 @@ async fn code_for(h: &Harness, id: &str, session: &str) -> (String, Pkce) {
     assert_eq!(resp.status(), StatusCode::SEE_OTHER);
     let mut target = location(&resp);
     if let Some(flow) = query_param(&target, "consent_flow") {
-        let csrf = body_json(h.get(&format!("/v1/oauth/consent/{flow}"), Some(session)).await)
-            .await["csrf_token"]
+        let csrf = body_json(
+            h.get(&format!("/v1/oauth/consent/{flow}"), Some(session))
+                .await,
+        )
+        .await["csrf_token"]
             .as_str()
             .unwrap()
             .to_string();
@@ -153,9 +166,15 @@ async fn code_for(h: &Harness, id: &str, session: &str) -> (String, Pkce) {
             )
             .await;
         assert_eq!(resp.status(), StatusCode::OK);
-        target = body_json(resp).await["redirect_to"].as_str().unwrap().to_string();
+        target = body_json(resp).await["redirect_to"]
+            .as_str()
+            .unwrap()
+            .to_string();
     }
-    (query_param(&target, "code").unwrap_or_else(|| panic!("no code: {target}")), pkce)
+    (
+        query_param(&target, "code").unwrap_or_else(|| panic!("no code: {target}")),
+        pkce,
+    )
 }
 
 async fn redeem(h: &Harness, id: &str, code: &str, pkce: &Pkce) -> (StatusCode, Value) {
@@ -179,7 +198,10 @@ async fn redeem(h: &Harness, id: &str, code: &str, pkce: &Pkce) -> (StatusCode, 
 async fn metadata_advertises_cimd_support() {
     let h = harness().await;
     let resp = h.get("/.well-known/oauth-authorization-server", None).await;
-    assert_eq!(body_json(resp).await["client_id_metadata_document_supported"], true);
+    assert_eq!(
+        body_json(resp).await["client_id_metadata_document_supported"],
+        true
+    );
 }
 
 #[tokio::test]
@@ -204,7 +226,9 @@ async fn an_unlisted_open_client_gets_consent_with_its_publisher_hostname() {
     let resp = authorize(&h, &id, Some(&session)).await;
     let flow = query_param(&location(&resp), "consent_flow").expect("consent flow");
 
-    let r = row(&id).await.expect("row is created with the consent flow");
+    let r = row(&id)
+        .await
+        .expect("row is created with the consent flow");
     assert_eq!(r.source, "cimd");
     assert_eq!(r.name, "Trusted Account Administrator");
     assert!(!r.first_party);
@@ -213,11 +237,18 @@ async fn an_unlisted_open_client_gets_consent_with_its_publisher_hostname() {
     assert!(!r.secret);
     assert_eq!(r.redirects, vec![CLIENT_REDIRECT.to_string()]);
 
-    let view = body_json(h.get(&format!("/v1/oauth/consent/{flow}"), Some(&session)).await).await;
+    let view = body_json(
+        h.get(&format!("/v1/oauth/consent/{flow}"), Some(&session))
+            .await,
+    )
+    .await;
     assert_eq!(view["client"]["client_id"], id);
     assert_eq!(view["client"]["dynamically_registered"], true);
     assert_eq!(view["client"]["first_party"], false);
-    assert_eq!(view["client"]["client_name"], "Trusted Account Administrator");
+    assert_eq!(
+        view["client"]["client_name"],
+        "Trusted Account Administrator"
+    );
     assert_eq!(view["client"]["publisher_host"], "ok.cimd.test");
 }
 
@@ -242,8 +273,11 @@ async fn only_an_exactly_allowed_url_is_fetched() {
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{id}");
         assert!(row(&id).await.is_none(), "{id}");
     }
-    assert_eq!(docs.fetches(), 0, "nothing outside the allowlist is fetched");
-
+    assert_eq!(
+        docs.fetches(),
+        0,
+        "nothing outside the allowlist is fetched"
+    );
 }
 
 #[tokio::test]
@@ -383,12 +417,33 @@ async fn documents_that_do_not_validate_are_refused_and_leave_no_row() {
 
     type Mutation = Box<dyn Fn(&mut Value)>;
     let cases: Vec<(&str, Mutation)> = vec![
-        ("mismatch", Box::new(|d| d["client_id"] = "https://evil.test/x.json".into())),
-        ("noname", Box::new(|d| { d.as_object_mut().unwrap().remove("client_name"); })),
+        (
+            "mismatch",
+            Box::new(|d| d["client_id"] = "https://evil.test/x.json".into()),
+        ),
+        (
+            "noname",
+            Box::new(|d| {
+                d.as_object_mut().unwrap().remove("client_name");
+            }),
+        ),
         ("noredirects", Box::new(|d| d["redirect_uris"] = json!([]))),
-        ("badredirect", Box::new(|d| d["redirect_uris"] = json!(["http://evil.test/cb"]))),
-        ("noauth", Box::new(|d| { d.as_object_mut().unwrap().remove("token_endpoint_auth_method"); })),
-        ("basic", Box::new(|d| d["token_endpoint_auth_method"] = "client_secret_basic".into())),
+        (
+            "badredirect",
+            Box::new(|d| d["redirect_uris"] = json!(["http://evil.test/cb"])),
+        ),
+        (
+            "noauth",
+            Box::new(|d| {
+                d.as_object_mut()
+                    .unwrap()
+                    .remove("token_endpoint_auth_method");
+            }),
+        ),
+        (
+            "basic",
+            Box::new(|d| d["token_endpoint_auth_method"] = "client_secret_basic".into()),
+        ),
         ("secret", Box::new(|d| d["client_secret"] = "s3cret".into())),
     ];
     let mut ids = vec![];
@@ -406,7 +461,8 @@ async fn documents_that_do_not_validate_are_refused_and_leave_no_row() {
     for id in &ids {
         let resp = authorize(&h, id, Some(&session)).await;
         assert!(
-            resp.status() == StatusCode::UNAUTHORIZED || resp.status() == StatusCode::SERVICE_UNAVAILABLE,
+            resp.status() == StatusCode::UNAUTHORIZED
+                || resp.status() == StatusCode::SERVICE_UNAVAILABLE,
             "{id}: {}",
             resp.status()
         );
@@ -440,10 +496,16 @@ async fn the_redirect_uri_must_be_one_the_document_declares_and_pkce_is_required
     let base = h.authorize_uri(&id, &pkce, Some(&h.resource_uri), Some("mcp:read"));
     let no_pkce = base.replace(&format!("&code_challenge={}", pkce.challenge), "");
     let resp = h.get(&no_pkce, Some(&session)).await;
-    assert_eq!(query_param(&location(&resp), "error").as_deref(), Some("invalid_request"));
+    assert_eq!(
+        query_param(&location(&resp), "error").as_deref(),
+        Some("invalid_request")
+    );
     let plain = base.replace("code_challenge_method=S256", "code_challenge_method=plain");
     let resp = h.get(&plain, Some(&session)).await;
-    assert_eq!(query_param(&location(&resp), "error").as_deref(), Some("invalid_request"));
+    assert_eq!(
+        query_param(&location(&resp), "error").as_deref(),
+        Some("invalid_request")
+    );
     assert!(row(&id).await.is_none());
 }
 
@@ -469,13 +531,24 @@ async fn a_row_is_written_only_after_the_session_and_scope_checks_pass() {
             Some(&session),
         )
         .await;
-    assert_eq!(query_param(&location(&resp), "error").as_deref(), Some("invalid_scope"));
+    assert_eq!(
+        query_param(&location(&resp), "error").as_deref(),
+        Some("invalid_scope")
+    );
     assert!(row(&id).await.is_none());
 
     // prompt=none cannot reach the consent step either.
-    let uri = h.authorize_uri(&id, &Pkce::generate(), Some(&h.resource_uri), Some("mcp:read"));
+    let uri = h.authorize_uri(
+        &id,
+        &Pkce::generate(),
+        Some(&h.resource_uri),
+        Some("mcp:read"),
+    );
     let resp = h.get(&format!("{uri}&prompt=none"), Some(&session)).await;
-    assert_eq!(query_param(&location(&resp), "error").as_deref(), Some("consent_required"));
+    assert_eq!(
+        query_param(&location(&resp), "error").as_deref(),
+        Some("consent_required")
+    );
     assert!(row(&id).await.is_none());
 
     let resp = authorize(&h, &id, Some(&session)).await;
@@ -493,7 +566,8 @@ async fn concurrent_requests_converge_on_one_row() {
     docs.publish_default(&id);
     allow(&h, &[&id]).await;
 
-    let results = futures_util::future::join_all((0..12).map(|_| authorize(&h, &id, Some(&session)))).await;
+    let results =
+        futures_util::future::join_all((0..12).map(|_| authorize(&h, &id, Some(&session)))).await;
     for resp in &results {
         assert!(query_param(&location(resp), "consent_flow").is_some());
     }
@@ -524,11 +598,18 @@ async fn redemption_and_refresh_use_the_stored_binding_without_fetching() {
 
     let (status, tokens) = redeem(&h, &id, &code, &pkce).await;
     assert_eq!(status, StatusCode::OK, "{tokens}");
-    let refresh = tokens["refresh_token"].as_str().expect("refresh token").to_string();
+    let refresh = tokens["refresh_token"]
+        .as_str()
+        .expect("refresh token")
+        .to_string();
     let resp = h
         .post_form(
             "/oauth2/token",
-            &[("grant_type", "refresh_token"), ("refresh_token", &refresh), ("client_id", &id)],
+            &[
+                ("grant_type", "refresh_token"),
+                ("refresh_token", &refresh),
+                ("client_id", &id),
+            ],
         )
         .await;
     assert_eq!(resp.status(), StatusCode::OK);
@@ -567,7 +648,11 @@ async fn a_revoked_row_stays_a_tombstone() {
     let fetched = docs.fetches();
     let resp = authorize(&h, &id, Some(&session)).await;
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-    assert_eq!(docs.fetches(), fetched, "a tombstone is refused before any fetch");
+    assert_eq!(
+        docs.fetches(),
+        fetched,
+        "a tombstone is refused before any fetch"
+    );
 
     // Even a caller that already holds a validated document cannot revive it.
     let meta = CimdMetadata {
@@ -606,7 +691,10 @@ async fn a_revoked_row_stays_a_tombstone() {
 
     // The sweep never deletes a tombstone, however old.
     backdate(&id).await;
-    h.engine.gc_unused_cimd_clients(Duration::from_secs(3600)).await.unwrap();
+    h.engine
+        .gc_unused_cimd_clients(Duration::from_secs(3600))
+        .await
+        .unwrap();
     assert!(row(&id).await.is_some());
 }
 
@@ -646,7 +734,10 @@ async fn the_sweep_removes_stale_unused_rows_and_keeps_everything_referenced() {
     // to them; `live_flow` keeps its pending flow.
     let (_code, _pkce) = code_for(&h, &granted, &session).await;
     diesel::sql_query("DELETE FROM surge.oauth_consent_flow WHERE client_id = ANY($1)")
-        .bind::<diesel::sql_types::Array<diesel::sql_types::Text>, _>(vec![stale.clone(), fresh.clone()])
+        .bind::<diesel::sql_types::Array<diesel::sql_types::Text>, _>(vec![
+            stale.clone(),
+            fresh.clone(),
+        ])
         .execute(&mut db().await)
         .await
         .unwrap();
@@ -654,11 +745,20 @@ async fn the_sweep_removes_stale_unused_rows_and_keeps_everything_referenced() {
         backdate(id).await;
     }
 
-    h.engine.gc_unused_cimd_clients(Duration::from_secs(3600)).await.unwrap();
+    h.engine
+        .gc_unused_cimd_clients(Duration::from_secs(3600))
+        .await
+        .unwrap();
     assert!(row(&stale).await.is_none(), "stale and unreferenced: swept");
     assert!(row(&fresh).await.is_some(), "recent: kept");
-    assert!(row(&live_flow).await.is_some(), "a live consent flow keeps its client");
-    assert!(row(&granted).await.is_some(), "a referenced grant keeps its client");
+    assert!(
+        row(&live_flow).await.is_some(),
+        "a live consent flow keeps its client"
+    );
+    assert!(
+        row(&granted).await.is_some(),
+        "a referenced grant keeps its client"
+    );
 
     // A swept client simply comes back on its next authorization.
     let resp = authorize(&h, &stale, Some(&session)).await;
@@ -686,9 +786,17 @@ async fn the_database_refuses_a_first_party_or_confidential_cimd_row() {
         .await
     };
     assert!(insert(true, "none", "cimd", id.clone()).await.is_err());
-    assert!(insert(false, "client_secret_basic", "cimd", id.clone()).await.is_err());
+    assert!(
+        insert(false, "client_secret_basic", "cimd", id.clone())
+            .await
+            .is_err()
+    );
     // An https ID is a CIMD ID and nothing else; a CIMD row needs one.
     assert!(insert(false, "none", "dynamic", id.clone()).await.is_err());
-    assert!(insert(false, "none", "cimd", "aeg_cid_notaurl".into()).await.is_err());
+    assert!(
+        insert(false, "none", "cimd", "aeg_cid_notaurl".into())
+            .await
+            .is_err()
+    );
     assert!(insert(false, "none", "cimd", id).await.is_ok());
 }

@@ -15,9 +15,9 @@ use surge_engine::oauth::{
 use surge_engine::types::*;
 use uuid::Uuid;
 
-use super::error::ApiError;
-use super::middleware::{require_grant, service_auth, ServiceAuth};
 use super::AppState;
+use super::error::ApiError;
+use super::middleware::{ServiceAuth, require_grant, service_auth};
 
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
@@ -40,9 +40,14 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/authenticate/link", post(authenticate_by_link))
         .route(
             "/identities/{id}/links",
-            get(identity_links).post(link_identity).delete(unlink_identity),
+            get(identity_links)
+                .post(link_identity)
+                .delete(unlink_identity),
         )
-        .route("/oauth/clients", get(list_oauth_clients).post(create_oauth_client))
+        .route(
+            "/oauth/clients",
+            get(list_oauth_clients).post(create_oauth_client),
+        )
         .route("/oauth/clients/{client_id}", delete(revoke_oauth_client))
         .route(
             "/oauth/resources",
@@ -78,7 +83,10 @@ async fn resolve_browser(
 ) -> Result<impl IntoResponse, ApiError> {
     require_grant(&auth, "introspect").map_err(|_| AuthError::Forbidden)?;
     let token = BrowserSessionToken::from_raw(&body.token).ok_or(AuthError::InvalidToken)?;
-    let (account_id, session) = state.provider.resolve_browser_session(&token, body.account_id).await?;
+    let (account_id, session) = state
+        .provider
+        .resolve_browser_session(&token, body.account_id)
+        .await?;
     audit_introspection(&state, auth, "resolve_browser_session", session.id).await?;
     Ok((
         [(axum::http::header::CACHE_CONTROL, "no-store")],
@@ -93,8 +101,7 @@ pub(crate) async fn verify_session(
 ) -> Result<impl IntoResponse, ApiError> {
     require_grant(&auth, "introspect").map_err(|_| AuthError::Forbidden)?;
 
-    let token =
-        SessionToken::from_raw(&body.token).ok_or(AuthError::InvalidToken)?;
+    let token = SessionToken::from_raw(&body.token).ok_or(AuthError::InvalidToken)?;
     let session = state.provider.verify_session(Some(token)).await?;
 
     audit_introspection(&state, auth, "verify_session", session.id).await?;
@@ -130,8 +137,7 @@ pub(crate) async fn revoke_session(
 ) -> Result<impl IntoResponse, ApiError> {
     require_grant(&auth, "revoke").map_err(|_| AuthError::Forbidden)?;
 
-    let token =
-        SessionToken::from_raw(&body.token).ok_or(AuthError::InvalidToken)?;
+    let token = SessionToken::from_raw(&body.token).ok_or(AuthError::InvalidToken)?;
     state.provider.revoke_session(&token).await?;
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
@@ -509,11 +515,15 @@ async fn authorize_client_registration(
     }
     let mut ids = Vec::with_capacity(resources.len());
     for uri in resources {
-        let resource = state.engine.get_oauth_resource(uri).await.map_err(|e| match e {
-            // An unknown resource and another registrar's look the same.
-            AuthError::NotFound => AuthError::Forbidden,
-            other => other,
-        })?;
+        let resource = state
+            .engine
+            .get_oauth_resource(uri)
+            .await
+            .map_err(|e| match e {
+                // An unknown resource and another registrar's look the same.
+                AuthError::NotFound => AuthError::Forbidden,
+                other => other,
+            })?;
         if !ResourceAuthority::Registrar(auth.service_id).can_manage(&resource) {
             return Err(AuthError::Forbidden);
         }
@@ -534,7 +544,10 @@ pub(crate) async fn create_oauth_client(
         client_uri: body.client_uri,
         logo_uri: body.logo_uri,
         redirect_uris: body.redirect_uris,
-        grant_types: vec!["authorization_code".to_string(), "refresh_token".to_string()],
+        grant_types: vec![
+            "authorization_code".to_string(),
+            "refresh_token".to_string(),
+        ],
         scopes: body.scopes,
         confidential: body.confidential,
         first_party: body.first_party,
@@ -796,10 +809,7 @@ pub(crate) struct PreconditionQuery {
     registration_id: Option<Uuid>,
 }
 
-fn precondition(
-    query: &PreconditionQuery,
-    headers: &HeaderMap,
-) -> Result<Option<Uuid>, AuthError> {
+fn precondition(query: &PreconditionQuery, headers: &HeaderMap) -> Result<Option<Uuid>, AuthError> {
     let bad = |message: &str| {
         AuthError::Validation(ValidationError::Field {
             field: "If-Match",

@@ -1,19 +1,19 @@
 use std::{sync::Arc, time::Duration};
 
 use axum::{
-    body::Body,
-    http::{header, Method, Request, StatusCode},
     Router,
+    body::Body,
+    http::{Method, Request, StatusCode, header},
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use surge_engine::{
-    oauth::{NewOauthClient, RegistrationSource},
     ServiceToken,
+    oauth::{NewOauthClient, RegistrationSource},
 };
 use tower::ServiceExt;
 use uuid::Uuid;
 
-use super::{proxy_browser_router, BrowserRouterConfig, PostgresRateLimiter, ProxyConfig};
+use super::{BrowserRouterConfig, PostgresRateLimiter, ProxyConfig, proxy_browser_router};
 use crate::{AuthProvider, EmbeddedConfig, EmbeddedProvider};
 
 async fn request(
@@ -128,9 +128,11 @@ async fn list_grants_apply_directly_and_through_proxy() {
             for origin in [&missing, &oauth_only, &format!("{granted}:8443")] {
                 let response = request(app, origin, same_origin, Method::GET).await;
                 assert_eq!(response.status(), StatusCode::FORBIDDEN);
-                assert!(!response
-                    .headers()
-                    .contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN));
+                assert!(
+                    !response
+                        .headers()
+                        .contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                );
                 assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
             }
             for origin in [hosted, &granted] {
@@ -162,13 +164,23 @@ async fn list_grants_apply_directly_and_through_proxy() {
     for app in [&direct, &proxy] {
         for (site, host, status) in [
             ("same-origin", format!("{name}.example"), StatusCode::OK),
-            ("same-origin", format!("ungranted-{name}.example"), StatusCode::FORBIDDEN),
-            ("same-site", format!("{name}.example"), StatusCode::FORBIDDEN),
+            (
+                "same-origin",
+                format!("ungranted-{name}.example"),
+                StatusCode::FORBIDDEN,
+            ),
+            (
+                "same-site",
+                format!("{name}.example"),
+                StatusCode::FORBIDDEN,
+            ),
         ] {
-            let req = Request::builder().uri("/v1/accounts")
+            let req = Request::builder()
+                .uri("/v1/accounts")
                 .header("sec-fetch-site", site)
                 .header(header::HOST, host)
-                .body(Body::empty()).unwrap();
+                .body(Body::empty())
+                .unwrap();
             assert_eq!(app.clone().oneshot(req).await.unwrap().status(), status);
         }
     }

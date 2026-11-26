@@ -8,9 +8,9 @@
 //! unvalidated `redirect_uri` is an open redirect, and handing one an error
 //! is still handing it a redirect.
 
+use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Redirect, Response};
-use axum::Json;
 use serde_json::json;
 use surge_engine::AuthError;
 
@@ -152,9 +152,10 @@ impl From<AuthError> for OauthError {
             AuthError::InvalidToken | AuthError::SessionExpired => {
                 Self::new(OauthErrorCode::InvalidGrant, "the grant is not valid")
             }
-            AuthError::InvalidCredentials => {
-                Self::new(OauthErrorCode::InvalidClient, "client authentication failed")
-            }
+            AuthError::InvalidCredentials => Self::new(
+                OauthErrorCode::InvalidClient,
+                "client authentication failed",
+            ),
             AuthError::IdentityDisabled => {
                 Self::new(OauthErrorCode::AccessDenied, "the account is disabled")
             }

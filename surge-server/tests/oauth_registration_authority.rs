@@ -260,45 +260,87 @@ async fn platform_client_registration_is_bounded_to_its_own_resources() {
     let (_, resource_only) = service(&h, "resources", &["oauth_resource_register"]).await;
     let (_, client_only) = service(&h, "clients", &["oauth_client_register"]).await;
     let uri = format!("{}-clients", h.resource_uri);
-    let created = status(&h, "POST", "/v1/oauth/resources", &platform, Some(resource(&uri))).await;
+    let created = status(
+        &h,
+        "POST",
+        "/v1/oauth/resources",
+        &platform,
+        Some(resource(&uri)),
+    )
+    .await;
     assert_eq!(created, StatusCode::CREATED);
 
     // A delegated registration an administrator made is not this registrar's.
     let admin_made = format!("{}-admin-made", h.resource_uri);
     let mut req = resource(&admin_made);
     req["registration_source"] = json!("delegated");
-    let made = status(&h, "POST", "/v1/oauth/resources", &h.service_token, Some(req)).await;
+    let made = status(
+        &h,
+        "POST",
+        "/v1/oauth/resources",
+        &h.service_token,
+        Some(req),
+    )
+    .await;
     assert_eq!(made, StatusCode::CREATED);
 
     let forbidden = StatusCode::FORBIDDEN;
-    assert_eq!(mint(&h, &platform, client_body(true, json!([uri]))).await, forbidden);
+    assert_eq!(
+        mint(&h, &platform, client_body(true, json!([uri]))).await,
+        forbidden
+    );
     assert_eq!(
         mint(&h, &platform, client_body(false, json!([]))).await,
         StatusCode::UNPROCESSABLE_ENTITY
     );
     let mut absent = client_body(false, json!(null));
     absent.as_object_mut().unwrap().remove("resources");
-    assert_eq!(mint(&h, &platform, absent).await, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        mint(&h, &platform, absent).await,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
     // Operator-registered, administrator-made and unregistered resources are refused.
     for other in [&h.resource_uri, &admin_made, "https://nowhere.oauth.test/x"] {
-        assert_eq!(mint(&h, &platform, client_body(false, json!([other]))).await, forbidden);
+        assert_eq!(
+            mint(&h, &platform, client_body(false, json!([other]))).await,
+            forbidden
+        );
     }
     // One foreign resource among its own spoils the request.
     let mixed = json!([uri, h.resource_uri]);
-    assert_eq!(mint(&h, &platform, client_body(false, mixed)).await, forbidden);
+    assert_eq!(
+        mint(&h, &platform, client_body(false, mixed)).await,
+        forbidden
+    );
     // Each grant is needed on its own.
-    assert_eq!(mint(&h, &resource_only, client_body(false, json!([uri]))).await, forbidden);
-    assert_eq!(mint(&h, &client_only, client_body(false, json!([uri]))).await, forbidden);
+    assert_eq!(
+        mint(&h, &resource_only, client_body(false, json!([uri]))).await,
+        forbidden
+    );
+    assert_eq!(
+        mint(&h, &client_only, client_body(false, json!([uri]))).await,
+        forbidden
+    );
     // The old field name is now rejected rather than ignored.
     let mut legacy = client_body(false, json!(null));
     legacy["audiences"] = json!([uri]);
     legacy.as_object_mut().unwrap().remove("resources");
-    assert_eq!(mint(&h, &platform, legacy).await, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        mint(&h, &platform, legacy).await,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
 
     // Confidential clients are allowed and receive a secret once.
     let mut confidential = client_body(false, json!([format!("{uri}/")]));
     confidential["confidential"] = json!(true);
-    let resp = call(&h, "POST", "/v1/oauth/clients", &platform, Some(confidential)).await;
+    let resp = call(
+        &h,
+        "POST",
+        "/v1/oauth/clients",
+        &platform,
+        Some(confidential),
+    )
+    .await;
     assert_eq!(resp.status(), StatusCode::CREATED);
     let body = body_json(resp).await;
     assert!(body["client_secret"].is_string());
@@ -309,7 +351,14 @@ async fn platform_client_registration_is_bounded_to_its_own_resources() {
     assert_eq!(body["trust_state"], "untrusted");
     assert_eq!(body["audiences"], json!([uri]));
 
-    let resp = call(&h, "POST", "/v1/oauth/clients", &platform, Some(client_body(false, json!([uri])))).await;
+    let resp = call(
+        &h,
+        "POST",
+        "/v1/oauth/clients",
+        &platform,
+        Some(client_body(false, json!([uri]))),
+    )
+    .await;
     assert_eq!(resp.status(), StatusCode::CREATED);
     let body = body_json(resp).await;
     assert!(body["client_secret"].is_null());
@@ -338,7 +387,10 @@ async fn platform_client_registration_is_bounded_to_its_own_resources() {
     }
 
     // The grant gives no access to the registry's other client operations.
-    assert_eq!(status(&h, "GET", "/v1/oauth/clients", &platform, None).await, forbidden);
+    assert_eq!(
+        status(&h, "GET", "/v1/oauth/clients", &platform, None).await,
+        forbidden
+    );
 
     // Consent treats the client's self-declared name as untrusted.
     let session = h.sign_in().await;
@@ -351,7 +403,11 @@ async fn platform_client_registration_is_bounded_to_its_own_resources() {
         .await;
     assert_eq!(resp.status(), StatusCode::SEE_OTHER);
     let flow = query_param(&location(&resp), "consent_flow").expect("no consent flow");
-    let flow = body_json(h.get(&format!("/v1/oauth/consent/{flow}"), Some(&session)).await).await;
+    let flow = body_json(
+        h.get(&format!("/v1/oauth/consent/{flow}"), Some(&session))
+            .await,
+    )
+    .await;
     assert_eq!(flow["client"]["dynamically_registered"], true);
     assert_eq!(flow["client"]["first_party"], false);
 }
@@ -361,7 +417,14 @@ async fn platform_client_registration_is_bounded_to_its_own_resources() {
 async fn an_admin_may_name_resources_and_platform_clients_are_never_swept() {
     let h = harness().await;
     let body = client_body(false, json!([h.resource_uri]));
-    let resp = call(&h, "POST", "/v1/oauth/clients", &h.service_token, Some(body)).await;
+    let resp = call(
+        &h,
+        "POST",
+        "/v1/oauth/clients",
+        &h.service_token,
+        Some(body),
+    )
+    .await;
     assert_eq!(resp.status(), StatusCode::CREATED);
     let body = body_json(resp).await;
     assert_eq!(body["registration_source"], "admin");
@@ -377,9 +440,26 @@ async fn an_admin_may_name_resources_and_platform_clients_are_never_swept() {
     )
     .await;
     let uri = format!("{}-sweep", h.resource_uri);
-    let _ = status(&h, "POST", "/v1/oauth/resources", &platform, Some(resource(&uri))).await;
-    let resp = call(&h, "POST", "/v1/oauth/clients", &platform, Some(client_body(false, json!([uri])))).await;
-    let client_id = body_json(resp).await["client_id"].as_str().unwrap().to_string();
+    let _ = status(
+        &h,
+        "POST",
+        "/v1/oauth/resources",
+        &platform,
+        Some(resource(&uri)),
+    )
+    .await;
+    let resp = call(
+        &h,
+        "POST",
+        "/v1/oauth/clients",
+        &platform,
+        Some(client_body(false, json!([uri]))),
+    )
+    .await;
+    let client_id = body_json(resp).await["client_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
     tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     h.engine
         .gc_unused_dynamic_clients(std::time::Duration::from_millis(1))
@@ -397,7 +477,9 @@ async fn a_platform_client_cannot_bind_a_registration_it_no_longer_holds() {
     let mine = h
         .engine
         .register_oauth_resource(
-            surge_engine::audit::AuditActor::Operator { name: "test".into() },
+            surge_engine::audit::AuditActor::Operator {
+                name: "test".into(),
+            },
             platform_id,
             &uri,
             None,
@@ -408,7 +490,9 @@ async fn a_platform_client_cannot_bind_a_registration_it_no_longer_holds() {
         .unwrap();
     h.engine
         .delete_oauth_resource(
-            surge_engine::audit::AuditActor::Operator { name: "test".into() },
+            surge_engine::audit::AuditActor::Operator {
+                name: "test".into(),
+            },
             surge_engine::oauth::ResourceManager::Admin,
             &uri,
             None,
@@ -433,7 +517,9 @@ async fn a_platform_client_cannot_bind_a_registration_it_no_longer_holds() {
     // The URI is re-registered by an administrator after the check passed.
     h.engine
         .register_oauth_resource(
-            surge_engine::audit::AuditActor::Operator { name: "test".into() },
+            surge_engine::audit::AuditActor::Operator {
+                name: "test".into(),
+            },
             uuid::Uuid::now_v7(),
             &uri,
             None,
@@ -458,9 +544,16 @@ async fn a_platform_client_cannot_bind_a_registration_it_no_longer_holds() {
         .engine
         .create_platform_oauth_client(platform_id, spec(), vec![mine.registration_id])
         .await;
-    assert!(matches!(err, Err(surge_engine::types::AuthError::Forbidden)));
+    assert!(matches!(
+        err,
+        Err(surge_engine::types::AuthError::Forbidden)
+    ));
     let clients = h.engine.list_oauth_clients().await.unwrap();
-    assert!(clients.iter().all(|c| c.registrar_service_id != Some(platform_id)));
+    assert!(
+        clients
+            .iter()
+            .all(|c| c.registrar_service_id != Some(platform_id))
+    );
 }
 
 /// The registrar's binding is not merely recorded: the shared eligibility
@@ -478,7 +571,14 @@ async fn a_platform_client_is_issued_tokens_only_for_its_bound_resource() {
     )
     .await;
     let uri = format!("{}-delegated", h.resource_uri);
-    let resp = call(&h, "POST", "/v1/oauth/resources", &platform, Some(resource(&uri))).await;
+    let resp = call(
+        &h,
+        "POST",
+        "/v1/oauth/resources",
+        &platform,
+        Some(resource(&uri)),
+    )
+    .await;
     assert_eq!(resp.status(), StatusCode::CREATED);
     let resp = call(
         &h,
@@ -505,8 +605,11 @@ async fn a_platform_client_is_issued_tokens_only_for_its_bound_resource() {
     let target = location(&resp);
     let flow = query_param(&target, "consent_flow")
         .unwrap_or_else(|| panic!("bound resource must reach consent: {target}"));
-    let csrf = body_json(h.get(&format!("/v1/oauth/consent/{flow}"), Some(&session)).await).await
-        ["csrf_token"]
+    let csrf = body_json(
+        h.get(&format!("/v1/oauth/consent/{flow}"), Some(&session))
+            .await,
+    )
+    .await["csrf_token"]
         .as_str()
         .unwrap()
         .to_string();
@@ -517,7 +620,10 @@ async fn a_platform_client_is_issued_tokens_only_for_its_bound_resource() {
             Some(&session),
         )
         .await;
-    let redirect = body_json(resp).await["redirect_to"].as_str().unwrap().to_string();
+    let redirect = body_json(resp).await["redirect_to"]
+        .as_str()
+        .unwrap()
+        .to_string();
     let code = query_param(&redirect, "code").expect("code");
     let resp = h
         .post_form(

@@ -219,7 +219,10 @@ impl AuthProvider for EmbeddedProvider {
         Ok(link)
     }
 
-    async fn identity_links(&self, identity_id: IdentityId) -> Result<Vec<IdentityLink>, AuthError> {
+    async fn identity_links(
+        &self,
+        identity_id: IdentityId,
+    ) -> Result<Vec<IdentityLink>, AuthError> {
         self.engine.identity_links(identity_id).await
     }
 
@@ -257,15 +260,8 @@ impl AuthProvider for EmbeddedProvider {
     }
 
     #[cfg(feature = "router")]
-    fn browser_router(
-        self: Arc<Self>,
-        config: crate::router::BrowserRouterConfig,
-    ) -> axum::Router {
+    fn browser_router(self: Arc<Self>, config: crate::router::BrowserRouterConfig) -> axum::Router {
         let engine = self.engine();
-        crate::router::embedded_browser_router(
-            engine,
-            self as Arc<dyn AuthProvider>,
-            config,
-        )
+        crate::router::embedded_browser_router(engine, self as Arc<dyn AuthProvider>, config)
     }
 }

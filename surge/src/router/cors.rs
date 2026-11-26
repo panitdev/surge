@@ -26,15 +26,28 @@ pub(crate) fn narrow(origin: &str) -> CorsLayer {
 /// Credentialed CORS over the union of registered return origins — the
 /// opt-in browser->Surge session-management zone (§8.2b).
 pub(crate) fn union(origins: &[String]) -> CorsLayer {
-    let parsed = origins.iter().filter_map(|o| o.parse().ok()).collect::<Vec<_>>();
+    let parsed = origins
+        .iter()
+        .filter_map(|o| o.parse().ok())
+        .collect::<Vec<_>>();
     base().allow_origin(AllowOrigin::list(parsed))
 }
 
 pub(crate) fn account_scoped(layer: CorsLayer) -> CorsLayer {
     let selector = HeaderName::from_static(crate::extract::ACCOUNT_HEADER);
     layer
-        .allow_methods([http::Method::GET, http::Method::POST, http::Method::PUT, http::Method::DELETE])
-        .allow_headers([http::header::CONTENT_TYPE, http::header::COOKIE, CSRF_HEADER.clone(), selector.clone()])
+        .allow_methods([
+            http::Method::GET,
+            http::Method::POST,
+            http::Method::PUT,
+            http::Method::DELETE,
+        ])
+        .allow_headers([
+            http::header::CONTENT_TYPE,
+            http::header::COOKIE,
+            CSRF_HEADER.clone(),
+            selector.clone(),
+        ])
         .expose_headers([selector])
 }
 
@@ -76,8 +89,13 @@ pub(crate) fn list_origin(
             };
             let target = uri.authority().map(|value| value.as_str());
             if host.or(target).is_none()
-                || host.into_iter().chain(target).any(|value| !value.eq_ignore_ascii_case(authority))
-                || uri.scheme_str().is_some_and(|scheme| scheme != url.scheme())
+                || host
+                    .into_iter()
+                    .chain(target)
+                    .any(|value| !value.eq_ignore_ascii_case(authority))
+                || uri
+                    .scheme_str()
+                    .is_some_and(|scheme| scheme != url.scheme())
             {
                 return None;
             }

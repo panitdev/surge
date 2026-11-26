@@ -40,17 +40,17 @@ mod userinfo;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::routing::{delete, get, post};
 use axum::Router;
+use axum::routing::{delete, get, post};
 use surge_engine::Engine;
 use tower_http::cors::{Any, CorsLayer};
 
-pub use cimd::{
-    is_public_ip, CimdDocumentFetcher, CimdError, CimdLimits, CimdResolver, FetchError,
-    FetchedDocument, HttpDocumentFetcher,
-};
 use super::rate_limit::RateLimiter;
 use crate::AuthProvider;
+pub use cimd::{
+    CimdDocumentFetcher, CimdError, CimdLimits, CimdResolver, FetchError, FetchedDocument,
+    HttpDocumentFetcher, is_public_ip,
+};
 
 /// Everything the AS needs that is not already in the database.
 ///
@@ -150,7 +150,10 @@ pub(crate) fn root_router(state: Arc<AsState>) -> Router {
         .route("/oauth2/token", post(token::token))
         .route("/oauth2/introspect", post(introspect::introspect))
         .route("/oauth2/revoke", post(revoke::revoke))
-        .route("/oauth2/userinfo", get(userinfo::userinfo).post(userinfo::userinfo))
+        .route(
+            "/oauth2/userinfo",
+            get(userinfo::userinfo).post(userinfo::userinfo),
+        )
         .layer(axum::middleware::map_response(super::no_store));
 
     let mut oauth2 = sensitive
@@ -161,7 +164,10 @@ pub(crate) fn root_router(state: Arc<AsState>) -> Router {
         );
 
     if state.config.enable_oidc {
-        oauth2 = oauth2.route("/.well-known/openid-configuration", get(discovery::metadata));
+        oauth2 = oauth2.route(
+            "/.well-known/openid-configuration",
+            get(discovery::metadata),
+        );
     }
 
     if state.config.allow_dynamic_registration {
@@ -182,16 +188,17 @@ pub(crate) fn root_router(state: Arc<AsState>) -> Router {
 /// the OAuth wire protocol — no third-party client ever calls them — so they
 /// version with the browser surface like everything else it contains.
 pub(crate) fn v1_router(state: Arc<AsState>, session_cors: CorsLayer) -> Router {
-    let mut credential_entry = Router::new()
-        .route(
-            "/oauth/consent/{flow_id}",
-            get(consent::get_consent_flow).post(consent::decide_consent_flow),
-        );
+    let mut credential_entry = Router::new().route(
+        "/oauth/consent/{flow_id}",
+        get(consent::get_consent_flow).post(consent::decide_consent_flow),
+    );
     if state.multi_account {
         credential_entry = credential_entry
             .route(
                 "/oauth/authorization-requests/{id}/account",
-                post(chooser::choose_account).layer(axum::middleware::from_fn(crate::extract::require_header_csrf)),
+                post(chooser::choose_account).layer(axum::middleware::from_fn(
+                    crate::extract::require_header_csrf,
+                )),
             )
             .route(
                 "/oauth/authorization-requests/{id}/resume",
@@ -210,8 +217,9 @@ pub(crate) fn v1_router(state: Arc<AsState>, session_cors: CorsLayer) -> Router 
         .route("/account/connections", get(connections::list_connections))
         .route(
             "/account/connections/{client_id}",
-            delete(connections::revoke_connection)
-                .layer(axum::middleware::from_fn(crate::extract::require_header_csrf)),
+            delete(connections::revoke_connection).layer(axum::middleware::from_fn(
+                crate::extract::require_header_csrf,
+            )),
         )
         .layer(session_cors)
         .with_state(state);

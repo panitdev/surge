@@ -9,8 +9,8 @@
 use std::sync::Arc;
 
 use clap::Subcommand;
-use surge_engine::oauth::{NewOauthClient, RegistrationSource};
 use surge_engine::Engine;
+use surge_engine::oauth::{NewOauthClient, RegistrationSource};
 
 #[derive(Subcommand)]
 pub enum OauthCommand {
@@ -295,7 +295,10 @@ async fn resource(
                 .await?
             {
                 surge_engine::oauth::DeleteOutcome::Deleted(resource) => {
-                    println!("Resource {uri} deleted (registration {}).", resource.registration_id);
+                    println!(
+                        "Resource {uri} deleted (registration {}).",
+                        resource.registration_id
+                    );
                     println!(
                         "The URI is reserved for the longest access-token lifetime ever \
                          configured plus clock skew: access tokens already issued for it stay \
@@ -344,7 +347,12 @@ async fn key(cmd: KeyCommand, engine: Arc<Engine>) -> anyhow::Result<()> {
             }
 
             engine
-                .audit(operator(), "rotate_oauth_signing_key", serde_json::json!({}), None)
+                .audit(
+                    operator(),
+                    "rotate_oauth_signing_key",
+                    serde_json::json!({}),
+                    None,
+                )
                 .await?;
         }
     }

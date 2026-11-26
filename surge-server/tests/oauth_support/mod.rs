@@ -25,7 +25,7 @@ use std::time::Duration;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use secrecy::SecretString;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use surge::{EmbeddedConfig, EmbeddedProvider};
 use surge_engine::oauth::{NewOauthClient, RegistrationSource};
 use surge_server::config::{OauthAsSettings, ServerConfig};
@@ -56,7 +56,10 @@ pub async fn harness_with(tune: impl FnOnce(OauthAsSettings) -> OauthAsSettings)
     harness_mode(false, tune).await
 }
 
-pub async fn harness_mode(multi_account: bool, tune: impl FnOnce(OauthAsSettings) -> OauthAsSettings) -> Harness {
+pub async fn harness_mode(
+    multi_account: bool,
+    tune: impl FnOnce(OauthAsSettings) -> OauthAsSettings,
+) -> Harness {
     let database_url = std::env::var("DATABASE_URL")
         .expect("DATABASE_URL must be set to run the OAuth authorization-server tests");
 
@@ -246,8 +249,7 @@ impl Harness {
     }
 
     pub async fn identity_id(&self) -> surge_engine::IdentityId {
-        let username =
-            surge_engine::Username::new(&format!("oauth-user-{}", self.suffix)).unwrap();
+        let username = surge_engine::Username::new(&format!("oauth-user-{}", self.suffix)).unwrap();
         self.engine
             .get_identity_by_username(&username)
             .await
@@ -427,12 +429,7 @@ impl Harness {
 
     /// Drives a full authorization for a first-party client and returns the
     /// code from the redirect.
-    pub async fn authorize_code(
-        &self,
-        client_id: &str,
-        session: &str,
-        pkce: &Pkce,
-    ) -> String {
+    pub async fn authorize_code(&self, client_id: &str, session: &str, pkce: &Pkce) -> String {
         let uri = self.authorize_uri(client_id, pkce, Some(&self.resource_uri), Some("mcp:read"));
         let resp = self.get(&uri, Some(session)).await;
         assert_eq!(
@@ -522,7 +519,8 @@ impl surge::router::CimdDocumentFetcher for CimdDocs {
         &self,
         url: &url::Url,
     ) -> Result<surge::router::FetchedDocument, surge::router::FetchError> {
-        self.fetches.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.fetches
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         match self.docs.lock().unwrap().get(url.as_str()) {
             Some(body) => Ok(surge::router::FetchedDocument {
                 body: body.clone(),

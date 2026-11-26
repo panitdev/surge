@@ -266,7 +266,13 @@ async fn encoded_paths_and_queries_route_to_the_canonical_uri() {
     let id = register(&h, &token, &plain, &["mcp:read"]).await;
 
     // The URI is one percent-encoded path segment.
-    let resp = patch(&h, &token, &plain, json!({ "scope_descriptions": { "mcp:read": "a" } })).await;
+    let resp = patch(
+        &h,
+        &token,
+        &plain,
+        json!({ "scope_descriptions": { "mcp:read": "a" } }),
+    )
+    .await;
     assert_eq!(resp.status(), StatusCode::OK);
     // A trailing slash canonicalizes away.
     let resp = call(
@@ -277,7 +283,11 @@ async fn encoded_paths_and_queries_route_to_the_canonical_uri() {
         Some(json!({ "scope_descriptions": { "mcp:read": "b" } })),
     )
     .await;
-    assert_eq!(resp.status(), StatusCode::OK, "trailing slash canonicalizes");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "trailing slash canonicalizes"
+    );
 
     // Unencoded slashes are separate segments: no such route.
     let resp = call(
@@ -318,19 +328,16 @@ async fn encoded_paths_and_queries_route_to_the_canonical_uri() {
     assert!(percent_encode(&odd).contains("%252F"));
     let resp = patch(&h, &token, &odd, json!({ "scope_descriptions": {} })).await;
     assert_eq!(resp.status(), StatusCode::OK);
-    let resp = call(
-        &h,
-        "GET",
-        &path(&odd),
-        &token,
-        None,
-    )
-    .await;
+    let resp = call(&h, "GET", &path(&odd), &token, None).await;
     assert_eq!(resp.status(), StatusCode::OK);
     assert_eq!(body_json(resp).await["registration_id"], odd_id.to_string());
     let plain_slash = odd.replace("%2F", "/");
     let resp = call(&h, "GET", &path(&plain_slash), &token, None).await;
-    assert_eq!(resp.status(), StatusCode::NOT_FOUND, "a/b is another audience");
+    assert_eq!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "a/b is another audience"
+    );
 
     // The registration id rides the real query string, or If-Match.
     let resp = call(&h, "DELETE", &path(&odd), &token, None).await;
@@ -360,7 +367,14 @@ async fn encoded_paths_and_queries_route_to_the_canonical_uri() {
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
     // A registration id is not a lifecycle address.
-    let resp = call(&h, "PATCH", &format!("/v1/oauth/resources/{id}"), &token, Some(json!({"dcr_enabled": true}))).await;
+    let resp = call(
+        &h,
+        "PATCH",
+        &format!("/v1/oauth/resources/{id}"),
+        &token,
+        Some(json!({"dcr_enabled": true})),
+    )
+    .await;
     assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
     // Disagreeing preconditions are refused.
     let resp = call_with(
@@ -408,14 +422,26 @@ async fn a_registrar_manages_only_its_own_registrations() {
     );
 
     // A registrar cannot touch an administrator's service registration.
-    let resp = patch(&h, &mine, &h.resource_uri, json!({ "scopes": ["mcp:read"] })).await;
+    let resp = patch(
+        &h,
+        &mine,
+        &h.resource_uri,
+        json!({ "scopes": ["mcp:read"] }),
+    )
+    .await;
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 
     // The owner can; so can an administrator (including a legacy
     // registration with an unknown registrar).
     let resp = patch(&h, &mine, &owned, json!({ "scopes": ["mcp:read"] })).await;
     assert_eq!(resp.status(), StatusCode::OK);
-    let resp = patch(&h, &h.service_token, &h.resource_uri, json!({ "scopes": ["mcp:read", "mcp:write"] })).await;
+    let resp = patch(
+        &h,
+        &h.service_token,
+        &h.resource_uri,
+        json!({ "scopes": ["mcp:read", "mcp:write"] }),
+    )
+    .await;
     assert_eq!(resp.status(), StatusCode::OK);
 
     // Validation.
@@ -435,7 +461,13 @@ async fn a_registrar_manages_only_its_own_registrations() {
         assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY, "{bad}");
     }
     // DCR opt-in is for delegated registrations.
-    let resp = patch(&h, &h.service_token, &h.resource_uri, json!({ "dcr_enabled": true })).await;
+    let resp = patch(
+        &h,
+        &h.service_token,
+        &h.resource_uri,
+        json!({ "dcr_enabled": true }),
+    )
+    .await;
     assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
 }
 
@@ -452,7 +484,12 @@ async fn scope_removal_trims_consents_and_ends_affected_families() {
     let reg = register(&h, &token, &rs, &["mcp:read", "mcp:write"]).await;
     let other_reg = register(&h, &token, &other, &["mcp:read", "mcp:write"]).await;
 
-    let both = client(&h, RegistrationSource::Admin, Some(vec![rs.clone(), other.clone()])).await;
+    let both = client(
+        &h,
+        RegistrationSource::Admin,
+        Some(vec![rs.clone(), other.clone()]),
+    )
+    .await;
     let read_only = client(&h, RegistrationSource::Admin, Some(vec![rs.clone()])).await;
     let write_only = client(&h, RegistrationSource::Admin, Some(vec![rs.clone()])).await;
 
@@ -480,13 +517,28 @@ async fn scope_removal_trims_consents_and_ends_affected_families() {
     assert_eq!(updated["scopes"], json!(["mcp:read"]));
 
     // Affected families are revoked; the one that never carried it is not.
-    assert_eq!(refresh(&h, &both, &both_refresh).await.0, StatusCode::BAD_REQUEST);
-    assert_eq!(refresh(&h, &write_only, &write_refresh).await.0, StatusCode::BAD_REQUEST);
-    assert_eq!(refresh(&h, &read_only, &read_refresh).await.0, StatusCode::OK);
+    assert_eq!(
+        refresh(&h, &both, &both_refresh).await.0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        refresh(&h, &write_only, &write_refresh).await.0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        refresh(&h, &read_only, &read_refresh).await.0,
+        StatusCode::OK
+    );
     // Consents: trimmed, trimmed to nothing and deleted, untouched.
-    assert_eq!(consent_scopes(&h, &both, reg).await, Some(vec!["mcp:read".to_string()]));
+    assert_eq!(
+        consent_scopes(&h, &both, reg).await,
+        Some(vec!["mcp:read".to_string()])
+    );
     assert_eq!(consent_scopes(&h, &write_only, reg).await, None);
-    assert_eq!(consent_scopes(&h, &read_only, reg).await, Some(vec!["mcp:read".to_string()]));
+    assert_eq!(
+        consent_scopes(&h, &read_only, reg).await,
+        Some(vec!["mcp:read".to_string()])
+    );
     // The other audience is unaffected, though it shares the scope names.
     assert_eq!(refresh(&h, &both, &other_refresh).await.0, StatusCode::OK);
     assert!(live_tokens(other_reg).await >= 1);
@@ -494,21 +546,41 @@ async fn scope_removal_trims_consents_and_ends_affected_families() {
     // The unredeemed code and the pending flow died with the scope.
     let (status, _) = redeem(&h, &both, &stale_code, &stale_pkce).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    let resp = h.get(&format!("/v1/oauth/consent/{flow}"), Some(&session)).await;
+    let resp = h
+        .get(&format!("/v1/oauth/consent/{flow}"), Some(&session))
+        .await;
     assert_ne!(resp.status(), StatusCode::OK);
 
     // Asking for the scope that is gone is refused; and adding it back
     // restores the *offer*, not the old grants.
     let pkce = Pkce::generate();
     let resp = h
-        .get(&h.authorize_uri(&both, &pkce, Some(&rs), Some("mcp:write")), Some(&session))
+        .get(
+            &h.authorize_uri(&both, &pkce, Some(&rs), Some("mcp:write")),
+            Some(&session),
+        )
         .await;
-    assert_eq!(query_param(&location(&resp), "error").as_deref(), Some("invalid_scope"));
-    patch(&h, &token, &rs, json!({ "scopes": ["mcp:read", "mcp:write"] })).await;
-    assert_eq!(refresh(&h, &both, &both_refresh).await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        query_param(&location(&resp), "error").as_deref(),
+        Some("invalid_scope")
+    );
+    patch(
+        &h,
+        &token,
+        &rs,
+        json!({ "scopes": ["mcp:read", "mcp:write"] }),
+    )
+    .await;
+    assert_eq!(
+        refresh(&h, &both, &both_refresh).await.0,
+        StatusCode::BAD_REQUEST
+    );
     let pkce = Pkce::generate();
     let resp = h
-        .get(&h.authorize_uri(&both, &pkce, Some(&rs), Some("mcp:write")), Some(&session))
+        .get(
+            &h.authorize_uri(&both, &pkce, Some(&rs), Some("mcp:write")),
+            Some(&session),
+        )
         .await;
     assert!(
         query_param(&location(&resp), "consent_flow").is_some(),
@@ -531,7 +603,13 @@ async fn scope_removal_makes_introspection_inactive() {
     assert_eq!(live["active"], true);
 
     // `mcp:read` is what the token carries; removing it ends the family.
-    let resp = patch(&h, &h.service_token, &h.resource_uri, json!({ "scopes": ["mcp:write"] })).await;
+    let resp = patch(
+        &h,
+        &h.service_token,
+        &h.resource_uri,
+        json!({ "scopes": ["mcp:write"] }),
+    )
+    .await;
     assert_eq!(resp.status(), StatusCode::OK);
     let after = body_json(h.introspect(access, &h.service_token).await).await;
     assert_eq!(after["active"], false);
@@ -557,7 +635,10 @@ async fn description_only_edits_preserve_every_grant() {
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK);
-    assert_eq!(body_json(resp).await["scope_descriptions"]["mcp:read"], "Read it all");
+    assert_eq!(
+        body_json(resp).await["scope_descriptions"]["mcp:read"],
+        "Read it all"
+    );
 
     assert_eq!(live_tokens(reg).await, 1);
     assert_eq!(
@@ -574,7 +655,13 @@ async fn description_only_edits_preserve_every_grant() {
         .get_result(&mut db().await)
         .await
         .unwrap();
-    let resp = patch(&h, &token, &rs, json!({ "scope_descriptions": { "mcp:read": "Read it all" } })).await;
+    let resp = patch(
+        &h,
+        &token,
+        &rs,
+        json!({ "scope_descriptions": { "mcp:read": "Read it all" } }),
+    )
+    .await;
     assert_eq!(resp.status(), StatusCode::OK);
     let after: i64 = audit_log::table
         .filter(audit_log::action.eq("update_oauth_resource"))
@@ -599,9 +686,18 @@ async fn removing_a_cimd_client_ends_its_grants_and_restoring_it_needs_fresh_con
     docs.publish_default(&cimd);
     let bystander = client(&h, RegistrationSource::Admin, Some(vec![rs.clone()])).await;
 
-    let resp = patch(&h, &token, &rs, json!({ "allowed_cimd_client_ids": [cimd, cimd] })).await;
+    let resp = patch(
+        &h,
+        &token,
+        &rs,
+        json!({ "allowed_cimd_client_ids": [cimd, cimd] }),
+    )
+    .await;
     assert_eq!(resp.status(), StatusCode::OK);
-    assert_eq!(body_json(resp).await["allowed_cimd_client_ids"], json!([cimd]));
+    assert_eq!(
+        body_json(resp).await["allowed_cimd_client_ids"],
+        json!([cimd])
+    );
 
     let (_, cimd_refresh) = grant(&h, &cimd, &session, &rs, "mcp:read").await;
     let (_, bystander_refresh) = grant(&h, &bystander, &session, &rs, "mcp:read").await;
@@ -612,15 +708,27 @@ async fn removing_a_cimd_client_ends_its_grants_and_restoring_it_needs_fresh_con
     let resp = patch(&h, &token, &rs, json!({ "allowed_cimd_client_ids": [] })).await;
     assert_eq!(resp.status(), StatusCode::OK);
 
-    assert_eq!(refresh(&h, &cimd, &cimd_refresh).await.0, StatusCode::BAD_REQUEST);
-    assert_eq!(redeem(&h, &cimd, &code, &pkce).await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        refresh(&h, &cimd, &cimd_refresh).await.0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        redeem(&h, &cimd, &code, &pkce).await.0,
+        StatusCode::BAD_REQUEST
+    );
     assert_eq!(consent_scopes(&h, &cimd, reg).await, None);
     // Others on the same registration are untouched.
-    assert_eq!(refresh(&h, &bystander, &bystander_refresh).await.0, StatusCode::OK);
+    assert_eq!(
+        refresh(&h, &bystander, &bystander_refresh).await.0,
+        StatusCode::OK
+    );
     // Not eligible now.
     let pkce2 = Pkce::generate();
     let resp = h
-        .get(&h.authorize_uri(&cimd, &pkce2, Some(&rs), Some("mcp:read")), Some(&session))
+        .get(
+            &h.authorize_uri(&cimd, &pkce2, Some(&rs), Some("mcp:read")),
+            Some(&session),
+        )
         .await;
     // No allowlist entry, so no document is fetched and nothing is trusted
     // enough to redirect to: an error page.
@@ -629,10 +737,22 @@ async fn removing_a_cimd_client_ends_its_grants_and_restoring_it_needs_fresh_con
 
     // Restoring eligibility restores nothing: the old refresh token stays
     // dead and the user is asked again.
-    patch(&h, &token, &rs, json!({ "allowed_cimd_client_ids": [cimd] })).await;
-    assert_eq!(refresh(&h, &cimd, &cimd_refresh).await.0, StatusCode::BAD_REQUEST);
+    patch(
+        &h,
+        &token,
+        &rs,
+        json!({ "allowed_cimd_client_ids": [cimd] }),
+    )
+    .await;
+    assert_eq!(
+        refresh(&h, &cimd, &cimd_refresh).await.0,
+        StatusCode::BAD_REQUEST
+    );
     let resp = h
-        .get(&h.authorize_uri(&cimd, &pkce2, Some(&rs), Some("mcp:read")), Some(&session))
+        .get(
+            &h.authorize_uri(&cimd, &pkce2, Some(&rs), Some("mcp:read")),
+            Some(&session),
+        )
         .await;
     assert!(query_param(&location(&resp), "consent_flow").is_some());
 }
@@ -828,19 +948,27 @@ async fn disabling_dcr_ends_dynamic_client_grants_flows_and_codes() {
     let pending = {
         let pkce = Pkce::generate();
         let resp = h
-            .get(&h.authorize_uri(&dynamic, &pkce, Some(&rs), Some("mcp:read")), Some(&session))
+            .get(
+                &h.authorize_uri(&dynamic, &pkce, Some(&rs), Some("mcp:read")),
+                Some(&session),
+            )
             .await;
         // Consent already stands, so this goes straight to a code; make a
         // flow with a different client instead.
         let _ = resp;
         let fresh = client(&h, RegistrationSource::Dynamic, None).await;
         let resp = h
-            .get(&h.authorize_uri(&fresh, &pkce, Some(&rs), Some("mcp:read")), Some(&session))
+            .get(
+                &h.authorize_uri(&fresh, &pkce, Some(&rs), Some("mcp:read")),
+                Some(&session),
+            )
             .await;
         query_param(&location(&resp), "consent_flow").expect("consent flow")
     };
 
-    let view = h.get(&format!("/v1/oauth/consent/{pending}"), Some(&session)).await;
+    let view = h
+        .get(&format!("/v1/oauth/consent/{pending}"), Some(&session))
+        .await;
     assert_eq!(view.status(), StatusCode::OK);
     let view = body_json(view).await;
     assert_eq!(view["resource"]["registration_source"], "delegated");
@@ -849,20 +977,38 @@ async fn disabling_dcr_ends_dynamic_client_grants_flows_and_codes() {
     let resp = patch(&h, &token, &rs, json!({ "dcr_enabled": false })).await;
     assert_eq!(resp.status(), StatusCode::OK);
 
-    assert_eq!(refresh(&h, &dynamic, &dyn_refresh).await.0, StatusCode::BAD_REQUEST);
-    assert_eq!(redeem(&h, &dynamic, &code, &pkce).await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        refresh(&h, &dynamic, &dyn_refresh).await.0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        redeem(&h, &dynamic, &code, &pkce).await.0,
+        StatusCode::BAD_REQUEST
+    );
     assert_eq!(consent_scopes(&h, &dynamic, reg).await, None);
-    let resp = h.get(&format!("/v1/oauth/consent/{pending}"), Some(&session)).await;
-    assert_ne!(resp.status(), StatusCode::OK, "the pending flow was removed");
+    let resp = h
+        .get(&format!("/v1/oauth/consent/{pending}"), Some(&session))
+        .await;
+    assert_ne!(
+        resp.status(),
+        StatusCode::OK,
+        "the pending flow was removed"
+    );
     // An explicitly bound client of another kind is still eligible.
     assert_eq!(refresh(&h, &bound, &bound_refresh).await.0, StatusCode::OK);
 
     // Re-enabling does not bring the dynamic client's grants back.
     patch(&h, &token, &rs, json!({ "dcr_enabled": true })).await;
-    assert_eq!(refresh(&h, &dynamic, &dyn_refresh).await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        refresh(&h, &dynamic, &dyn_refresh).await.0,
+        StatusCode::BAD_REQUEST
+    );
     let pkce = Pkce::generate();
     let resp = h
-        .get(&h.authorize_uri(&dynamic, &pkce, Some(&rs), Some("mcp:read")), Some(&session))
+        .get(
+            &h.authorize_uri(&dynamic, &pkce, Some(&rs), Some("mcp:read")),
+            Some(&session),
+        )
         .await;
     assert!(query_param(&location(&resp), "consent_flow").is_some());
 }
@@ -879,7 +1025,12 @@ async fn deletion_ends_every_grant_and_reserves_the_uri() {
     let survivor = uri(&h, "survivor");
     let id = register(&h, &token, &doomed, &["mcp:read"]).await;
     register(&h, &token, &survivor, &["mcp:read"]).await;
-    let c = client(&h, RegistrationSource::Admin, Some(vec![doomed.clone(), survivor.clone()])).await;
+    let c = client(
+        &h,
+        RegistrationSource::Admin,
+        Some(vec![doomed.clone(), survivor.clone()]),
+    )
+    .await;
     let (_, doomed_refresh) = grant(&h, &c, &session, &doomed, "mcp:read").await;
     let (_, survivor_refresh) = grant(&h, &c, &session, &survivor, "mcp:read").await;
     let (code, pkce) = code_for(&h, &c, &session, &doomed, "mcp:read").await;
@@ -890,8 +1041,14 @@ async fn deletion_ends_every_grant_and_reserves_the_uri() {
         StatusCode::NO_CONTENT
     );
     assert_eq!(live_tokens(id).await, 0);
-    assert_eq!(refresh(&h, &c, &doomed_refresh).await.0, StatusCode::BAD_REQUEST);
-    assert_eq!(redeem(&h, &c, &code, &pkce).await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        refresh(&h, &c, &doomed_refresh).await.0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        redeem(&h, &c, &code, &pkce).await.0,
+        StatusCode::BAD_REQUEST
+    );
     // Other audiences continue working.
     assert_eq!(refresh(&h, &c, &survivor_refresh).await.0, StatusCode::OK);
 
@@ -918,7 +1075,10 @@ async fn deletion_ends_every_grant_and_reserves_the_uri() {
         assert_eq!(resp.status(), StatusCode::CONFLICT);
         assert_eq!(body_json(resp).await["error"], "resource_reserved");
     }
-    assert_eq!(h.engine.get_oauth_resource(&doomed).await.err().map(|_| ()), Some(()));
+    assert_eq!(
+        h.engine.get_oauth_resource(&doomed).await.err().map(|_| ()),
+        Some(())
+    );
 
     // A retry of the same delete is a no-op.
     assert_eq!(
@@ -934,7 +1094,10 @@ async fn deletion_ends_every_grant_and_reserves_the_uri() {
 
     // The waiting period passes and someone registers the URI again.
     diesel::update(oauth_resource_reservation::table.find(&doomed))
-        .set(oauth_resource_reservation::reserved_until.eq(chrono::Utc::now() - chrono::Duration::seconds(1)))
+        .set(
+            oauth_resource_reservation::reserved_until
+                .eq(chrono::Utc::now() - chrono::Duration::seconds(1)),
+        )
         .execute(&mut db().await)
         .await
         .unwrap();
@@ -942,7 +1105,12 @@ async fn deletion_ends_every_grant_and_reserves_the_uri() {
     assert_ne!(successor, id);
     // The approval for the old registration does not carry over.
     assert_eq!(
-        h.engine.get_oauth_client(&c).await.unwrap().audiences.unwrap(),
+        h.engine
+            .get_oauth_client(&c)
+            .await
+            .unwrap()
+            .audiences
+            .unwrap(),
         vec![survivor.clone()]
     );
 
@@ -969,7 +1137,12 @@ async fn deletion_ends_every_grant_and_reserves_the_uri() {
     let rows: Vec<(String, Value, Value, Option<Value>)> = audit_log::table
         .filter(audit_log::subject.contains(json!({ "registration_id": id })))
         .order(audit_log::id.asc())
-        .select((audit_log::action, audit_log::actor, audit_log::subject, audit_log::detail))
+        .select((
+            audit_log::action,
+            audit_log::actor,
+            audit_log::subject,
+            audit_log::detail,
+        ))
         .load(&mut db().await)
         .await
         .unwrap();
@@ -995,7 +1168,13 @@ async fn updates_are_audited_and_the_cli_deletes_through_the_same_logic() {
     let c = client(&h, RegistrationSource::Admin, Some(vec![rs.clone()])).await;
     let (_, refresh_token) = grant(&h, &c, &session, &rs, "mcp:read mcp:write").await;
 
-    patch(&h, &token, &rs, json!({ "scopes": ["mcp:read"], "dcr_enabled": true })).await;
+    patch(
+        &h,
+        &token,
+        &rs,
+        json!({ "scopes": ["mcp:read"], "dcr_enabled": true }),
+    )
+    .await;
     let (actor, subject, detail): (Value, Value, Option<Value>) = audit_log::table
         .filter(audit_log::action.eq("update_oauth_resource"))
         .filter(audit_log::subject.contains(json!({ "registration_id": id })))
@@ -1009,7 +1188,10 @@ async fn updates_are_audited_and_the_cli_deletes_through_the_same_logic() {
     assert_eq!(detail["scopes_removed"], json!(["mcp:write"]));
     assert_eq!(detail["dcr_enabled"], json!({ "from": false, "to": true }));
     assert_eq!(detail["invalidated"]["refresh_tokens_revoked"], 1);
-    assert_eq!(refresh(&h, &c, &refresh_token).await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        refresh(&h, &c, &refresh_token).await.0,
+        StatusCode::BAD_REQUEST
+    );
 
     // The operator CLI: same lifecycle (grants ended, URI reserved, audited
     // with the operator as actor), no registrar restriction.
@@ -1024,7 +1206,10 @@ async fn updates_are_audited_and_the_cli_deletes_through_the_same_logic() {
     )
     .await
     .unwrap();
-    assert_eq!(refresh(&h, &c, &live_refresh).await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        refresh(&h, &c, &live_refresh).await.0,
+        StatusCode::BAD_REQUEST
+    );
     assert!(
         oauth_resource_reservation::table
             .find(&rs)
@@ -1045,7 +1230,13 @@ async fn updates_are_audited_and_the_cli_deletes_through_the_same_logic() {
     assert_eq!(detail.unwrap()["ended"]["live_refresh_tokens"], 1);
 
     // And the operator's create is audited too.
-    let owner = h.engine.get_oauth_resource(&h.resource_uri).await.unwrap().service_id.unwrap();
+    let owner = h
+        .engine
+        .get_oauth_resource(&h.resource_uri)
+        .await
+        .unwrap()
+        .service_id
+        .unwrap();
     let cli_uri = uri(&h, "cli");
     let created = h
         .engine
@@ -1072,7 +1263,13 @@ async fn updates_are_audited_and_the_cli_deletes_through_the_same_logic() {
 #[ignore = "requires a live Postgres via DATABASE_URL"]
 async fn an_administrator_deletes_a_legacy_service_registration() {
     let h = harness().await;
-    let owner = h.engine.get_oauth_resource(&h.resource_uri).await.unwrap().service_id.unwrap();
+    let owner = h
+        .engine
+        .get_oauth_resource(&h.resource_uri)
+        .await
+        .unwrap()
+        .service_id
+        .unwrap();
     let legacy = uri(&h, "legacy");
     let created = h
         .engine
@@ -1084,7 +1281,11 @@ async fn an_administrator_deletes_a_legacy_service_registration() {
     let resp = call(
         &h,
         "DELETE",
-        &format!("{}?registration_id={}", path(&legacy), created.registration_id),
+        &format!(
+            "{}?registration_id={}",
+            path(&legacy),
+            created.registration_id
+        ),
         &token,
         None,
     )
@@ -1135,18 +1336,25 @@ async fn issuance_waits_for_a_policy_change_and_is_judged_by_it() {
     };
     tokio::time::sleep(Duration::from_millis(400)).await;
     // ...so refresh and code redemption have not been allowed past it.
-    assert!(!rotating.is_finished(), "a refresh ran through a policy change");
-    assert!(!redeeming.is_finished(), "a redemption ran through a policy change");
+    assert!(
+        !rotating.is_finished(),
+        "a refresh ran through a policy change"
+    );
+    assert!(
+        !redeeming.is_finished(),
+        "a redemption ran through a policy change"
+    );
 
     // The change removes the client's eligibility and commits.
-    diesel::sql_query(
-        "DELETE FROM surge.oauth_client_audience WHERE registration_id = $1",
-    )
-    .bind::<diesel::sql_types::Uuid, _>(reg)
-    .execute(&mut change)
-    .await
-    .unwrap();
-    diesel::sql_query("COMMIT").execute(&mut change).await.unwrap();
+    diesel::sql_query("DELETE FROM surge.oauth_client_audience WHERE registration_id = $1")
+        .bind::<diesel::sql_types::Uuid, _>(reg)
+        .execute(&mut change)
+        .await
+        .unwrap();
+    diesel::sql_query("COMMIT")
+        .execute(&mut change)
+        .await
+        .unwrap();
 
     // Both resume and are judged by the new policy, not the old.
     let (status, body) = rotating.await.unwrap();
@@ -1242,7 +1450,10 @@ async fn a_policy_change_waits_for_issuance_in_flight_and_then_ends_it() {
     // An issuance holds the registration's shared lock, as every
     // grant-creating write does, and has not committed yet.
     let mut issuing = db().await;
-    diesel::sql_query("BEGIN").execute(&mut issuing).await.unwrap();
+    diesel::sql_query("BEGIN")
+        .execute(&mut issuing)
+        .await
+        .unwrap();
     diesel::sql_query("SELECT 1 FROM surge.oauth_resource WHERE id = $1 FOR SHARE")
         .bind::<diesel::sql_types::Uuid, _>(reg)
         .execute(&mut issuing)
@@ -1253,16 +1464,24 @@ async fn a_policy_change_waits_for_issuance_in_flight_and_then_ends_it() {
     let patching = {
         let (h, token, rs) = (h.clone(), token.clone(), rs.clone());
         tokio::spawn(async move {
-            patch(&h, &token, &rs, json!({ "scopes": ["mcp:read"] })).await.status()
+            patch(&h, &token, &rs, json!({ "scopes": ["mcp:read"] }))
+                .await
+                .status()
         })
     };
     tokio::time::sleep(Duration::from_millis(400)).await;
-    assert!(!patching.is_finished(), "a policy change ran through an issuance");
+    assert!(
+        !patching.is_finished(),
+        "a policy change ran through an issuance"
+    );
     // Shared locks do not block each other: issuance is not serialized
     // against itself.
     let (status, _) = refresh(&h, &c, &refresh_token).await;
     assert_eq!(status, StatusCode::OK);
-    diesel::sql_query("COMMIT").execute(&mut issuing).await.unwrap();
+    diesel::sql_query("COMMIT")
+        .execute(&mut issuing)
+        .await
+        .unwrap();
     assert_eq!(patching.await.unwrap(), StatusCode::OK);
 
     // Everything issued before the change committed (the rotation's
@@ -1288,14 +1507,16 @@ async fn racing_refreshes_against_policy_changes_never_leave_a_violating_grant()
         for _ in 0..4 {
             let (_, first) = grant(&h, &bound, &session, &rs, "mcp:read mcp:write").await;
             let (h, bound) = (h.clone(), bound.clone());
-            refreshers.push(tokio::spawn(async move {
-                refresh(&h, &bound, &first).await.0
-            }));
+            refreshers.push(tokio::spawn(
+                async move { refresh(&h, &bound, &first).await.0 },
+            ));
         }
         let patcher = {
             let (h, token, rs) = (h.clone(), token.clone(), rs.clone());
             tokio::spawn(async move {
-                patch(&h, &token, &rs, json!({ "scopes": ["mcp:read"] })).await.status()
+                patch(&h, &token, &rs, json!({ "scopes": ["mcp:read"] }))
+                    .await
+                    .status()
             })
         };
         assert_eq!(patcher.await.unwrap(), StatusCode::OK);
@@ -1340,9 +1561,15 @@ async fn racing_deletion_against_refresh_leaves_no_live_grant() {
         let deleter = {
             let (h, token, rs) = (h.clone(), token.clone(), rs.clone());
             tokio::spawn(async move {
-                call(&h, "DELETE", &format!("{}?registration_id={reg}", path(&rs)), &token, None)
-                    .await
-                    .status()
+                call(
+                    &h,
+                    "DELETE",
+                    &format!("{}?registration_id={reg}", path(&rs)),
+                    &token,
+                    None,
+                )
+                .await
+                .status()
             })
         };
         assert_eq!(deleter.await.unwrap(), StatusCode::NO_CONTENT);
@@ -1371,15 +1598,24 @@ async fn a_saved_consent_removed_before_the_code_is_minted_is_not_relied_on() {
         let (h, c, rs, session) = (h.clone(), c.clone(), rs.clone(), session.clone());
         tokio::spawn(async move {
             let pkce = Pkce::generate();
-            h.get(&h.authorize_uri(&c, &pkce, Some(&rs), Some("mcp:read")), Some(&session))
-                .await
+            h.get(
+                &h.authorize_uri(&c, &pkce, Some(&rs), Some("mcp:read")),
+                Some(&session),
+            )
+            .await
         })
     };
     tokio::time::sleep(Duration::from_millis(400)).await;
     assert!(!request.is_finished());
     // ...during which the user withdraws the consent.
-    h.engine.revoke_connection(h.identity_id().await, &c).await.unwrap();
-    diesel::sql_query("COMMIT").execute(&mut change).await.unwrap();
+    h.engine
+        .revoke_connection(h.identity_id().await, &c)
+        .await
+        .unwrap();
+    diesel::sql_query("COMMIT")
+        .execute(&mut change)
+        .await
+        .unwrap();
 
     let resp = request.await.unwrap();
     let target = location(&resp);
@@ -1399,8 +1635,14 @@ async fn the_reservation_window_never_shrinks_below_the_recorded_lifetime() {
     // The server recorded its lifetime at startup.
     assert!(h.engine.access_ttl_high_water().await.unwrap().unwrap() >= Duration::from_secs(600));
     // A higher one is kept, a lower one is not.
-    h.engine.raise_access_ttl_high_water(Duration::from_secs(3600)).await.unwrap();
-    h.engine.raise_access_ttl_high_water(Duration::from_secs(60)).await.unwrap();
+    h.engine
+        .raise_access_ttl_high_water(Duration::from_secs(3600))
+        .await
+        .unwrap();
+    h.engine
+        .raise_access_ttl_high_water(Duration::from_secs(60))
+        .await
+        .unwrap();
     let recorded = h.engine.access_ttl_high_water().await.unwrap().unwrap();
     assert!(recorded >= Duration::from_secs(3600));
 
@@ -1441,9 +1683,21 @@ async fn the_reservation_window_never_shrinks_below_the_recorded_lifetime() {
 #[ignore = "requires a live Postgres via DATABASE_URL"]
 async fn description_keys_must_name_scopes_and_a_noop_dcr_flag_is_accepted() {
     let h = harness().await;
-    let resp = patch(&h, &h.service_token, &h.resource_uri, json!({ "scope_descriptions": { "nope": "x" } })).await;
+    let resp = patch(
+        &h,
+        &h.service_token,
+        &h.resource_uri,
+        json!({ "scope_descriptions": { "nope": "x" } }),
+    )
+    .await;
     assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
-    let resp = patch(&h, &h.service_token, &h.resource_uri, json!({ "dcr_enabled": false })).await;
+    let resp = patch(
+        &h,
+        &h.service_token,
+        &h.resource_uri,
+        json!({ "dcr_enabled": false }),
+    )
+    .await;
     assert_eq!(resp.status(), StatusCode::OK);
 }
 

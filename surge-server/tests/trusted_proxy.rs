@@ -108,7 +108,11 @@ async fn test_app() -> (axum::Router, Tokens) {
 
 fn rand_suffix() -> u32 {
     use std::time::{SystemTime, UNIX_EPOCH};
-    (SystemTime::now().duration_since(UNIX_EPOCH).unwrap().subsec_nanos()) ^ std::process::id()
+    (SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .subsec_nanos())
+        ^ std::process::id()
 }
 
 /// `GET /v1/login`, optionally claiming to act for another address.

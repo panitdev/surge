@@ -33,7 +33,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use surge_engine::oauth::{
-    parse_cimd_document, validate_cimd_client_id, CimdMetadata, MAX_CIMD_DOCUMENT_BYTES,
+    CimdMetadata, MAX_CIMD_DOCUMENT_BYTES, parse_cimd_document, validate_cimd_client_id,
 };
 use tokio::sync::Semaphore;
 use tokio::time::Instant;
@@ -423,7 +423,10 @@ impl CimdResolver {
             }
             let window = self.limits.host_window;
             let hits = state.hosts.entry(host.clone()).or_default();
-            while hits.front().is_some_and(|t| now.duration_since(*t) >= window) {
+            while hits
+                .front()
+                .is_some_and(|t| now.duration_since(*t) >= window)
+            {
                 hits.pop_front();
             }
             if hits.len() >= self.limits.host_burst {
@@ -436,9 +439,9 @@ impl CimdResolver {
             hits.push_back(now);
             state.outbound.push_back(now);
             if state.hosts.len() > 4096 {
-                state.hosts.retain(|_, h| {
-                    h.back().is_some_and(|t| now.duration_since(*t) < window)
-                });
+                state
+                    .hosts
+                    .retain(|_, h| h.back().is_some_and(|t| now.duration_since(*t) < window));
             }
             permit
         };
@@ -495,7 +498,13 @@ impl CimdResolver {
                 state.cache.remove(&oldest);
             }
         }
-        state.cache.insert(key, Entry { value, expires: now + ttl });
+        state.cache.insert(
+            key,
+            Entry {
+                value,
+                expires: now + ttl,
+            },
+        );
     }
 }
 
@@ -528,11 +537,28 @@ mod tests {
     #[test]
     fn special_purpose_ipv4_is_refused() {
         for bad in [
-            "0.0.0.0", "0.1.2.3", "10.0.0.1", "10.255.255.255", "100.64.0.1",
-            "100.127.255.255", "127.0.0.1", "127.255.255.254", "169.254.169.254",
-            "172.16.0.1", "172.31.255.255", "192.0.0.1", "192.0.2.1", "192.88.99.1",
-            "192.168.1.1", "198.18.0.1", "198.19.255.255", "198.51.100.7",
-            "203.0.113.9", "224.0.0.1", "239.255.255.255", "240.0.0.1",
+            "0.0.0.0",
+            "0.1.2.3",
+            "10.0.0.1",
+            "10.255.255.255",
+            "100.64.0.1",
+            "100.127.255.255",
+            "127.0.0.1",
+            "127.255.255.254",
+            "169.254.169.254",
+            "172.16.0.1",
+            "172.31.255.255",
+            "192.0.0.1",
+            "192.0.2.1",
+            "192.88.99.1",
+            "192.168.1.1",
+            "198.18.0.1",
+            "198.19.255.255",
+            "198.51.100.7",
+            "203.0.113.9",
+            "224.0.0.1",
+            "239.255.255.255",
+            "240.0.0.1",
             "255.255.255.255",
         ] {
             assert!(!is_public_ip(ip(bad)), "{bad}");
@@ -579,7 +605,10 @@ mod tests {
     #[test]
     fn cache_control_parsing() {
         assert_eq!(parse_max_age("max-age=120"), Some(Duration::from_secs(120)));
-        assert_eq!(parse_max_age("public, max-age=30"), Some(Duration::from_secs(30)));
+        assert_eq!(
+            parse_max_age("public, max-age=30"),
+            Some(Duration::from_secs(30))
+        );
         assert_eq!(parse_max_age("no-store"), Some(Duration::ZERO));
         assert_eq!(parse_max_age("max-age=300, no-cache"), Some(Duration::ZERO));
         assert_eq!(parse_max_age("private, max-age=300"), Some(Duration::ZERO));
@@ -626,7 +655,9 @@ mod tests {
         })
     }
 
-    fn ok_doc(max_age: Option<Duration>) -> impl Fn(&url::Url) -> Result<FetchedDocument, FetchError> {
+    fn ok_doc(
+        max_age: Option<Duration>,
+    ) -> impl Fn(&url::Url) -> Result<FetchedDocument, FetchError> {
         move |u| {
             Ok(FetchedDocument {
                 body: body(u.as_str()),
@@ -698,7 +729,10 @@ mod tests {
             "https://u@app.example/c.json",
             "https://app.example/c.json#x",
         ] {
-            assert!(matches!(r.resolve(bad).await, Err(CimdError::Invalid(_))), "{bad}");
+            assert!(
+                matches!(r.resolve(bad).await, Err(CimdError::Invalid(_))),
+                "{bad}"
+            );
         }
         assert_eq!(f.calls.load(Ordering::SeqCst), 0);
     }
@@ -712,7 +746,9 @@ mod tests {
         };
         let r = CimdResolver::new(f.clone(), limits);
         for i in 0..3 {
-            r.resolve(&format!("https://busy.example/c{i}.json")).await.unwrap();
+            r.resolve(&format!("https://busy.example/c{i}.json"))
+                .await
+                .unwrap();
         }
         assert_eq!(
             r.resolve("https://busy.example/c9.json").await,
@@ -758,7 +794,9 @@ mod tests {
         };
         let r = CimdResolver::new(f, limits);
         for i in 0..20 {
-            r.resolve(&format!("https://h{i}.example/c.json")).await.unwrap();
+            r.resolve(&format!("https://h{i}.example/c.json"))
+                .await
+                .unwrap();
         }
         assert!(r.state.lock().unwrap().cache.len() <= 4);
     }
@@ -777,7 +815,9 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         tokio::spawn(async move {
             loop {
-                let Ok((mut sock, _)) = listener.accept().await else { return };
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    return;
+                };
                 let response = response.clone();
                 tokio::spawn(async move {
                     let mut buf = [0u8; 2048];
@@ -808,7 +848,10 @@ mod tests {
             b"{\"a\":1}",
         ))
         .await;
-        let doc = HttpDocumentFetcher::permissive_for_tests().fetch(&url).await.unwrap();
+        let doc = HttpDocumentFetcher::permissive_for_tests()
+            .fetch(&url)
+            .await
+            .unwrap();
         assert_eq!(doc.body, b"{\"a\":1}");
         assert_eq!(doc.max_age, Some(Duration::from_secs(90)));
     }
@@ -821,7 +864,10 @@ mod tests {
                 http("302 Found", "location: http://127.0.0.1:1/x\r\n", b""),
                 "redirect",
             ),
-            (http("404 Not Found", "content-type: application/json\r\n", b"{}"), "404"),
+            (
+                http("404 Not Found", "content-type: application/json\r\n", b"{}"),
+                "404",
+            ),
             (http("200 OK", "content-type: text/html\r\n", b"{}"), "html"),
             (http("200 OK", "", b"{}"), "no content type"),
         ] {
@@ -838,14 +884,19 @@ mod tests {
         let url = serve(http("200 OK", "content-type: application/json\r\n", &big)).await;
         assert!(fetcher.fetch(&url).await.is_err());
         // Undeclared length (read until close), streamed past the cap.
-        let mut raw = b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n".to_vec();
+        let mut raw =
+            b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n"
+                .to_vec();
         raw.extend_from_slice(&big);
         let url = serve(raw).await;
         assert!(fetcher.fetch(&url).await.is_err());
         // Exactly at the cap is fine.
         let ok = vec![b' '; MAX_CIMD_DOCUMENT_BYTES];
         let url = serve(http("200 OK", "content-type: application/json\r\n", &ok)).await;
-        assert_eq!(fetcher.fetch(&url).await.unwrap().body.len(), MAX_CIMD_DOCUMENT_BYTES);
+        assert_eq!(
+            fetcher.fetch(&url).await.unwrap().body.len(),
+            MAX_CIMD_DOCUMENT_BYTES
+        );
     }
 
     #[tokio::test]
@@ -863,7 +914,9 @@ mod tests {
     async fn the_resolver_refuses_names_that_resolve_to_loopback() {
         // `localhost` is allowed by name in the permissive tests but must
         // be refused by the production resolver even if it got that far.
-        let resolver = PublicOnlyResolver { allow_nonpublic: false };
+        let resolver = PublicOnlyResolver {
+            allow_nonpublic: false,
+        };
         let name: Name = "localhost".parse().unwrap();
         assert!(resolver.resolve(name).await.is_err());
     }

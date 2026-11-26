@@ -18,7 +18,7 @@ use std::time::Duration;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use secrecy::SecretString;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use surge::{EmbeddedConfig, EmbeddedProvider};
@@ -36,8 +36,8 @@ async fn test_app_with_engine(
     multi_account: bool,
     inline: bool,
 ) -> (axum::Router, String, Arc<surge_engine::Engine>) {
-    let database_url = std::env::var("DATABASE_URL")
-        .expect("DATABASE_URL must be set to run this test");
+    let database_url =
+        std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
 
     let embedded = Arc::new(
         EmbeddedProvider::new(EmbeddedConfig {
@@ -93,11 +93,17 @@ async fn test_app_with_engine(
 
 fn rand_suffix() -> u32 {
     use std::time::{SystemTime, UNIX_EPOCH};
-    (SystemTime::now().duration_since(UNIX_EPOCH).unwrap().subsec_nanos()) ^ std::process::id()
+    (SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .subsec_nanos())
+        ^ std::process::id()
 }
 
 async fn body_json(resp: axum::response::Response) -> Value {
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
     serde_json::from_slice(&bytes).unwrap_or(Value::Null)
 }
 
@@ -147,7 +153,11 @@ async fn inline_login_without_return_to_succeeds_and_completes_with_null() {
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK, "inline start_login without return_to must succeed");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "inline start_login without return_to must succeed"
+    );
     let body = body_json(resp).await;
     let flow_id = body["flow_id"].as_str().unwrap().to_string();
     let csrf_token = body["csrf_token"].as_str().unwrap().to_string();
@@ -174,7 +184,11 @@ async fn inline_login_without_return_to_succeeds_and_completes_with_null() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK, "submit_password failed");
     let body = body_json(resp).await;
-    assert_eq!(body["return_to"], Value::Null, "return_to must be explicit null when omitted");
+    assert_eq!(
+        body["return_to"],
+        Value::Null,
+        "return_to must be explicit null when omitted"
+    );
 }
 
 #[tokio::test]
@@ -214,9 +228,16 @@ async fn browser_sign_in_add_and_reauthenticate_preserve_default() {
     }
     for username in [&work, &personal, &personal] {
         let adding = !cookie.is_empty();
-        let uri = if adding { "/v1/login?intent=add_account" } else { "/v1/login" };
-        let start = Request::get(uri).header("accept", "application/json")
-            .header("cookie", &cookie).body(Body::empty()).unwrap();
+        let uri = if adding {
+            "/v1/login?intent=add_account"
+        } else {
+            "/v1/login"
+        };
+        let start = Request::get(uri)
+            .header("accept", "application/json")
+            .header("cookie", &cookie)
+            .body(Body::empty())
+            .unwrap();
         let response = app.clone().oneshot(start).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let flow = body_json(response).await;
@@ -228,16 +249,31 @@ async fn browser_sign_in_add_and_reauthenticate_preserve_default() {
         assert_eq!(response.status(), StatusCode::OK);
         if !adding {
             let header = response.headers()["set-cookie"].to_str().unwrap();
-            for attribute in ["surge_browser=", "HttpOnly", "Secure", "SameSite=Lax", "Domain=canary.test", "Path=/"] {
+            for attribute in [
+                "surge_browser=",
+                "HttpOnly",
+                "Secure",
+                "SameSite=Lax",
+                "Domain=canary.test",
+                "Path=/",
+            ] {
                 assert!(header.contains(attribute), "missing {attribute}");
             }
             cookie = header.split(';').next().unwrap().to_owned();
         }
-        accounts.push(body_json(response).await["account_id"].as_str().unwrap().to_owned());
+        accounts.push(
+            body_json(response).await["account_id"]
+                .as_str()
+                .unwrap()
+                .to_owned(),
+        );
     }
     assert_ne!(accounts[0], accounts[1]);
     assert_eq!(accounts[1], accounts[2]);
-    let whoami = Request::get("/v1/whoami").header("cookie", cookie).body(Body::empty()).unwrap();
+    let whoami = Request::get("/v1/whoami")
+        .header("cookie", cookie)
+        .body(Body::empty())
+        .unwrap();
     let response = app.oneshot(whoami).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(response.headers()["x-surge-account"], accounts[0]);
@@ -282,9 +318,19 @@ async fn concurrent_legacy_add_adopts_original_session_once() {
     }
     async fn legacy_cookie(app: &axum::Router, owner: &str, password: &str) -> String {
         let flow = start(app, "/v1/login", "").await;
-        let response = app.clone().oneshot(submit(&flow, "", owner, password)).await.unwrap();
+        let response = app
+            .clone()
+            .oneshot(submit(&flow, "", owner, password))
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        response.headers()["set-cookie"].to_str().unwrap().split(';').next().unwrap().to_owned()
+        response.headers()["set-cookie"]
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_owned()
     }
     let legacy = legacy_cookie(&old_app, &work, &password).await;
     let inverse_legacy = legacy_cookie(&old_app, &personal, &password).await;
@@ -311,7 +357,8 @@ async fn concurrent_legacy_add_adopts_original_session_once() {
             .oneshot(submit(&first, &legacy, &personal, &password)),
         app.clone()
             .oneshot(submit(&second, &legacy, &personal, &password)),
-        app.clone().oneshot(submit(&inverse, &inverse_legacy, &work, &password)),
+        app.clone()
+            .oneshot(submit(&inverse, &inverse_legacy, &work, &password)),
     );
     assert_eq!(reverse.unwrap().status(), StatusCode::OK);
     let (a, b) = (a.unwrap(), b.unwrap());
@@ -336,10 +383,16 @@ async fn concurrent_legacy_add_adopts_original_session_once() {
         .unwrap()
         .split(';')
         .next()
-        .unwrap().to_owned();
-    let account = body_json(winner).await["account_id"].as_str().unwrap().to_owned();
+        .unwrap()
+        .to_owned();
+    let account = body_json(winner).await["account_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     let mut selected = whoami(&browser);
-    selected.headers_mut().insert("x-surge-account", account.parse().unwrap());
+    selected
+        .headers_mut()
+        .insert("x-surge-account", account.parse().unwrap());
     let response = app.clone().oneshot(selected).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(response.headers()["x-surge-account"], account);
@@ -361,10 +414,18 @@ async fn concurrent_legacy_add_adopts_original_session_once() {
 async fn redirect_login_hands_membership_only_to_live_picker_origins() {
     let (app, service, engine) = test_app_with_engine(true, false).await;
     let different_port = url::form_urlencoded::Serializer::new(String::new())
-        .append_pair("return_to", "https://app.canary.test:8443/services#surge_account")
+        .append_pair(
+            "return_to",
+            "https://app.canary.test:8443/services#surge_account",
+        )
         .finish();
-    let start = Request::get(format!("/v1/login?{different_port}")).body(Body::empty()).unwrap();
-    assert_eq!(app.clone().oneshot(start).await.unwrap().status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let start = Request::get(format!("/v1/login?{different_port}"))
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(start).await.unwrap().status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
     let suffix = rand_suffix();
     let work = format!("redirect-work-{suffix}");
     let other = format!("redirect-other-{suffix}");
@@ -381,53 +442,92 @@ async fn redirect_login_hands_membership_only_to_live_picker_origins() {
         (RETURN_ORIGIN, "surge_account", true),
         (RETURN_ORIGIN, "surge_account", false),
         (RETURN_ORIGIN, "ordinary", false),
-    ].into_iter().enumerate() {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         // Grant an existing return origin, then withdraw the grant while its
         // next flow is in flight. Its ordinary return registration remains.
         if index == 2 {
-            engine.create_service(&grant_name,
-                surge_engine::types::ServiceToken::generate().hash(),
-                vec!["account_list".into()], vec![origin.into()]).await.unwrap();
+            engine
+                .create_service(
+                    &grant_name,
+                    surge_engine::types::ServiceToken::generate().hash(),
+                    vec!["account_list".into()],
+                    vec![origin.into()],
+                )
+                .await
+                .unwrap();
         }
         let callback = format!("{origin}/services#{fragment}");
         let mut params = url::form_urlencoded::Serializer::new(String::new());
         params.append_pair("return_to", &callback);
-        if index > 0 { params.append_pair("intent", "add_account"); }
+        if index > 0 {
+            params.append_pair("intent", "add_account");
+        }
         let start = Request::get(format!("/v1/login?{}", params.finish()))
-            .header("cookie", &cookie).body(Body::empty()).unwrap();
+            .header("cookie", &cookie)
+            .body(Body::empty())
+            .unwrap();
         let response = app.clone().oneshot(start).await.unwrap();
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
         let redirect = url::Url::parse(response.headers()["location"].to_str().unwrap()).unwrap();
         assert_eq!(redirect.origin().ascii_serialization(), AUTH_UI_ORIGIN);
-        let id = redirect.query_pairs().find(|(key, _)| key == "flow").unwrap().1;
-        let get = Request::get(format!("/v1/flows/{id}")).header("cookie", &cookie)
-            .body(Body::empty()).unwrap();
+        let id = redirect
+            .query_pairs()
+            .find(|(key, _)| key == "flow")
+            .unwrap()
+            .1;
+        let get = Request::get(format!("/v1/flows/{id}"))
+            .header("cookie", &cookie)
+            .body(Body::empty())
+            .unwrap();
         let flow = body_json(app.clone().oneshot(get).await.unwrap()).await;
         if index == 3 {
             engine.revoke_service(&grant_name).await.unwrap();
         }
         let submit = Request::post(format!("/v1/flows/{id}/password"))
-            .header("cookie", &cookie).header("content-type", "application/json")
-            .body(Body::from(json!({
-                "username": if index == 0 { &work } else { &other },
-                "password": "correct horse battery staple", "csrf_token": flow["csrf_token"]
-            }).to_string())).unwrap();
+            .header("cookie", &cookie)
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "username": if index == 0 { &work } else { &other },
+                    "password": "correct horse battery staple", "csrf_token": flow["csrf_token"]
+                })
+                .to_string(),
+            ))
+            .unwrap();
         let response = app.clone().oneshot(submit).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         if cookie.is_empty() {
-            cookie = response.headers()["set-cookie"].to_str().unwrap().split(';').next().unwrap().into();
+            cookie = response.headers()["set-cookie"]
+                .to_str()
+                .unwrap()
+                .split(';')
+                .next()
+                .unwrap()
+                .into();
         }
         let body = body_json(response).await;
         if authorized {
             let id = body["account_id"].as_str().unwrap();
             assert_eq!(body["return_to"], format!("{callback}={id}"));
-            if index == 0 { default_id = id.into(); } else { assert_ne!(id, default_id); }
+            if index == 0 {
+                default_id = id.into();
+            } else {
+                assert_ne!(id, default_id);
+            }
         } else {
             assert_eq!(body["return_to"], callback);
-            if fragment == "surge_account" { assert!(body.get("account_id").is_none()); }
+            if fragment == "surge_account" {
+                assert!(body.get("account_id").is_none());
+            }
         }
     }
-    let whoami = Request::get("/v1/whoami").header("cookie", cookie).body(Body::empty()).unwrap();
+    let whoami = Request::get("/v1/whoami")
+        .header("cookie", cookie)
+        .body(Body::empty())
+        .unwrap();
     let response = app.oneshot(whoami).await.unwrap();
     assert_eq!(response.headers()["x-surge-account"], default_id);
 }

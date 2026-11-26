@@ -130,19 +130,22 @@ pub async fn router(
         RateLimitConfig::default(),
     ));
 
-    let oauth_as = config.oauth_as.as_ref().map(|oauth| surge::router::OauthAsConfig {
-        issuer: oauth.issuer.clone(),
-        auth_ui_origin: config.auth_ui_origin.clone(),
-        access_ttl: oauth.access_ttl,
-        refresh_ttl: oauth.refresh_ttl,
-        key_rotation: oauth.key_rotation,
-        allow_dynamic_registration: oauth.allow_dynamic_registration,
-        require_resource: oauth.require_resource,
-        default_resource: oauth.default_resource.clone(),
-        dcr_ttl: oauth.dcr_ttl,
-        enable_oidc: oauth.enable_oidc,
-        cimd_fetcher: oauth.cimd_fetcher.clone(),
-    });
+    let oauth_as = config
+        .oauth_as
+        .as_ref()
+        .map(|oauth| surge::router::OauthAsConfig {
+            issuer: oauth.issuer.clone(),
+            auth_ui_origin: config.auth_ui_origin.clone(),
+            access_ttl: oauth.access_ttl,
+            refresh_ttl: oauth.refresh_ttl,
+            key_rotation: oauth.key_rotation,
+            allow_dynamic_registration: oauth.allow_dynamic_registration,
+            require_resource: oauth.require_resource,
+            default_resource: oauth.default_resource.clone(),
+            dcr_ttl: oauth.dcr_ttl,
+            enable_oidc: oauth.enable_oidc,
+            cimd_fetcher: oauth.cimd_fetcher.clone(),
+        });
 
     let browser_router = Arc::clone(&embedded).browser_router(BrowserRouterConfig {
         cookie_domain: config.cookie_domain.clone(),

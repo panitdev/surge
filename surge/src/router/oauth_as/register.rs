@@ -22,16 +22,16 @@
 
 use std::sync::Arc;
 
+use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use serde::Deserialize;
 use serde_json::json;
-use surge_engine::oauth::{offers_scopes_to_dcr, NewOauthClient, RegistrationSource};
+use surge_engine::oauth::{NewOauthClient, RegistrationSource, offers_scopes_to_dcr};
 
-use super::error::{OauthError, OauthErrorCode};
 use super::AsState;
+use super::error::{OauthError, OauthErrorCode};
 use crate::router::browser::MaybeClientIp;
 
 #[derive(Debug, Deserialize)]
@@ -124,7 +124,11 @@ async fn run(
     let scope_ceiling_explicit = requested
         .iter()
         .any(|s| !matches!(s.as_str(), "openid" | "profile" | "offline_access"));
-    let requested = if scope_ceiling_explicit { requested } else { Vec::new() };
+    let requested = if scope_ceiling_explicit {
+        requested
+    } else {
+        Vec::new()
+    };
     let scopes: Vec<String> = if requested.is_empty() {
         declared.iter().cloned().collect()
     } else {
@@ -156,7 +160,10 @@ async fn run(
             .grant_types
             .filter(|g| !g.is_empty())
             .unwrap_or_else(|| {
-                vec!["authorization_code".to_string(), "refresh_token".to_string()]
+                vec![
+                    "authorization_code".to_string(),
+                    "refresh_token".to_string(),
+                ]
             }),
         scopes,
         confidential,

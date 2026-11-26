@@ -33,7 +33,10 @@ async fn the_discovery_document_describes_this_server() {
     // OIDC is on, so the OpenID document is served with the same body.
     let oidc = body_json(h.get("/.well-known/openid-configuration", None).await).await;
     assert_eq!(oidc["issuer"], ISSUER);
-    assert_eq!(oidc["id_token_signing_alg_values_supported"], json!(["ES256"]));
+    assert_eq!(
+        oidc["id_token_signing_alg_values_supported"],
+        json!(["ES256"])
+    );
 }
 
 #[tokio::test]
@@ -139,7 +142,10 @@ async fn rotation_keeps_older_tokens_verifiable_until_the_key_is_retired() {
         kids.contains(&old_kid),
         "the retired key must stay published while tokens it signed are alive"
     );
-    assert!(kids.len() >= 2, "the new key must be published alongside it");
+    assert!(
+        kids.len() >= 2,
+        "the new key must be published alongside it"
+    );
 }
 
 #[tokio::test]
@@ -157,7 +163,12 @@ async fn introspection_answers_the_delegated_owner_and_nobody_else() {
         )
         .await
         .unwrap();
-    let caller = h.engine.get_oauth_resource(&h.resource_uri).await.unwrap().service_id;
+    let caller = h
+        .engine
+        .get_oauth_resource(&h.resource_uri)
+        .await
+        .unwrap()
+        .service_id;
     h.resource_uri.push_str("-delegated");
     let resp = register_resource(&h, &h.service_token, &h.resource_uri, Some(owner.id)).await;
     assert_eq!(resp.status(), StatusCode::CREATED);
@@ -167,13 +178,15 @@ async fn introspection_answers_the_delegated_owner_and_nobody_else() {
         use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
         use surge_engine::schema::audit_log;
         let mut conn = AsyncPgConnection::establish(&std::env::var("DATABASE_URL").unwrap())
-            .await.unwrap();
+            .await
+            .unwrap();
         let (actor, subject) = audit_log::table
             .filter(audit_log::action.eq("create_oauth_resource"))
             .filter(audit_log::subject.contains(json!({"resource_uri": h.resource_uri})))
             .select((audit_log::actor, audit_log::subject))
             .first::<(serde_json::Value, serde_json::Value)>(&mut conn)
-            .await.unwrap();
+            .await
+            .unwrap();
         assert_eq!(actor["id"], json!(caller));
         assert_eq!(actor["type"], "service");
         assert_eq!(subject["owner_service_id"], json!(owner.id));
@@ -274,7 +287,10 @@ async fn userinfo_answers_only_a_token_carrying_openid() {
     let access = tokens["access_token"].as_str().unwrap();
     let body = body_json(h.bearer_get("/oauth2/userinfo", access).await).await;
     assert_eq!(body["sub"], h.identity_id().await.to_string());
-    assert_eq!(body["preferred_username"], format!("oauth-user-{}", h.suffix));
+    assert_eq!(
+        body["preferred_username"],
+        format!("oauth-user-{}", h.suffix)
+    );
 
     // A garbage token gets a challenge, not an answer.
     let resp = h.bearer_get("/oauth2/userinfo", "not-a-token").await;

@@ -133,9 +133,8 @@ pub(crate) fn verify_access_token(
     issuer: &str,
     keys: &[surge_engine::oauth::PublicSigningKey],
 ) -> Result<AccessClaims, OauthError> {
-    let header = jsonwebtoken::decode_header(token).map_err(|_| {
-        OauthError::bearer(OauthErrorCode::InvalidToken, "malformed access token")
-    })?;
+    let header = jsonwebtoken::decode_header(token)
+        .map_err(|_| OauthError::bearer(OauthErrorCode::InvalidToken, "malformed access token"))?;
 
     // RFC 9068 §4: an ID token or any other JWT this issuer signs is not an
     // access token, whatever its signature says.
