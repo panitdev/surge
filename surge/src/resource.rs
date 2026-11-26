@@ -224,8 +224,9 @@ impl ResourceServer {
         challenge
     }
 
-    /// Verifies a bearer token: `typ` is `at+jwt`, signature (ES256 only)
-    /// against cached JWKS, `iss`, exact `aud`, `exp`, and nothing else. Scope checking is the caller's, because what
+    /// Verifies a bearer token: `typ` is `at+jwt`, a `kid` naming a key in
+    /// the cached JWKS, signature (ES256 only) by that key, `iss`, exact
+    /// `aud`, `exp`, and nothing else. Scope checking is the caller's, because what
     /// a given route requires is not something this type can know.
     pub async fn verify(&self, token: &str) -> Result<ResourceClaims, Response> {
         let unauthorized = |code: &str, description: &str| {
@@ -267,21 +268,26 @@ impl ResourceServer {
             ));
         }
 
+        // Every token the authorization server mints names its key, so one
+        // that does not was not minted there.
+        let Some(kid) = header.kid.as_deref() else {
+            return Err(unauthorized(
+                "invalid_token",
+                "the access token does not name its signing key",
+            ));
+        };
+        let names_kid = |k: &serde_json::Value| k.get("kid").and_then(|v| v.as_str()) == Some(kid);
+
         // A `kid` the cached set does not have usually means the
         // authorization server rotated its key since the last fetch. Refetch
         // rather than refuse every new token until the cache expires.
         let mut keys = keys;
-        if let Some(kid) = &header.kid {
-            let known = keys
-                .iter()
-                .any(|k| k.get("kid").and_then(|v| v.as_str()) == Some(kid.as_str()));
-            if !known && self.may_refresh_for_kid() {
-                self.jwks.invalidate(&()).await;
-                match self.jwks_keys().await {
-                    Ok(fresh) => keys = fresh,
-                    Err(e) => {
-                        tracing::warn!(error = %e, "failed to refetch JWKS for an unknown kid")
-                    }
+        if !keys.iter().any(names_kid) && self.may_refresh_for_kid() {
+            self.jwks.invalidate(&()).await;
+            match self.jwks_keys().await {
+                Ok(fresh) => keys = fresh,
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to refetch JWKS for an unknown kid")
                 }
             }
         }
@@ -290,10 +296,7 @@ impl ResourceServer {
         validation.set_issuer(&[self.config.issuer.trim_end_matches('/')]);
         validation.set_audience(&[self.config.resource_uri.trim_end_matches('/')]);
 
-        let candidates = keys.iter().filter(|k| match (&header.kid, k.get("kid")) {
-            (Some(kid), Some(key_kid)) => key_kid.as_str() == Some(kid.as_str()),
-            _ => true,
-        });
+        let candidates = keys.iter().filter(|k| names_kid(k));
 
         for key in candidates {
             let (Some(x), Some(y)) = (

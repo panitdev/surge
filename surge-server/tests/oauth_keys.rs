@@ -251,39 +251,47 @@ async fn introspection_requires_the_introspect_grant() {
 
 #[tokio::test]
 #[ignore = "requires a live Postgres via DATABASE_URL"]
-async fn userinfo_answers_only_a_token_carrying_openid() {
+async fn userinfo_answers_only_a_token_minted_for_it() {
     let h = harness().await;
     let session = h.sign_in().await;
     let client_id = h.client(true).await;
-    let pkce = Pkce::generate();
 
-    let uri = h.authorize_uri(
-        &client_id,
-        &pkce,
-        Some(&h.resource_uri),
-        Some("mcp:read openid"),
-    );
-    let target = location(&h.get(&uri, Some(&session)).await);
-    let code = query_param(&target, "code").unwrap();
+    let redeem = |resource: Option<&str>, scope: &str| {
+        let pkce = Pkce::generate();
+        let uri = h.authorize_uri(&client_id, &pkce, resource, Some(scope));
+        let (h, session, client_id) = (&h, &session, &client_id);
+        async move {
+            let target = location(&h.get(&uri, Some(session)).await);
+            let code = query_param(&target, "code").unwrap();
+            body_json(
+                h.post_form(
+                    "/oauth2/token",
+                    &[
+                        ("grant_type", "authorization_code"),
+                        ("code", &code),
+                        ("redirect_uri", CLIENT_REDIRECT),
+                        ("client_id", client_id),
+                        ("code_verifier", &pkce.verifier),
+                    ],
+                )
+                .await,
+            )
+            .await
+        }
+    };
 
-    let tokens = body_json(
-        h.post_form(
-            "/oauth2/token",
-            &[
-                ("grant_type", "authorization_code"),
-                ("code", &code),
-                ("redirect_uri", CLIENT_REDIRECT),
-                ("client_id", &client_id),
-                ("code_verifier", &pkce.verifier),
-            ],
-        )
-        .await,
-    )
-    .await;
-
-    // `openid` was requested, so an ID token comes back with it.
+    // `openid` alongside a resource scope still yields an ID token, but the
+    // access token is the resource's: its audience is not userinfo's.
+    let tokens = redeem(Some(&h.resource_uri), "mcp:read openid").await;
     assert!(tokens["id_token"].as_str().is_some());
+    let resp = h
+        .bearer_get("/oauth2/userinfo", tokens["access_token"].as_str().unwrap())
+        .await;
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    assert!(resp.headers().get("www-authenticate").is_some());
 
+    // An `openid` sign-in is minted for userinfo and answered there.
+    let tokens = redeem(None, "openid").await;
     let access = tokens["access_token"].as_str().unwrap();
     let body = body_json(h.bearer_get("/oauth2/userinfo", access).await).await;
     assert_eq!(body["sub"], h.identity_id().await.to_string());

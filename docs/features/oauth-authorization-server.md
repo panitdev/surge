@@ -130,7 +130,7 @@ Clients receive a list when they are registered: `--resource` on `surge-server o
 A resource server that verifies tokens itself (`surge::resource` does all of this) must check, in this order, and reject on any failure:
 
 1. **Issuer.** `iss` equals the configured issuer exactly. Fetch the JWKS URI from the issuer's `/.well-known/oauth-authorization-server`, not from the token.
-2. **Signature.** Verify against a key in that JWKS, selected by `kid`. Permit `ES256` only, and never take the algorithm from the token header.
+2. **Signature.** Verify against the key in that JWKS whose `kid` the token header names. Refuse a token with no `kid`: every token Surge mints carries one. Permit `ES256` only, and never take the algorithm from the token header.
 3. **Type.** The JOSE header `typ` is `at+jwt` (RFC 9068). This refuses ID tokens, which this issuer also signs.
 4. **Expiry.** `exp` is in the future (allow a small clock skew), and `iat` is not.
 5. **Audience.** `aud` equals this resource's canonical URI exactly. No prefix or substring match, and no accepting a token minted for a sibling resource that shares scopes.
@@ -147,13 +147,16 @@ Offline checks cannot see revocation. The access-token lifetime is the revocatio
 | `GET /oauth2/jwks.json` | Public keys — active plus retiring. Cacheable. |
 | `POST /oauth2/introspect` | RFC 7662, authenticated by a **service token** with the `introspect` grant, and scoped to that service's own audiences. |
 | `POST /oauth2/revoke` | RFC 7009, client-authenticated. Revokes a refresh token and its whole family. |
-| `GET /oauth2/userinfo` | OIDC claims for a token carrying `openid` or `profile`. |
+| `GET /oauth2/userinfo` | OIDC claims for an access token minted for `urn:surge:oauth:userinfo` with the `openid` scope. |
 | `POST /oauth2/register` | RFC 7591 dynamic registration. Off unless enabled. |
 | `GET /.well-known/oauth-authorization-server` | RFC 8414 metadata. Also served at `/.well-known/openid-configuration` when OIDC is on. |
 
 With OIDC enabled, registered clients can send `scope=openid` and omit
 `resource` for sign-in. Surge uses its built-in `urn:surge:oauth:userinfo`
-audience for the access token. Requests for API scopes follow the resource
+audience for the access token, and only a token with that audience is
+answered at `userinfo`. A grant that pairs `openid` with a `resource` still
+gets an ID token, but its access token belongs to that resource and is
+refused at `userinfo`. Requests for API scopes follow the resource
 indicator policy. Clients using Client ID Metadata Documents follow the
 resource indicator and eligibility policies.
 

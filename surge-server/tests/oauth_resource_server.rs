@@ -392,6 +392,7 @@ async fn a_resource_server_refuses_a_jwt_that_is_not_a_current_access_token() {
         forge_jwt(&engine, None, claims(0)).await,
         forge_jwt(&engine, Some("JWT"), claims(0)).await,
         forge_jwt(&engine, Some("at+jwt"), claims(3600)).await,
+        forge_jwt_without_kid(&engine, claims(0)).await,
     ] {
         assert_eq!(get(token).await.unwrap().status(), StatusCode::UNAUTHORIZED);
     }

@@ -2,8 +2,8 @@
 //!
 //! Reads only what the identity already publishes to any service holding
 //! `identity_read`. Nothing here is derived from the OAuth grant beyond
-//! "which identity", so a token's scopes gate access to the endpoint rather
-//! than shaping the claims individually.
+//! "which identity": a token minted for userinfo's own audience with the
+//! `openid` scope gets in, and the claims are the same for every such token.
 
 use std::sync::Arc;
 
@@ -47,11 +47,19 @@ async fn run(state: &AsState, headers: &HeaderMap) -> Result<Response, OauthErro
         .map_err(OauthError::from)?;
     let claims = jwt::verify_access_token(token, state.issuer(), &keys)?;
 
-    let scopes: Vec<&str> = claims.scope.split_whitespace().collect();
-    if !scopes.contains(&"openid") && !scopes.contains(&"profile") {
+    // A token minted for a resource is that resource's to accept, even when
+    // its grant also asked for `openid` (RFC 9068 §4). Userinfo has its own
+    // audience, and only an `openid` sign-in is minted for it.
+    if claims.aud != surge_engine::oauth::USERINFO_AUDIENCE {
         return Err(OauthError::bearer(
             OauthErrorCode::InvalidToken,
-            "this token carries neither the openid nor the profile scope",
+            "this access token was not issued for userinfo",
+        ));
+    }
+    if !claims.scope.split_whitespace().any(|s| s == "openid") {
+        return Err(OauthError::bearer(
+            OauthErrorCode::InvalidToken,
+            "this token does not carry the openid scope",
         ));
     }
 

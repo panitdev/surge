@@ -543,36 +543,52 @@ async fn tokens_without_the_access_token_type_or_from_the_future_are_refused() {
     let code = query_param(&target, "code").unwrap();
     let (status, _) = redeem(&h, &client_id, &code, &pkce).await;
     assert_eq!(status, StatusCode::OK);
-    let claims = |iat| {
-        let mut c = access_claims(ISSUER, &sub, &h.resource_uri, "openid mcp:read", iat);
+    // Each token is checked at both endpoints, minted for the audience that
+    // endpoint accepts: userinfo's own for userinfo, the resource for
+    // introspection.
+    let claims = |aud: &str, iat| {
+        let mut c = access_claims(ISSUER, &sub, aud, "openid mcp:read", iat);
         c["client_id"] = json!(client_id);
         c
     };
+    let userinfo_aud = surge_engine::oauth::USERINFO_AUDIENCE;
+    let resource_aud = h.resource_uri.as_str();
 
-    let good = forge_jwt(&h.engine, Some("at+jwt"), claims(0)).await;
+    let good = forge_jwt(&h.engine, Some("at+jwt"), claims(userinfo_aud, 0)).await;
     assert_eq!(
         h.bearer_get("/oauth2/userinfo", &good).await.status(),
         StatusCode::OK
     );
+    let good = forge_jwt(&h.engine, Some("at+jwt"), claims(resource_aud, 0)).await;
     let body = body_json(h.introspect(&good, &h.service_token).await).await;
     assert_eq!(body["active"], true);
 
-    let mut refused = vec![
-        forge_jwt(&h.engine, None, claims(0)).await,
-        forge_jwt(&h.engine, Some("JWT"), claims(0)).await,
-        forge_jwt(&h.engine, Some("at+jwt"), claims(3600)).await,
-    ];
-    // An ID token as the AS signs it: no typ, audience is the client.
-    let mut id_token = claims(0);
-    id_token["aud"] = json!("aeg_cid_someclient");
-    refused.push(forge_jwt(&h.engine, None, id_token).await);
-
-    for token in refused {
+    for token in refused_tokens(&h.engine, |iat| claims(userinfo_aud, iat)).await {
         let resp = h.bearer_get("/oauth2/userinfo", &token).await;
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+    for token in refused_tokens(&h.engine, |iat| claims(resource_aud, iat)).await {
         let body = body_json(h.introspect(&token, &h.service_token).await).await;
         assert_eq!(body["active"], false);
     }
+}
+
+/// Tokens signed by the AS's own key that are each wrong in exactly one way:
+/// no `typ`, the wrong `typ`, issued in the future, no `kid`, or an ID token.
+async fn refused_tokens(
+    engine: &surge_engine::Engine,
+    claims: impl Fn(i64) -> Value,
+) -> Vec<String> {
+    // An ID token as the AS signs it: no typ, audience is the client.
+    let mut id_token = claims(0);
+    id_token["aud"] = json!("aeg_cid_someclient");
+    vec![
+        forge_jwt(engine, None, claims(0)).await,
+        forge_jwt(engine, Some("JWT"), claims(0)).await,
+        forge_jwt(engine, Some("at+jwt"), claims(3600)).await,
+        forge_jwt_without_kid(engine, claims(0)).await,
+        forge_jwt(engine, None, id_token).await,
+    ]
 }
 
 #[tokio::test]

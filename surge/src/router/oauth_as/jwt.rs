@@ -127,7 +127,7 @@ fn encoding_key(key: &SigningKeyMaterial) -> EncodingKey {
 /// Verifies an access token's signature, issuer and expiry against the
 /// published keys. The audience is checked by the *caller*, because what
 /// counts as the right audience differs per endpoint: introspection asks "is
-/// this one of my resources?", userinfo does not care.
+/// this one of my resources?", userinfo asks "was this minted for me?".
 pub(crate) fn verify_access_token(
     token: &str,
     issuer: &str,
@@ -145,12 +145,16 @@ pub(crate) fn verify_access_token(
         ));
     }
 
-    // A `kid` selects the key; without one, every published key is tried,
-    // which keeps tokens minted just before a rotation verifiable.
-    let candidates: Vec<_> = match &header.kid {
-        Some(kid) => keys.iter().filter(|k| &k.kid == kid).collect(),
-        None => keys.iter().collect(),
+    // Every token this issuer mints names its key, so one that does not was
+    // not minted here. Retired keys stay published until their tokens
+    // expire, so a rotation never needs a kid-less fallback.
+    let Some(kid) = &header.kid else {
+        return Err(OauthError::bearer(
+            OauthErrorCode::InvalidToken,
+            "the access token does not name its signing key",
+        ));
     };
+    let candidates: Vec<_> = keys.iter().filter(|k| &k.kid == kid).collect();
     if candidates.is_empty() {
         return Err(OauthError::bearer(
             OauthErrorCode::InvalidToken,

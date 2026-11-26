@@ -611,9 +611,24 @@ pub fn percent_encode(s: &str) -> String {
 /// the caller's choosing (`None` omits it) -- for the tests that need a token
 /// that is genuine in every way except one.
 pub async fn forge_jwt(engine: &surge_engine::Engine, typ: Option<&str>, claims: Value) -> String {
+    sign_jwt(engine, typ, true, claims).await
+}
+
+/// [`forge_jwt`] with `typ: at+jwt` but no `kid`: signed by a published key
+/// that the header does not name.
+pub async fn forge_jwt_without_kid(engine: &surge_engine::Engine, claims: Value) -> String {
+    sign_jwt(engine, Some("at+jwt"), false, claims).await
+}
+
+async fn sign_jwt(
+    engine: &surge_engine::Engine,
+    typ: Option<&str>,
+    with_kid: bool,
+    claims: Value,
+) -> String {
     let key = engine.active_oauth_signing_key().await.unwrap();
     let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::ES256);
-    header.kid = Some(key.kid.clone());
+    header.kid = with_kid.then(|| key.kid.clone());
     header.typ = typ.map(str::to_string);
     jsonwebtoken::encode(
         &header,
