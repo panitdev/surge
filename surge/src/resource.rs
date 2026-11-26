@@ -491,14 +491,18 @@ impl<S: Send + Sync> axum::extract::FromRequestParts<S> for AccessToken {
     }
 }
 
+/// The credentials of an `Authorization: Bearer …` header. The scheme name
+/// is case-insensitive (RFC 9110 §11.1), so `bearer` and `BEARER` count.
 fn bearer(headers: &HeaderMap) -> Option<&str> {
-    headers
+    let value = headers
         .get(axum::http::header::AUTHORIZATION)?
         .to_str()
-        .ok()?
-        .strip_prefix("Bearer ")
-        .map(str::trim)
-        .filter(|t| !t.is_empty())
+        .ok()?;
+    let (scheme, token) = value.split_once(' ')?;
+    if !scheme.eq_ignore_ascii_case("bearer") {
+        return None;
+    }
+    Some(token.trim()).filter(|t| !t.is_empty())
 }
 
 #[cfg(test)]
@@ -517,6 +521,21 @@ mod tests {
             iat: 0,
             exp: 0,
         }
+    }
+
+    #[test]
+    fn the_bearer_scheme_is_matched_case_insensitively() {
+        let with = |value: &str| {
+            let mut headers = HeaderMap::new();
+            headers.insert(axum::http::header::AUTHORIZATION, value.parse().unwrap());
+            bearer(&headers).map(str::to_string)
+        };
+        assert_eq!(with("Bearer abc").as_deref(), Some("abc"));
+        assert_eq!(with("bearer abc").as_deref(), Some("abc"));
+        assert_eq!(with("BEARER  abc ").as_deref(), Some("abc"));
+        assert_eq!(with("Basic abc"), None);
+        assert_eq!(with("Bearerabc"), None);
+        assert_eq!(with("Bearer "), None);
     }
 
     #[test]
