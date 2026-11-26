@@ -188,6 +188,13 @@ async fn run(
         "token_endpoint_auth_method": client.token_endpoint_auth_method,
         "client_id_issued_at": client.created_at.timestamp(),
     });
+    // §3.2.1: the response carries every registered metadata field.
+    if let Some(uri) = &client.client_uri {
+        response["client_uri"] = json!(uri);
+    }
+    if let Some(uri) = &client.logo_uri {
+        response["logo_uri"] = json!(uri);
+    }
     if let Some(resources) = &client.audiences {
         response["resources"] = json!(resources);
     }

@@ -80,6 +80,42 @@ async fn a_registered_client_is_untrusted_third_party_and_scope_capped() {
 
 #[tokio::test]
 #[ignore = "requires a live Postgres via DATABASE_URL"]
+async fn the_response_echoes_registered_client_and_logo_uris() {
+    let h = dcr_harness().await;
+
+    // RFC 7591 §3.2.1: the response carries all registered metadata.
+    let body = body_json(
+        h.post_json(
+            "/oauth2/register",
+            json!({
+                "redirect_uris": ["https://client.example/cb"],
+                "client_uri": "https://client.example/",
+                "logo_uri": "https://client.example/logo.png",
+            }),
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(body["client_uri"], "https://client.example/");
+    assert_eq!(body["logo_uri"], "https://client.example/logo.png");
+
+    // Absent metadata stays absent rather than echoing as null.
+    let body = body_json(
+        h.post_json(
+            "/oauth2/register",
+            json!({ "redirect_uris": ["https://client.example/cb"] }),
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert!(body.get("client_uri").is_none());
+    assert!(body.get("logo_uri").is_none());
+}
+
+#[tokio::test]
+#[ignore = "requires a live Postgres via DATABASE_URL"]
 async fn redirect_uris_must_be_https_or_loopback_http() {
     let h = dcr_harness().await;
 
