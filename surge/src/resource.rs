@@ -101,6 +101,9 @@ impl ResourceClaims {
 
 pub struct ResourceServer {
     config: ResourceServerConfig,
+    /// `config.resource_uri`, parsed once at construction so that the
+    /// metadata path and URL cannot silently fall back to the origin root.
+    resource: url::Url,
     client: reqwest::Client,
     /// One entry, keyed by unit: the JWKS document. Cached because a key
     /// fetch per request would make offline verification pointless.
@@ -108,7 +111,35 @@ pub struct ResourceServer {
 }
 
 impl ResourceServer {
+    /// Fails if `resource_uri` is not an absolute http(s) URL, or carries a
+    /// query or fragment: RFC 9728 §1.2 forbids a fragment and discourages a
+    /// query, and the §3 well-known insertion has no place to put either.
     pub fn new(config: ResourceServerConfig) -> Result<Arc<Self>, anyhow::Error> {
+        let resource = url::Url::parse(&config.resource_uri).map_err(|e| {
+            anyhow::anyhow!(
+                "resource_uri {:?} is not an absolute URL: {e}",
+                config.resource_uri
+            )
+        })?;
+        if !matches!(resource.scheme(), "https" | "http") || resource.host().is_none() {
+            anyhow::bail!(
+                "resource_uri {:?} must be an http(s) URL with a host",
+                config.resource_uri
+            );
+        }
+        if resource.query().is_some() || resource.fragment().is_some() {
+            anyhow::bail!(
+                "resource_uri {:?} must not carry a query or fragment (RFC 9728 §1.2)",
+                config.resource_uri
+            );
+        }
+        if !resource.username().is_empty() || resource.password().is_some() {
+            anyhow::bail!(
+                "resource_uri {:?} must not carry credentials",
+                config.resource_uri
+            );
+        }
+
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
             .build()?;
@@ -119,6 +150,7 @@ impl ResourceServer {
 
         Ok(Arc::new(Self {
             config,
+            resource,
             client,
             jwks,
         }))
@@ -145,28 +177,18 @@ impl ResourceServer {
 
     /// The path this server's metadata is served at, per RFC 9728 §3.
     pub fn metadata_path(&self) -> String {
-        let path = url::Url::parse(&self.config.resource_uri)
-            .ok()
-            .map(|u| u.path().trim_end_matches('/').to_string())
-            .unwrap_or_default();
+        let path = self.resource.path().trim_end_matches('/');
         format!("/.well-known/oauth-protected-resource{path}")
     }
 
     /// The absolute URL of that document — what the `WWW-Authenticate`
     /// challenge points at.
     pub fn metadata_url(&self) -> String {
-        match url::Url::parse(&self.config.resource_uri) {
-            Ok(url) => {
-                let origin = format!(
-                    "{}://{}{}",
-                    url.scheme(),
-                    url.host_str().unwrap_or_default(),
-                    url.port().map(|p| format!(":{p}")).unwrap_or_default(),
-                );
-                format!("{origin}{}", self.metadata_path())
-            }
-            Err(_) => self.metadata_path(),
-        }
+        format!(
+            "{}{}",
+            self.resource.origin().ascii_serialization(),
+            self.metadata_path()
+        )
     }
 
     /// The RFC 9728 §5.1 challenge. Handing this back on an unauthenticated
@@ -221,7 +243,10 @@ impl ResourceServer {
             t.eq_ignore_ascii_case("at+jwt") || t.eq_ignore_ascii_case("application/at+jwt")
         });
         if !is_access_token {
-            return Err(unauthorized("invalid_token", "the token is not an access token"));
+            return Err(unauthorized(
+                "invalid_token",
+                "the token is not an access token",
+            ));
         }
 
         let mut validation = Validation::new(Algorithm::ES256);
@@ -243,8 +268,7 @@ impl ResourceServer {
             let Ok(decoding) = DecodingKey::from_ec_components(x, y) else {
                 continue;
             };
-            if let Ok(data) =
-                jsonwebtoken::decode::<ResourceClaims>(token, &decoding, &validation)
+            if let Ok(data) = jsonwebtoken::decode::<ResourceClaims>(token, &decoding, &validation)
             {
                 // A token from the future: same skew allowance as `exp`.
                 let now = std::time::SystemTime::now()
@@ -494,13 +518,60 @@ mod tests {
         })
         .unwrap();
 
-        assert_eq!(server.metadata_path(), "/.well-known/oauth-protected-resource/mcp");
+        assert_eq!(
+            server.metadata_path(),
+            "/.well-known/oauth-protected-resource/mcp"
+        );
         assert_eq!(
             server.challenge(None),
             "Bearer resource_metadata=\"https://rs.example/.well-known/oauth-protected-resource/mcp\""
         );
-        assert!(server
-            .challenge(Some(("invalid_token", "expired")))
-            .contains("error=\"invalid_token\""));
+        assert!(
+            server
+                .challenge(Some(("invalid_token", "expired")))
+                .contains("error=\"invalid_token\"")
+        );
+    }
+
+    fn config(resource_uri: &str) -> ResourceServerConfig {
+        ResourceServerConfig {
+            issuer: "https://auth.example".into(),
+            resource_uri: resource_uri.into(),
+            required_scopes: vec![],
+            jwks_cache_ttl: Duration::from_secs(60),
+        }
+    }
+
+    /// A resource URI the RFC 9728 §3 insertion cannot express must fail at
+    /// startup, not quietly publish metadata at the origin root.
+    #[test]
+    fn a_resource_uri_the_well_known_path_cannot_express_is_refused() {
+        for bad in [
+            "not a url",
+            "/mcp",
+            "https://rs.example/mcp?tenant=a",
+            "https://rs.example/mcp#frag",
+            "https://user:pw@rs.example/mcp",
+            "urn:example:rs",
+        ] {
+            assert!(
+                ResourceServer::new(config(bad)).is_err(),
+                "{bad} was accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn the_metadata_url_keeps_a_non_default_port_and_drops_a_default_one() {
+        let server = ResourceServer::new(config("https://rs.example:8443/mcp")).unwrap();
+        assert_eq!(
+            server.metadata_url(),
+            "https://rs.example:8443/.well-known/oauth-protected-resource/mcp"
+        );
+        let server = ResourceServer::new(config("https://rs.example:443/")).unwrap();
+        assert_eq!(
+            server.metadata_url(),
+            "https://rs.example/.well-known/oauth-protected-resource"
+        );
     }
 }
