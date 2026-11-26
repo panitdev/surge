@@ -22,6 +22,9 @@ use crate::Engine;
 const MAX_CLIENT_NAME_LEN: usize = 120;
 const MAX_URI_LEN: usize = 2000;
 const MAX_REDIRECT_URIS: usize = 10;
+/// The grant types the token endpoint can issue, and so the only ones a
+/// client may be registered with.
+pub const SUPPORTED_GRANT_TYPES: &[&str] = &["authorization_code", "refresh_token"];
 /// Most resources one Platform-registered client may be bound to. Bounds the
 /// per-request lookups and locks.
 pub const MAX_PLATFORM_RESOURCES: usize = 10;
@@ -590,7 +593,7 @@ pub(super) fn validate_client(spec: &NewOauthClient) -> Result<(), AuthError> {
         ));
     }
     for grant in &spec.grant_types {
-        if !matches!(grant.as_str(), "authorization_code" | "refresh_token") {
+        if !SUPPORTED_GRANT_TYPES.contains(&grant.as_str()) {
             return Err(field(
                 "grant_types",
                 format!("unsupported grant type: {grant}"),

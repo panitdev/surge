@@ -21,7 +21,7 @@ use diesel::sql_types::{Array, BigInt, Bool, Nullable, Text, Timestamptz};
 use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
 
-use super::client::{field, validate_client};
+use super::client::{field, validate_client, SUPPORTED_GRANT_TYPES};
 use super::{now, NewOauthClient, OauthClient, OauthResource, RegistrationSource};
 use crate::schema::oauth_client;
 use crate::types::*;
@@ -222,8 +222,16 @@ pub fn parse_cimd_document(client_id: &str, body: &[u8]) -> Result<CimdMetadata,
     let redirect_uris = list("redirect_uris", MAX_REDIRECTS)?
         .filter(|u| !u.is_empty())
         .ok_or("redirect_uris is required")?;
-    let grant_types =
-        list("grant_types", 8)?.unwrap_or_else(|| vec!["authorization_code".to_string()]);
+    // A document is the client describing itself to every server it talks
+    // to, so it may list grants this one cannot issue (Claude's lists
+    // jwt-bearer). Per RFC 7591 §2 those are dropped, not refused; what
+    // remains still has to pass the shared rules, so a document without
+    // authorization_code is still rejected.
+    let grant_types: Vec<String> = list("grant_types", 8)?
+        .unwrap_or_else(|| vec!["authorization_code".to_string()])
+        .into_iter()
+        .filter(|g| SUPPORTED_GRANT_TYPES.contains(&g.as_str()))
+        .collect();
     if let Some(types) = list("response_types", 8)?
         && types != ["code"]
     {
@@ -512,6 +520,29 @@ mod tests {
             "response_types": ["code"]
         }"#;
         assert!(parse_cimd_document("https://chatgpt.example/oauth/client.json", body).is_ok());
+    }
+
+    #[test]
+    fn claude_metadata_drops_grants_this_server_cannot_issue() {
+        // Claude.ai's published document, verbatim (2026-11-26).
+        let id = "https://claude.ai/oauth/mcp-oauth-client-metadata";
+        let body = br#"{"client_id":"https://claude.ai/oauth/mcp-oauth-client-metadata","client_name":"Claude","client_uri":"https://claude.ai","redirect_uris":["https://claude.ai/api/mcp/auth_callback"],"grant_types":["authorization_code","refresh_token","urn:ietf:params:oauth:grant-type:jwt-bearer"],"response_types":["code"],"token_endpoint_auth_method":"none"}"#;
+        let m = parse_cimd_document(id, body).unwrap();
+        assert_eq!(m.grant_types, ["authorization_code", "refresh_token"]);
+    }
+
+    #[test]
+    fn unsupported_grants_alone_do_not_make_a_client() {
+        let with = |grants: serde_json::Value| {
+            let mut d: serde_json::Value = serde_json::from_slice(&doc("")).unwrap();
+            d["grant_types"] = grants;
+            parse_cimd_document(ID, d.to_string().as_bytes())
+        };
+        assert!(with(serde_json::json!(["implicit", "password"])).is_err());
+        assert!(with(serde_json::json!(["urn:ietf:params:oauth:grant-type:jwt-bearer"])).is_err());
+        assert!(with(serde_json::json!([])).is_err());
+        let m = with(serde_json::json!(["implicit", "authorization_code"])).unwrap();
+        assert_eq!(m.grant_types, ["authorization_code"]);
     }
 
     #[test]
