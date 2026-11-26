@@ -33,7 +33,7 @@ pub(crate) async fn revoke(
 ) -> Response {
     match run(&state, &headers, form).await {
         Ok(response) => response,
-        Err(e) => e.into_response(),
+        Err(e) => super::token::challenge_if_basic(&headers, e).into_response(),
     }
 }
 

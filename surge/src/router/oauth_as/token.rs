@@ -49,7 +49,9 @@ async fn dispatch(
     headers: &HeaderMap,
     form: TokenForm,
 ) -> Result<Response, OauthError> {
-    let client = authenticate_client(state, headers, &form).await?;
+    let client = authenticate_client(state, headers, &form)
+        .await
+        .map_err(|e| challenge_if_basic(headers, e))?;
 
     match form.grant_type.as_deref() {
         Some("authorization_code") => authorization_code_grant(state, client, form).await,
@@ -465,6 +467,24 @@ fn with_refresh(mut body: serde_json::Value, refresh: &str) -> serde_json::Value
 /// RFC 6749 §2.3.1 HTTP Basic client authentication. The credentials are
 /// form-urlencoded before base64, which is easy to forget and produces
 /// baffling failures for clients whose secrets contain reserved characters.
+/// RFC 6749 §5.2: a client that authenticated through the `Authorization`
+/// header and failed MUST get a 401 with a `WWW-Authenticate` challenge in
+/// the scheme it used. Keyed on the scheme alone, so a malformed Basic header
+/// (which [`basic_auth`] refuses to read as an identity) still counts as an
+/// attempt.
+pub(super) fn challenge_if_basic(headers: &HeaderMap, error: OauthError) -> OauthError {
+    let attempted = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.get(..6))
+        .is_some_and(|scheme| scheme.eq_ignore_ascii_case("basic "));
+    if attempted {
+        error.with_basic_challenge()
+    } else {
+        error
+    }
+}
+
 pub(super) fn basic_auth(headers: &HeaderMap) -> Option<(String, Option<String>)> {
     use base64::Engine as _;
 

@@ -325,6 +325,34 @@ impl Harness {
             .unwrap()
     }
 
+    /// A form POST carrying a raw `Authorization` header value, for client
+    /// authentication through HTTP Basic (RFC 6749 §2.3.1).
+    pub async fn post_form_authorized(
+        &self,
+        uri: &str,
+        authorization: &str,
+        form: &[(&str, &str)],
+    ) -> axum::response::Response {
+        let body = form
+            .iter()
+            .map(|(k, v)| format!("{}={}", percent_encode(k), percent_encode(v)))
+            .collect::<Vec<_>>()
+            .join("&");
+        self.app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .header("authorization", authorization)
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
     /// A session-authenticated DELETE, carrying the header-CSRF the
     /// session-management zone requires.
     pub async fn delete(&self, uri: &str, session: &str) -> axum::response::Response {

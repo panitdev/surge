@@ -28,11 +28,16 @@ pub use oauth_as::{
 };
 pub use rate_limit::{PostgresRateLimiter, RateLimitConfig, RateLimitPolicy, RateLimiter};
 
+/// `Cache-Control: no-store` plus `Pragma: no-cache`: the pair RFC 6749 §5.1
+/// requires on any response carrying tokens or credentials. `Pragma` is for
+/// HTTP/1.0 caches that ignore `Cache-Control`.
 async fn no_store(mut response: axum::response::Response) -> axum::response::Response {
-    response.headers_mut().insert(
+    let headers = response.headers_mut();
+    headers.insert(
         http::header::CACHE_CONTROL,
         http::HeaderValue::from_static("no-store"),
     );
+    headers.insert(http::header::PRAGMA, http::HeaderValue::from_static("no-cache"));
     response
 }
 

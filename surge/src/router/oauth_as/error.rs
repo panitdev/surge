@@ -74,8 +74,18 @@ impl OauthErrorCode {
 pub(crate) struct OauthError {
     pub code: OauthErrorCode,
     pub description: String,
-    /// Set for 401s so the response carries a `WWW-Authenticate` challenge.
-    pub bearer_challenge: bool,
+    /// The `WWW-Authenticate` challenge a 401 carries, if any.
+    pub challenge: Option<Challenge>,
+}
+
+/// Which `WWW-Authenticate` scheme a 401 answers with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Challenge {
+    /// RFC 6750 §3: the caller presented (or should present) a bearer token.
+    Bearer,
+    /// RFC 6749 §5.2: the client authenticated with HTTP Basic, so an
+    /// `invalid_client` answer MUST challenge in the scheme it used.
+    Basic,
 }
 
 impl OauthError {
@@ -83,15 +93,24 @@ impl OauthError {
         Self {
             code,
             description: description.into(),
-            bearer_challenge: false,
+            challenge: None,
         }
     }
 
     pub(crate) fn bearer(code: OauthErrorCode, description: impl Into<String>) -> Self {
         Self {
-            bearer_challenge: true,
+            challenge: Some(Challenge::Bearer),
             ..Self::new(code, description)
         }
+    }
+
+    /// Adds a `Basic` challenge to an `invalid_client` error; any other error
+    /// is returned unchanged.
+    pub(crate) fn with_basic_challenge(mut self) -> Self {
+        if self.code == OauthErrorCode::InvalidClient {
+            self.challenge = Some(Challenge::Basic);
+        }
+        self
     }
 
     pub(crate) fn server(context: &str) -> Self {
@@ -107,12 +126,15 @@ impl IntoResponse for OauthError {
         });
 
         let mut response = (self.code.status(), Json(body)).into_response();
-        if self.bearer_challenge {
-            let challenge = format!(
-                "Bearer error=\"{}\", error_description=\"{}\"",
-                self.code.as_str(),
-                self.description.replace('"', "'")
-            );
+        if let Some(scheme) = self.challenge {
+            let challenge = match scheme {
+                Challenge::Bearer => format!(
+                    "Bearer error=\"{}\", error_description=\"{}\"",
+                    self.code.as_str(),
+                    self.description.replace('"', "'")
+                ),
+                Challenge::Basic => "Basic realm=\"oauth2\", charset=\"UTF-8\"".to_string(),
+            };
             if let Ok(value) = challenge.parse() {
                 response
                     .headers_mut()

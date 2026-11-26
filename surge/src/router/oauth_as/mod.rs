@@ -142,16 +142,19 @@ pub(crate) fn root_router(state: Arc<AsState>) -> Router {
         .allow_methods([http::Method::GET, http::Method::POST, http::Method::OPTIONS])
         .allow_headers(Any);
 
-    let mut oauth2 = Router::new()
-        .route(
-            "/oauth2/authorize",
-            get(authorize::authorize).layer(axum::middleware::map_response(super::no_store)),
-        )
+    // RFC 6749 §5.1: everything that hands out tokens, token metadata or
+    // claims is uncacheable, success and error alike. Discovery and JWKS are
+    // deliberately outside this — they are public and cache-friendly.
+    let sensitive = Router::new()
+        .route("/oauth2/authorize", get(authorize::authorize))
         .route("/oauth2/token", post(token::token))
-        .route("/oauth2/jwks.json", get(discovery::jwks))
         .route("/oauth2/introspect", post(introspect::introspect))
         .route("/oauth2/revoke", post(revoke::revoke))
         .route("/oauth2/userinfo", get(userinfo::userinfo).post(userinfo::userinfo))
+        .layer(axum::middleware::map_response(super::no_store));
+
+    let mut oauth2 = sensitive
+        .route("/oauth2/jwks.json", get(discovery::jwks))
         .route(
             "/.well-known/oauth-authorization-server",
             get(discovery::metadata),
@@ -162,7 +165,11 @@ pub(crate) fn root_router(state: Arc<AsState>) -> Router {
     }
 
     if state.config.allow_dynamic_registration {
-        oauth2 = oauth2.route("/oauth2/register", post(register::register));
+        // The response carries a fresh `client_secret`: a credential, so §5.1.
+        oauth2 = oauth2.route(
+            "/oauth2/register",
+            post(register::register).layer(axum::middleware::map_response(super::no_store)),
+        );
     }
 
     oauth2.layer(cors).with_state(state)

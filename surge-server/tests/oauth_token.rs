@@ -351,6 +351,105 @@ async fn unsupported_grant_types_are_refused_by_name() {
 
 /// Decodes the claims without verifying — the signature is JWKS's business
 /// (see `oauth_keys.rs`); this is about what the claims *say*.
+fn assert_uncacheable(resp: &axum::response::Response, what: &str) {
+    assert_eq!(resp.headers()["cache-control"], "no-store", "{what}");
+    assert_eq!(resp.headers()["pragma"], "no-cache", "{what}");
+}
+
+fn basic(client_id: &str, secret: &str) -> String {
+    use base64::Engine as _;
+    format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode(format!("{client_id}:{secret}"))
+    )
+}
+
+/// RFC 6749 §5.1: token responses, and the other endpoints that carry tokens
+/// or token data, MUST be uncacheable — success and error alike.
+#[tokio::test]
+#[ignore = "requires a live Postgres via DATABASE_URL"]
+async fn token_bearing_responses_are_never_cacheable() {
+    let h = harness().await;
+    let session = h.sign_in().await;
+    let client_id = h.client(true).await;
+    let pkce = Pkce::generate();
+    let code = h.authorize_code(&client_id, &session, &pkce).await;
+
+    let issued = h
+        .post_form(
+            "/oauth2/token",
+            &[
+                ("grant_type", "authorization_code"),
+                ("code", &code),
+                ("redirect_uri", CLIENT_REDIRECT),
+                ("client_id", &client_id),
+                ("code_verifier", &pkce.verifier),
+            ],
+        )
+        .await;
+    assert_eq!(issued.status(), StatusCode::OK);
+    assert_uncacheable(&issued, "token success");
+    let tokens = body_json(issued).await;
+    let access = tokens["access_token"].as_str().unwrap();
+
+    let refused = h
+        .post_form("/oauth2/token", &[("grant_type", "authorization_code"), ("client_id", &client_id)])
+        .await;
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    assert_uncacheable(&refused, "token error");
+
+    let introspection = h.introspect(access, &h.service_token).await;
+    assert_uncacheable(&introspection, "introspection");
+    let userinfo = h.bearer_get("/oauth2/userinfo", access).await;
+    assert_uncacheable(&userinfo, "userinfo");
+    let revoked = h
+        .post_form(
+            "/oauth2/revoke",
+            &[("token", tokens["refresh_token"].as_str().unwrap()), ("client_id", &client_id)],
+        )
+        .await;
+    assert_eq!(revoked.status(), StatusCode::OK);
+    assert_uncacheable(&revoked, "revocation");
+
+    // Public metadata keeps its own caching policy.
+    let jwks = h.get("/oauth2/jwks.json", None).await;
+    assert_eq!(jwks.headers()["cache-control"], "public, max-age=300");
+}
+
+/// RFC 6749 §5.2: a client that authenticated with HTTP Basic and failed MUST
+/// get a 401 carrying a `WWW-Authenticate` challenge in that scheme.
+#[tokio::test]
+#[ignore = "requires a live Postgres via DATABASE_URL"]
+async fn failed_basic_client_auth_is_challenged_in_kind() {
+    let h = harness().await;
+    let (client_id, _secret) = h
+        .client_with(false, vec![CLIENT_REDIRECT.to_string()], true)
+        .await;
+    let refresh = [("grant_type", "refresh_token"), ("refresh_token", "aeg_rt_nope")];
+
+    for endpoint in ["/oauth2/token", "/oauth2/revoke"] {
+        let wrong = h
+            .post_form_authorized(endpoint, &basic(&client_id, "aeg_cs_wrong"), &refresh)
+            .await;
+        assert_eq!(wrong.status(), StatusCode::UNAUTHORIZED, "{endpoint}");
+        let challenge = wrong.headers()["www-authenticate"].to_str().unwrap();
+        assert!(challenge.starts_with("Basic "), "{endpoint}: {challenge}");
+        assert_eq!(body_json(wrong).await["error"], "invalid_client");
+
+        // A Basic header too malformed to name a client is still an attempt.
+        let malformed = h.post_form_authorized(endpoint, "Basic !!!", &refresh).await;
+        assert_eq!(malformed.status(), StatusCode::UNAUTHORIZED, "{endpoint}");
+        assert!(malformed.headers().contains_key("www-authenticate"), "{endpoint}");
+
+        // Credentials in the body: §5.2 makes the challenge optional; none is sent.
+        let mut form = refresh.to_vec();
+        form.extend([("client_id", client_id.as_str()), ("client_secret", "aeg_cs_wrong")]);
+        let body_auth = h.post_form(endpoint, &form).await;
+        assert_eq!(body_auth.status(), StatusCode::UNAUTHORIZED, "{endpoint}");
+        assert!(!body_auth.headers().contains_key("www-authenticate"), "{endpoint}");
+    }
+}
+
 fn decode_claims(token: &str) -> Value {
     use base64::Engine as _;
 
