@@ -7,6 +7,7 @@
 
 use std::sync::Arc;
 
+use axum::extract::rejection::FormRejection;
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
@@ -36,8 +37,19 @@ pub(crate) struct TokenForm {
 pub(crate) async fn token(
     State(state): State<Arc<AsState>>,
     headers: HeaderMap,
-    Form(form): Form<TokenForm>,
+    form: Result<Form<TokenForm>, FormRejection>,
 ) -> Response {
+    // A body that does not parse — including a parameter given twice, which
+    // RFC 6749 §3.1 forbids and which for `resource` would otherwise leave
+    // the client unsure which audience it got — is an OAuth error, not
+    // axum's plain-text one.
+    let Form(form) = match form {
+        Ok(form) => form,
+        Err(rejection) => {
+            return OauthError::new(OauthErrorCode::InvalidRequest, rejection.body_text())
+                .into_response();
+        }
+    };
     match dispatch(&state, &headers, form).await {
         Ok(response) => response,
         Err(e) => e.into_response(),
@@ -230,6 +242,16 @@ async fn refresh_token_grant(
         .map(|s| s.split_whitespace().map(str::to_string).collect::<Vec<_>>())
         .filter(|s| !s.is_empty());
 
+    // RFC 8707 §2.2 holds at the refresh grant too. Canonicalized here so a
+    // malformed value is refused without touching the token; matched against
+    // the grant inside the rotation, before the token is spent.
+    let requested_resource = form
+        .resource
+        .as_deref()
+        .map(surge_engine::oauth::canonicalize_resource_uri)
+        .transpose()
+        .map_err(|e| OauthError::new(OauthErrorCode::InvalidTarget, e.to_string()))?;
+
     let rotated = state
         .engine
         .rotate_refresh_token(
@@ -237,6 +259,7 @@ async fn refresh_token_grant(
             &client.client_id,
             state.config.refresh_ttl,
             requested_scopes.as_deref(),
+            requested_resource.as_deref(),
         )
         .await
         .map_err(|e| match e {
@@ -246,6 +269,12 @@ async fn refresh_token_grant(
             surge_engine::AuthError::ScopeNotGranted => OauthError::new(
                 OauthErrorCode::InvalidScope,
                 "a refresh may narrow the granted scope but never widen it",
+            ),
+            // Likewise refused before rotation: the audience is fixed for
+            // the life of the grant.
+            surge_engine::AuthError::TargetNotGranted => OauthError::new(
+                OauthErrorCode::InvalidTarget,
+                "resource does not match the audience this grant was issued for",
             ),
             // Eligibility is current-state, not a fact about the day of
             // consent, and it is judged inside the rotation, under the

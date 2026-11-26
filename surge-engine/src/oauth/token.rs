@@ -96,6 +96,10 @@ impl Engine {
     /// The returned grant still carries the full scope set: narrowing shapes
     /// the access token, never the lineage.
     ///
+    /// `requested_resource`, when given, must be the canonical URI the grant
+    /// was issued for (RFC 8707 §2.2); anything else is `TargetNotGranted`,
+    /// refused before rotation for the same reason.
+    ///
     /// Eligibility is evaluated here, under a shared lock on the registration
     /// and in the transaction that spends the token and writes its successor
     /// (see `lifecycle`). A client the registration no longer admits gets
@@ -107,8 +111,10 @@ impl Engine {
         client_id: &str,
         ttl: std::time::Duration,
         requested_scopes: Option<&[String]>,
+        requested_resource: Option<&str>,
     ) -> Result<RotatedRefresh, AuthError> {
         let token_hash = token.hash();
+        let requested_resource = requested_resource.map(str::to_string);
         let client_id = client_id.to_string();
         let owner = client_id.clone();
         let requested_scopes = requested_scopes.map(<[String]>::to_vec);
@@ -182,6 +188,13 @@ impl Engine {
                         && !requested.iter().all(|s| row.scopes.contains(s))
                     {
                         return Err(AuthError::ScopeNotGranted);
+                    }
+                    // RFC 8707 §2.2: a refresh may name the audience it is
+                    // for, but only the one the grant was issued for.
+                    if let Some(requested) = &requested_resource
+                        && *requested != row.resource_uri
+                    {
+                        return Err(AuthError::TargetNotGranted);
                     }
 
                     diesel::update(oauth_refresh_token::table.find(&token_hash))

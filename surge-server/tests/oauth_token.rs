@@ -333,6 +333,87 @@ async fn a_refresh_may_narrow_scope_but_never_widen_it() {
 
 #[tokio::test]
 #[ignore = "requires a live Postgres via DATABASE_URL"]
+async fn a_refresh_may_name_only_the_audience_it_was_issued_for() {
+    let h = harness().await;
+    let session = h.sign_in().await;
+    let client_id = h.client(true).await;
+    let pkce = Pkce::generate();
+    let code = h.authorize_code(&client_id, &session, &pkce).await;
+    let (_, first) = exchange(&h, &client_id, &code, &pkce).await;
+    let refresh = first["refresh_token"].as_str().unwrap().to_string();
+
+    for other in ["https://rs.oauth.test/elsewhere", "urn:example:mcp"] {
+        let resp = h
+            .post_form(
+                "/oauth2/token",
+                &[
+                    ("grant_type", "refresh_token"),
+                    ("refresh_token", &refresh),
+                    ("client_id", &client_id),
+                    ("resource", other),
+                ],
+            )
+            .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{other}");
+        assert_eq!(body_json(resp).await["error"], "invalid_target", "{other}");
+    }
+
+    // Refused before rotation, like a widened scope: the token survives, and
+    // the grant's own audience (in any spelling that canonicalizes to it)
+    // is accepted.
+    let own = format!("{}/", h.resource_uri);
+    let resp = h
+        .post_form(
+            "/oauth2/token",
+            &[
+                ("grant_type", "refresh_token"),
+                ("refresh_token", &refresh),
+                ("client_id", &client_id),
+                ("resource", &own),
+            ],
+        )
+        .await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "a rejected resource must leave the presented refresh token spendable"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires a live Postgres via DATABASE_URL"]
+async fn a_repeated_parameter_is_an_oauth_error() {
+    let h = harness().await;
+    let session = h.sign_in().await;
+    let client_id = h.client(true).await;
+    let pkce = Pkce::generate();
+    let code = h.authorize_code(&client_id, &session, &pkce).await;
+
+    let resp = h
+        .post_form(
+            "/oauth2/token",
+            &[
+                ("grant_type", "authorization_code"),
+                ("code", &code),
+                ("redirect_uri", CLIENT_REDIRECT),
+                ("client_id", &client_id),
+                ("code_verifier", &pkce.verifier),
+                ("resource", &h.resource_uri),
+                ("resource", "https://rs.oauth.test/elsewhere"),
+            ],
+        )
+        .await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_uncacheable(&resp, "a malformed token request");
+    assert_eq!(body_json(resp).await["error"], "invalid_request");
+
+    // Nothing was redeemed: the code is still good for a well-formed request.
+    let (status, _) = exchange(&h, &client_id, &code, &pkce).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+#[ignore = "requires a live Postgres via DATABASE_URL"]
 async fn unsupported_grant_types_are_refused_by_name() {
     let h = harness().await;
     let client_id = h.client(true).await;

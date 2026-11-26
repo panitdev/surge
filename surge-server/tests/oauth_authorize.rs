@@ -35,6 +35,26 @@ async fn a_redirect_uri_that_is_not_registered_is_never_redirected_to() {
 
 #[tokio::test]
 #[ignore = "requires a live Postgres via DATABASE_URL"]
+async fn a_repeated_resource_is_refused_without_a_redirect() {
+    let h = harness().await;
+    let session = h.sign_in().await;
+    let client_id = h.client(true).await;
+    let pkce = Pkce::generate();
+
+    let uri = format!(
+        "{}&resource={}",
+        h.authorize_uri(&client_id, &pkce, Some(&h.resource_uri), Some("mcp:read")),
+        percent_encode("https://rs.oauth.test/elsewhere"),
+    );
+    let resp = h.get(&uri, Some(&session)).await;
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert!(resp.headers().get("location").is_none());
+    assert!(body_text(resp).await.contains("invalid_request"));
+}
+
+#[tokio::test]
+#[ignore = "requires a live Postgres via DATABASE_URL"]
 async fn an_unknown_client_is_refused_without_a_redirect() {
     let h = harness().await;
     let pkce = Pkce::generate();

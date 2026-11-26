@@ -163,6 +163,10 @@ impl From<AuthError> for OauthError {
                 OauthErrorCode::InvalidScope,
                 "the request asked for a scope this grant does not carry",
             ),
+            AuthError::TargetNotGranted => Self::new(
+                OauthErrorCode::InvalidTarget,
+                "the request named an audience this grant was not issued for",
+            ),
             AuthError::RateLimited { retry_after } => Self::new(
                 OauthErrorCode::TemporarilyUnavailable,
                 format!("rate limited; retry in {}s", retry_after.as_secs()),

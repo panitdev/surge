@@ -54,6 +54,12 @@ pub enum AuthError {
     #[error("scope not granted")]
     ScopeNotGranted,
 
+    /// A request named an audience other than the one the grant it is
+    /// derived from was issued for. The OAuth surface owes the client
+    /// `invalid_target` here (RFC 8707 §2).
+    #[error("target not granted")]
+    TargetNotGranted,
+
     #[error("service unavailable")]
     Unavailable,
 

@@ -43,10 +43,18 @@ pub(crate) struct AuthorizeQuery {
 
 pub(crate) async fn authorize(
     State(state): State<Arc<AsState>>,
-    Query(query): Query<AuthorizeQuery>,
+    query: Result<Query<AuthorizeQuery>, axum::extract::rejection::QueryRejection>,
     headers: axum::http::HeaderMap,
     uri: axum::http::Uri,
 ) -> Response {
+    // Unparseable, or a parameter given twice (RFC 6749 §3.1). Nothing here
+    // is trustworthy yet, so the error is shown, never redirected.
+    let Query(query) = match query {
+        Ok(query) => query,
+        Err(rejection) => {
+            return authorize_error_page(OauthErrorCode::InvalidRequest, &rejection.body_text());
+        }
+    };
     authorize_query(&state, query, &headers, Some(uri), None, None).await
 }
 
