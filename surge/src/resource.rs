@@ -195,15 +195,25 @@ impl ResourceServer {
     /// request is what lets an MCP client find the authorization server
     /// without being configured with it.
     pub fn challenge(&self, error: Option<(&str, &str)>) -> String {
-        let metadata = self.metadata_url();
-        match error {
-            Some((code, description)) => format!(
-                "Bearer resource_metadata=\"{metadata}\", error=\"{code}\", \
-                 error_description=\"{}\"",
-                description.replace('"', "'")
-            ),
-            None => format!("Bearer resource_metadata=\"{metadata}\""),
+        self.challenge_with_scope(error, &[])
+    }
+
+    /// [`challenge`](Self::challenge) plus the RFC 6750 §3 `scope` attribute:
+    /// the scopes a token for this route needs. The MCP authorization spec
+    /// has clients request exactly this set when they (re-)authorize, so it
+    /// must be the whole set, not just what the presented token lacked.
+    pub fn challenge_with_scope(&self, error: Option<(&str, &str)>, scopes: &[&str]) -> String {
+        let mut challenge = format!("Bearer resource_metadata=\"{}\"", self.metadata_url());
+        if !scopes.is_empty() {
+            challenge.push_str(&format!(", scope=\"{}\"", scopes.join(" ")));
         }
+        if let Some((code, description)) = error {
+            challenge.push_str(&format!(
+                ", error=\"{code}\", error_description=\"{}\"",
+                description.replace('"', "'")
+            ));
+        }
+        challenge
     }
 
     /// Verifies a bearer token: `typ` is `at+jwt`, signature (ES256 only)
@@ -380,6 +390,20 @@ pub async fn require_scope(
     mut request: Request,
     next: Next,
 ) -> Response {
+    // The floor for every guarded route, then this route's own, once each.
+    let mut required: Vec<&str> = Vec::new();
+    for scope in guard
+        .server
+        .config
+        .required_scopes
+        .iter()
+        .chain(guard.scopes.iter())
+    {
+        if !required.contains(&scope.as_str()) {
+            required.push(scope);
+        }
+    }
+
     let Some(token) = bearer(request.headers()) else {
         // No credentials at all is the discovery case: the challenge tells
         // the client where to go authorize.
@@ -388,7 +412,7 @@ pub async fn require_scope(
             Json(json!({ "error": "invalid_request", "error_description": "a bearer token is required" })),
         )
             .into_response();
-        if let Ok(value) = guard.server.challenge(None).parse() {
+        if let Ok(value) = guard.server.challenge_with_scope(None, &required).parse() {
             response
                 .headers_mut()
                 .insert(axum::http::header::WWW_AUTHENTICATE, value);
@@ -401,35 +425,35 @@ pub async fn require_scope(
         Err(response) => return response,
     };
 
-    let required = guard
-        .server
-        .config
-        .required_scopes
+    let missing: Vec<&str> = required
         .iter()
-        .chain(guard.scopes.iter());
-
-    for scope in required {
-        if !claims.has_scope(scope) {
-            let description = format!("this token does not carry the `{scope}` scope");
-            let mut response = (
-                StatusCode::FORBIDDEN,
-                Json(json!({
-                    "error": "insufficient_scope",
-                    "error_description": description,
-                })),
-            )
-                .into_response();
-            if let Ok(value) = guard
-                .server
-                .challenge(Some(("insufficient_scope", &description)))
-                .parse()
-            {
-                response
-                    .headers_mut()
-                    .insert(axum::http::header::WWW_AUTHENTICATE, value);
-            }
-            return response;
+        .copied()
+        .filter(|scope| !claims.has_scope(scope))
+        .collect();
+    if !missing.is_empty() {
+        let description = format!(
+            "this token does not carry the required scope(s): {}",
+            missing.join(" ")
+        );
+        let mut response = (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "insufficient_scope",
+                "error_description": description,
+                "scope": required.join(" "),
+            })),
+        )
+            .into_response();
+        if let Ok(value) = guard
+            .server
+            .challenge_with_scope(Some(("insufficient_scope", &description)), &required)
+            .parse()
+        {
+            response
+                .headers_mut()
+                .insert(axum::http::header::WWW_AUTHENTICATE, value);
         }
+        return response;
     }
 
     request.extensions_mut().insert(claims);
@@ -530,6 +554,15 @@ mod tests {
             server
                 .challenge(Some(("invalid_token", "expired")))
                 .contains("error=\"invalid_token\"")
+        );
+        assert_eq!(
+            server.challenge_with_scope(
+                Some(("insufficient_scope", "missing mcp:write")),
+                &["mcp:read", "mcp:write"]
+            ),
+            "Bearer resource_metadata=\"https://rs.example/.well-known/oauth-protected-resource/mcp\", \
+             scope=\"mcp:read mcp:write\", error=\"insufficient_scope\", \
+             error_description=\"missing mcp:write\""
         );
     }
 

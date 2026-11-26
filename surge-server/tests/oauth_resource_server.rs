@@ -257,6 +257,7 @@ async fn a_resource_server_verifies_a_real_token_offline() {
         .unwrap()
         .to_string();
     assert!(challenge.contains(&format!("resource_metadata=\"{}\"", server.metadata_url())));
+    assert!(challenge.contains("scope=\"mcp:read\""), "{challenge}");
 
     // And a real token gets through, verified against JWKS the guard fetched
     // by way of the metadata document.
@@ -350,6 +351,9 @@ async fn a_token_without_the_required_scope_is_forbidden_not_unauthorized() {
         .unwrap()
         .to_string();
     assert!(challenge.contains("insufficient_scope"));
+    // The whole set the route needs (config floor + the guard's own), so a
+    // client re-authorizing with it gets through on the next attempt.
+    assert!(challenge.contains("scope=\"mcp:write mcp:read\""), "{challenge}");
 }
 
 /// The token's header says what it is. A JWT this issuer signed that does not
