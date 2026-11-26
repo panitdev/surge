@@ -108,7 +108,14 @@ pub struct ResourceServer {
     /// One entry, keyed by unit: the JWKS document. Cached because a key
     /// fetch per request would make offline verification pointless.
     jwks: Cache<(), Arc<Vec<serde_json::Value>>>,
+    /// When a token's `kid` last forced a JWKS refetch. Bounds how often an
+    /// unknown `kid` — a rotated key, or a forged header — can make this
+    /// server call the authorization server.
+    last_kid_refresh: std::sync::Mutex<Option<std::time::Instant>>,
 }
+
+/// The least time between two `kid`-miss JWKS refetches.
+const KID_REFRESH_COOLDOWN: Duration = Duration::from_secs(30);
 
 impl ResourceServer {
     /// Fails if `resource_uri` is not an absolute http(s) URL, or carries a
@@ -153,6 +160,7 @@ impl ResourceServer {
             resource,
             client,
             jwks,
+            last_kid_refresh: std::sync::Mutex::new(None),
         }))
     }
 
@@ -259,6 +267,25 @@ impl ResourceServer {
             ));
         }
 
+        // A `kid` the cached set does not have usually means the
+        // authorization server rotated its key since the last fetch. Refetch
+        // rather than refuse every new token until the cache expires.
+        let mut keys = keys;
+        if let Some(kid) = &header.kid {
+            let known = keys
+                .iter()
+                .any(|k| k.get("kid").and_then(|v| v.as_str()) == Some(kid.as_str()));
+            if !known && self.may_refresh_for_kid() {
+                self.jwks.invalidate(&()).await;
+                match self.jwks_keys().await {
+                    Ok(fresh) => keys = fresh,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "failed to refetch JWKS for an unknown kid")
+                    }
+                }
+            }
+        }
+
         let mut validation = Validation::new(Algorithm::ES256);
         validation.set_issuer(&[self.config.issuer.trim_end_matches('/')]);
         validation.set_audience(&[self.config.resource_uri.trim_end_matches('/')]);
@@ -297,6 +324,19 @@ impl ResourceServer {
             "the access token is expired, malformed, issued by another issuer, or minted for a \
              different resource",
         ))
+    }
+
+    fn may_refresh_for_kid(&self) -> bool {
+        let mut last = self
+            .last_kid_refresh
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let now = std::time::Instant::now();
+        if last.is_some_and(|at| now.duration_since(at) < KID_REFRESH_COOLDOWN) {
+            return false;
+        }
+        *last = Some(now);
+        true
     }
 
     async fn jwks_keys(&self) -> Result<Arc<Vec<serde_json::Value>>, anyhow::Error> {
@@ -521,6 +561,71 @@ mod tests {
             iat: 0,
             exp: 0,
         }
+    }
+
+    /// A rotated key is picked up on the first token that names it, but a
+    /// stream of unknown `kid`s cannot turn into a stream of JWKS fetches.
+    #[tokio::test]
+    async fn an_unknown_kid_refetches_the_jwks_at_most_once_per_cooldown() {
+        use base64::Engine as _;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let fetches = Arc::new(AtomicUsize::new(0));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let jwks_uri = format!("{base}/jwks");
+        let counter = Arc::clone(&fetches);
+        let app = Router::new()
+            .route(
+                "/.well-known/oauth-authorization-server",
+                get(move || async move { Json(json!({ "jwks_uri": jwks_uri })) }),
+            )
+            .route(
+                "/jwks",
+                get(move || async move {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    Json(json!({ "keys": [{ "kid": "old", "kty": "EC" }] }))
+                }),
+            );
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let server = ResourceServer::new(ResourceServerConfig {
+            issuer: base,
+            resource_uri: "https://rs.example/mcp".into(),
+            required_scopes: vec![],
+            jwks_cache_ttl: Duration::from_secs(3600),
+        })
+        .unwrap();
+        let token_with_kid = |kid: &str| {
+            let header = json!({ "alg": "ES256", "typ": "at+jwt", "kid": kid });
+            let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+            format!(
+                "{}.{}.sig",
+                b64.encode(header.to_string()),
+                b64.encode("{}")
+            )
+        };
+
+        assert!(server.verify(&token_with_kid("old")).await.is_err());
+        assert_eq!(
+            fetches.load(Ordering::SeqCst),
+            1,
+            "a known kid is served from cache"
+        );
+
+        assert!(server.verify(&token_with_kid("new")).await.is_err());
+        assert_eq!(
+            fetches.load(Ordering::SeqCst),
+            2,
+            "an unknown kid refetches"
+        );
+
+        assert!(server.verify(&token_with_kid("newer")).await.is_err());
+        assert_eq!(
+            fetches.load(Ordering::SeqCst),
+            2,
+            "but not again within the cooldown"
+        );
     }
 
     #[test]
