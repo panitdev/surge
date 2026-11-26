@@ -29,7 +29,7 @@ These are requirements, not choices:
 
 Every other browser route in Surge lives under `/v1`. The OAuth surface does not, and that is deliberate:
 
-- `/.well-known/oauth-authorization-server` and `/.well-known/oauth-protected-resource` are **fixed at the origin root** by RFC 8414 and RFC 9728. They cannot live under a version prefix.
+- `/.well-known/oauth-authorization-server` and `/.well-known/oauth-protected-resource` are **fixed at the origin root** by RFC 8414 and RFC 9728 for an issuer with no path, which is the only kind Surge accepts (startup refuses a path-ful `SURGE_OAUTH_ISSUER`). They cannot live under a version prefix.
 - Every other endpoint's path is discovered *from* that metadata document, so versioning them buys nothing — the document already is the indirection a `/vN` prefix would provide. A client never hardcodes `/oauth2/token`; it reads `token_endpoint`.
 
 **The OAuth spec version, not Surge's `/vN`, is the compatibility contract for this surface.** The substrate invariant is untouched: an access token is a new kind of credential, and once minted it means one thing forever, exactly like a session.
@@ -260,7 +260,7 @@ Note the metadata path. A resource URI with a path is described at `https://host
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `SURGE_OAUTH_ISSUER` | (unset) | On-switch. This server's public origin; becomes `iss`. |
+| `SURGE_OAUTH_ISSUER` | (unset) | On-switch. This server's public origin, with no path; becomes `iss` (trailing slash dropped). |
 | `SURGE_OAUTH_ACCESS_TTL_SECS` | `600` | Access-token lifetime = the offline revocation window. |
 | `SURGE_OAUTH_REFRESH_TTL_DAYS` | `30` | Refresh lifetime, renewed on each rotation. |
 | `SURGE_OAUTH_KEY_ROTATION_DAYS` | `90` | Signing-key rotation cadence. |

@@ -111,17 +111,9 @@ impl ServerConfig {
 
         let oauth_as = match std::env::var("SURGE_OAUTH_ISSUER").ok() {
             Some(issuer) => {
-                let parsed = url::Url::parse(&issuer)
-                    .map_err(|e| anyhow::anyhow!("SURGE_OAUTH_ISSUER is not a valid URL: {e}"))?;
-                if parsed.scheme() != "https" && !is_loopback(&bind_addr) {
-                    anyhow::bail!(
-                        "SURGE_OAUTH_ISSUER ({issuer}) is not https and this server is not bound \
-                         to loopback; an issuer reachable over plaintext makes every token it \
-                         signs interceptable in transit"
-                    );
-                }
+                let issuer = validate_issuer(&issuer, &bind_addr)?;
                 Some(OauthAsSettings {
-                    issuer: issuer.trim_end_matches('/').to_string(),
+                    issuer,
                     access_ttl: Duration::from_secs(env_u64("SURGE_OAUTH_ACCESS_TTL_SECS", DEFAULT_ACCESS_TTL_SECS)),
                     refresh_ttl: Duration::from_secs(
                         env_u64("SURGE_OAUTH_REFRESH_TTL_DAYS", 30) * 86_400,
@@ -203,4 +195,70 @@ fn env_flag(key: &str, default: bool) -> bool {
 fn is_loopback(bind_addr: &str) -> bool {
     let host = bind_addr.rsplit_once(':').map(|(h, _)| h).unwrap_or(bind_addr);
     matches!(host.trim_matches(['[', ']']), "127.0.0.1" | "::1" | "localhost")
+}
+
+/// Validate `SURGE_OAUTH_ISSUER` and return its canonical (slash-less) form.
+///
+/// The issuer must be a bare origin. RFC 8414 §3.1 puts a path-ful issuer's
+/// metadata at `/.well-known/oauth-authorization-server/<path>` and its
+/// endpoints under `<path>`, but Surge mounts both at the origin root, and
+/// return-origin matching compares origins only. A path-ful issuer would
+/// therefore advertise endpoints that do not exist, so it is refused here
+/// rather than half-supported. RFC 8414 §2 forbids a query or fragment.
+fn validate_issuer(issuer: &str, bind_addr: &str) -> anyhow::Result<String> {
+    let parsed = url::Url::parse(issuer)
+        .map_err(|e| anyhow::anyhow!("SURGE_OAUTH_ISSUER is not a valid URL: {e}"))?;
+    if parsed.scheme() != "https" && !is_loopback(bind_addr) {
+        anyhow::bail!(
+            "SURGE_OAUTH_ISSUER ({issuer}) is not https and this server is not bound \
+             to loopback; an issuer reachable over plaintext makes every token it \
+             signs interceptable in transit"
+        );
+    }
+    if parsed.path() != "/" || parsed.query().is_some() || parsed.fragment().is_some() {
+        anyhow::bail!(
+            "SURGE_OAUTH_ISSUER ({issuer}) must be a bare origin such as \
+             https://auth.example.com, with no path, query or fragment; the OAuth \
+             endpoints and metadata are served at the origin root"
+        );
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        anyhow::bail!("SURGE_OAUTH_ISSUER ({issuer}) must not contain credentials");
+    }
+    Ok(issuer.trim_end_matches('/').to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_issuer;
+
+    const PUBLIC: &str = "0.0.0.0:8080";
+
+    #[test]
+    fn bare_origin_issuers_are_accepted_and_canonicalized() {
+        assert_eq!(validate_issuer("https://auth.example.com", PUBLIC).unwrap(), "https://auth.example.com");
+        assert_eq!(validate_issuer("https://auth.example.com/", PUBLIC).unwrap(), "https://auth.example.com");
+        assert_eq!(validate_issuer("https://auth.example.com:8443", PUBLIC).unwrap(), "https://auth.example.com:8443");
+    }
+
+    #[test]
+    fn path_ful_issuers_are_rejected() {
+        for issuer in ["https://host/idp", "https://host/idp/", "https://host//"] {
+            let err = validate_issuer(issuer, PUBLIC).unwrap_err().to_string();
+            assert!(err.contains("bare origin"), "{issuer}: {err}");
+        }
+    }
+
+    #[test]
+    fn query_fragment_and_credentials_are_rejected() {
+        for issuer in ["https://host?x=1", "https://host/#frag", "https://user:pw@host"] {
+            assert!(validate_issuer(issuer, PUBLIC).is_err(), "{issuer} accepted");
+        }
+    }
+
+    #[test]
+    fn plaintext_issuer_needs_a_loopback_bind() {
+        assert!(validate_issuer("http://127.0.0.1:8080", PUBLIC).is_err());
+        assert_eq!(validate_issuer("http://127.0.0.1:8080", "127.0.0.1:8080").unwrap(), "http://127.0.0.1:8080");
+    }
 }

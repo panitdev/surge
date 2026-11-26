@@ -29,7 +29,7 @@ Most configuration is read from environment variables:
 | `SURGE_REGISTRATION` | `open` | Registration mode: `open`, `invite`, or `closed` |
 | `SURGE_SESSION_CORS_ORIGINS` | (empty) | Comma-separated origins for CORS session-management zone |
 | `SURGE_ALLOW_SERVED_INLINE` | `false` | Allow inline flow-init responses on served deployments |
-| `SURGE_OAUTH_ISSUER` | (unset) | This server's public origin; setting it enables the native OAuth 2.1 / OIDC authorization server |
+| `SURGE_OAUTH_ISSUER` | (unset) | This server's public origin (bare origin, no path; trailing slash dropped); setting it enables the native OAuth 2.1 / OIDC authorization server |
 | `SURGE_OAUTH_ACCESS_TTL_SECS` | `600` | Access-token lifetime — also the offline revocation window |
 | `SURGE_OAUTH_REFRESH_TTL_DAYS` | `30` | Refresh-token lifetime, renewed on each rotation |
 | `SURGE_OAUTH_KEY_ROTATION_DAYS` | `90` | Signing-key rotation cadence |

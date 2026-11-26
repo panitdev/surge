@@ -25,7 +25,7 @@ Here is the complete reference:
 | `SURGE_SESSION_CORS_ORIGINS` | empty | Comma-separated origins for credentialed CORS |
 | `SURGE_MULTI_ACCOUNT` | `false` | Issue browser account memberships on sign-in. Enable after browser consumers support the new cookie. |
 | `SURGE_ALLOW_SERVED_INLINE` | `false` | Allow inline flow-init on served deployments |
-| `SURGE_OAUTH_ISSUER` | (unset) | This server's public origin; setting it enables the native OAuth authorization server |
+| `SURGE_OAUTH_ISSUER` | (unset) | This server's public origin (bare origin, no path); setting it enables the native OAuth authorization server |
 | `SURGE_OAUTH_ACCESS_TTL_SECS` | `600` | Access-token lifetime — also the offline revocation window |
 | `SURGE_OAUTH_REFRESH_TTL_DAYS` | `30` | Refresh-token lifetime |
 | `SURGE_OAUTH_KEY_ROTATION_DAYS` | `90` | Signing-key rotation cadence |
@@ -201,7 +201,7 @@ export SURGE_OAUTH_ACCESS_TTL_SECS=600
 export SURGE_OAUTH_ALLOW_DYNAMIC_REGISTRATION=0
 ```
 
-The issuer must be a registered return origin because the authorize endpoint re-enters `GET /v1/login?return_to=<self>`. Startup also requires an `https` issuer on a non-loopback bind. It warns when no audiences are registered or when dynamic registration is enabled.
+The issuer must be a bare origin such as `https://auth.example.com`, with no path, query or fragment: the metadata document and every `/oauth2/*` endpoint are served at the origin root, so startup refuses a path-ful issuer like `https://example.com/idp` rather than advertise endpoints that do not exist. A trailing slash is accepted and dropped; the slash-less form is the canonical `iss` that clients must compare against. The issuer must also be a registered return origin, spelled exactly as that canonical form, because the authorize endpoint re-enters `GET /v1/login?return_to=<self>`. Startup also requires an `https` issuer on a non-loopback bind. It warns when no audiences are registered or when dynamic registration is enabled.
 
 Two of these are security parameters rather than preferences. `SURGE_OAUTH_ACCESS_TTL_SECS` is the revocation window for any resource server that verifies tokens offline. `SURGE_OAUTH_ALLOW_DYNAMIC_REGISTRATION` opens an endpoint that is unauthenticated by specification — never enable it without a working consent screen.
 
