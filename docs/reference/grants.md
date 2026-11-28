@@ -40,7 +40,7 @@ Each grant unlocks a specific set of service API endpoints:
 | `oauth_resource_register` | `POST /v1/oauth/resources` — register a delegated audience; `GET /v1/oauth/resources`, `GET /v1/oauth/resources/{registration_id or uri}`, `PATCH` and `DELETE /v1/oauth/resources/{uri}` — only audiences this service registered |
 | `oauth_client_register` | `POST /v1/oauth/clients` — register a non-first-party client whose `resources` are all delegated registrations this service created, or registrations that list this service in `allowed_client_registrars`; the client is recorded with `registration_source: registrar` and this service as registrar |
 
-A request to an endpoint without the required grant returns `403 Forbidden`:
+A request to an endpoint without the required grant returns `403 Forbidden` (the one grant-less path is an owning service setting `allowed_client_registrars`, see [Admit a registrar's clients](../api/service/oauth-resources.md#admit-a-registrars-clients)):
 
 ```json
 {
