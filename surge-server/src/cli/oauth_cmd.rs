@@ -80,6 +80,20 @@ pub enum ResourceCommand {
         describe: Vec<String>,
     },
     List,
+    /// Replace the registrar services whose clients may be bound to a
+    /// registration. Removing a registrar ends its clients' grants there.
+    SetClientRegistrars {
+        uri: String,
+        /// Name of a registrar service to admit. Repeatable.
+        #[arg(long = "registrar", required_unless_present = "none")]
+        registrar: Vec<String>,
+        /// Admit no registrar (beyond the creator of a delegated registration).
+        #[arg(long, conflicts_with = "registrar")]
+        none: bool,
+        /// Refuse unless this is the registration that holds the URI now.
+        #[arg(long)]
+        registration_id: Option<uuid::Uuid>,
+    },
     /// Delete a registration, ending every grant bound to it, and reserve its
     /// URI until access tokens already issued for it have expired.
     Delete {
@@ -262,14 +276,49 @@ async fn resource(
                     .service_id
                     .map_or_else(|| "-".to_string(), |id| id.to_string());
                 println!(
-                    "{}: id={} source={} service={} scopes={:?}",
+                    "{}: id={} source={} service={} scopes={:?} client_registrars={:?}",
                     resource.resource_uri,
                     resource.registration_id,
                     resource.registration_source.as_str(),
                     owner,
-                    resource.scopes
+                    resource.scopes,
+                    resource.allowed_client_registrars
                 );
             }
+        }
+        ResourceCommand::SetClientRegistrars {
+            uri,
+            registrar,
+            none: _,
+            registration_id,
+        } => {
+            let services = engine.list_services().await?;
+            let ids = registrar
+                .iter()
+                .map(|name| {
+                    services
+                        .iter()
+                        .find(|s| &s.name == name)
+                        .map(|s| s.id)
+                        .ok_or_else(|| anyhow::anyhow!("no live service named `{name}`"))
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            let resource = engine
+                .update_oauth_resource(
+                    operator(),
+                    surge_engine::oauth::ResourceManager::Admin,
+                    &uri,
+                    registration_id,
+                    surge_engine::oauth::ResourcePatch {
+                        allowed_client_registrars: Some(ids),
+                        ..Default::default()
+                    },
+                )
+                .await?;
+            println!(
+                "Resource {} (registration {}) admits clients of: {:?}",
+                resource.resource_uri, resource.registration_id, resource.allowed_client_registrars
+            );
         }
         ResourceCommand::Delete {
             uri,

@@ -9,7 +9,7 @@ use diesel_async::{AsyncConnection, RunQueryDsl};
 use uuid::Uuid;
 
 use super::resource::{canonicalize_resource_uri, row_to_resource};
-use super::{now, NewOauthClient, OauthClient, RegistrationSource, ResourceSource};
+use super::{now, NewOauthClient, OauthClient, RegistrationSource};
 use crate::models::{NewOauthClient as NewOauthClientRow, OauthClientRow, OauthResourceRow};
 use crate::schema::{oauth_client, oauth_client_audience, oauth_refresh_token, oauth_resource};
 use crate::types::*;
@@ -73,9 +73,10 @@ impl Engine {
 
     /// Registers a third-party client on behalf of a registrar service,
     /// approved for exactly `registration_ids`. In one transaction every
-    /// registration is locked and must still be a delegated registration
-    /// that `registrar_service_id` created; otherwise nothing is created and
-    /// the result is `Forbidden`. The caller's earlier authorization check is
+    /// registration is locked and must still admit `registrar_service_id`
+    /// (a delegated registration it created, or one whose owner lists it in
+    /// `allowed_client_registrars`); otherwise nothing is created and the
+    /// result is `Forbidden`. The caller's earlier authorization check is
     /// advisory, so a registration deleted and re-registered by someone else
     /// in between cannot be bound.
     pub async fn create_registrar_oauth_client(
@@ -360,9 +361,10 @@ struct RegistrarBinding {
 }
 
 /// Locks the named registrations and returns `(id, uri)` for each, ordered
-/// by URI. Every one must be a delegated registration created by the
-/// registrar, or the whole request is `Forbidden`: a missing id, another
-/// registrar's and an administrator's look the same.
+/// by URI. Every one must admit the registrar
+/// ([`super::registrar_may_bind_resource`]), or the whole request is
+/// `Forbidden`: a missing id, one that does not admit the registrar, and an
+/// administrator's look the same.
 async fn lock_registrar_resources(
     conn: &mut diesel_async::AsyncPgConnection,
     binding: &RegistrarBinding,
@@ -370,20 +372,24 @@ async fn lock_registrar_resources(
     let mut ids = binding.registration_ids.clone();
     ids.sort();
     ids.dedup();
-    let rows: Vec<(Uuid, String)> = oauth_resource::table
+    let rows: Vec<OauthResourceRow> = oauth_resource::table
         .filter(oauth_resource::id.eq_any(&ids))
-        .filter(oauth_resource::registration_source.eq(ResourceSource::Delegated.as_str()))
-        .filter(oauth_resource::registrar_service_id.eq(binding.registrar_service_id))
         .order(oauth_resource::resource_uri.asc())
-        .select((oauth_resource::id, oauth_resource::resource_uri))
+        .select(OauthResourceRow::as_select())
         .for_share()
         .load(conn)
         .await
         .map_err(|e| AuthError::Internal(e.into()))?;
-    if rows.len() != ids.len() {
+    let bound: Vec<(Uuid, String)> = rows
+        .into_iter()
+        .map(row_to_resource)
+        .filter(|r| super::registrar_may_bind_resource(binding.registrar_service_id, r))
+        .map(|r| (r.registration_id, r.resource_uri))
+        .collect();
+    if bound.len() != ids.len() {
         return Err(AuthError::Forbidden);
     }
-    Ok(rows)
+    Ok(bound)
 }
 
 async fn approve_registrations(

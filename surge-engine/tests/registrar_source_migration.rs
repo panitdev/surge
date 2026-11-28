@@ -107,6 +107,7 @@ fn exercise(url: &str) {
         .is_err());
 
     // And it reverses cleanly.
-    conn.revert_last_migration(MIGRATIONS).unwrap();
+    conn.revert_last_migration(MIGRATIONS).unwrap(); // 21, client registrars
+    conn.revert_last_migration(MIGRATIONS).unwrap(); // 20, registrar source
     assert_eq!(source(&mut conn), "platform");
 }

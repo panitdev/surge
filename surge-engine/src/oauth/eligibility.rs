@@ -14,11 +14,15 @@
 //! 2. With the global DCR switch off, a dynamically registered client is
 //!    ineligible for every resource.
 //! 3. The built-in UserInfo audience is available for sign-in after the checks above.
-//! 4. A client with an explicit audience list (`Some`) is restricted to it,
+//! 4. A registrar client may use only a resource that admits its registrar:
+//!    a delegated registration that registrar created, or one whose owner
+//!    lists the registrar in `allowed_client_registrars`. Its explicit list
+//!    (rule 5) must name the resource as well.
+//! 5. A client with an explicit audience list (`Some`) is restricted to it,
 //!    for API resources. An empty list grants no API access. Membership is by
 //!    registration, so an approval does not survive the resource being
 //!    deleted and registered again.
-//! 5. A client with no list (`None`, the legacy default) keeps its existing
+//! 6. A client with no list (`None`, the legacy default) keeps its existing
 //!    access to *service* resources, and has none to delegated resources
 //!    unless a dynamically registered client meets a resource that has opted
 //!    in to DCR.
@@ -38,6 +42,8 @@ pub struct EligibilityPolicy {
     pub dynamic_clients_enabled: bool,
 }
 
+use uuid::Uuid;
+
 use super::{OauthClient, OauthResource, RegistrationSource, ResourceSource};
 
 /// Resource policy for an already classified CIMD client ID.
@@ -51,6 +57,18 @@ pub fn cimd_client_may_use_resource(client_id: &str, resource: &OauthResource) -
                 .allowed_cimd_client_ids
                 .iter()
                 .any(|id| id == client_id))
+}
+
+/// Whether `resource` admits clients created by `registrar`: a delegated
+/// registration that registrar created, or one whose owner lists it.
+pub fn registrar_may_bind_resource(registrar: Uuid, resource: &OauthResource) -> bool {
+    match resource.registration_source {
+        ResourceSource::Delegated if resource.registrar_service_id == Some(registrar) => true,
+        ResourceSource::Service | ResourceSource::Delegated => {
+            resource.allowed_client_registrars.contains(&registrar)
+        }
+        ResourceSource::UserInfo | ResourceSource::Unknown => false,
+    }
 }
 
 /// True when `client` may be issued tokens for `resource`.
@@ -90,6 +108,16 @@ pub fn client_may_use_resource(
     // UserInfo access only, and still requires consent for third-party clients.
     if resource.registration_source == ResourceSource::UserInfo {
         return true;
+    }
+
+    // A registrar client keeps its binding when the owner stops admitting
+    // its registrar, so the binding alone is not enough.
+    if client.registration_source == RegistrationSource::Registrar
+        && !client
+            .registrar_service_id
+            .is_some_and(|registrar| registrar_may_bind_resource(registrar, resource))
+    {
+        return false;
     }
 
     if let Some(approved) = &client.audiences {
@@ -194,6 +222,7 @@ mod tests {
             allowed_cimd_client_ids: cimd.into_iter().map(String::from).collect(),
             cimd_open: false,
             dcr_enabled: dcr,
+            allowed_client_registrars: vec![],
             created_at: Utc::now(),
         }
     }
@@ -345,6 +374,67 @@ mod tests {
         assert!(offers_scopes_to_dcr(&resource(ResourceSource::Delegated, true, vec![])));
         assert!(!offers_scopes_to_dcr(&resource(ResourceSource::Delegated, false, vec![])));
         assert!(!offers_scopes_to_dcr(&resource(ResourceSource::Unknown, true, vec![])));
+    }
+
+    fn registrar_client(registrar: Uuid) -> OauthClient {
+        let mut c = client(RegistrationSource::Registrar, Some(vec![URI]));
+        c.registrar_service_id = Some(registrar);
+        c
+    }
+
+    #[test]
+    fn a_registrar_client_needs_its_own_delegated_resource_or_an_opt_in() {
+        let r = Uuid::now_v7();
+        let other = Uuid::now_v7();
+        let c = registrar_client(r);
+
+        let mut own = resource(ResourceSource::Delegated, false, vec![]);
+        own.registrar_service_id = Some(r);
+        assert!(client_may_use_resource(&c, &own));
+
+        let mut foreign = resource(ResourceSource::Delegated, false, vec![]);
+        foreign.registrar_service_id = Some(other);
+        let service = resource(ResourceSource::Service, false, vec![]);
+        for mut target in [foreign, service] {
+            // Bound, but the resource does not admit the registrar.
+            assert!(!client_may_use_resource(&c, &target));
+            target.allowed_client_registrars = vec![other];
+            assert!(!client_may_use_resource(&c, &target));
+            target.allowed_client_registrars = vec![other, r];
+            assert!(client_may_use_resource(&c, &target));
+            // Admitted, but not bound to this resource.
+            let unbound = {
+                let mut c = c.clone();
+                c.audiences = Some(vec!["https://other.example/mcp".into()]);
+                c
+            };
+            assert!(!client_may_use_resource(&unbound, &target));
+        }
+
+        // No recorded registrar fails closed, even on a resource that lists one.
+        let mut orphan = c.clone();
+        orphan.registrar_service_id = None;
+        let mut listed = resource(ResourceSource::Service, false, vec![]);
+        listed.allowed_client_registrars = vec![r];
+        assert!(!client_may_use_resource(&orphan, &listed));
+    }
+
+    #[test]
+    fn the_registrar_list_admits_only_registrar_clients() {
+        let r = Uuid::now_v7();
+        let mut listed = resource(ResourceSource::Delegated, false, vec![]);
+        listed.allowed_client_registrars = vec![r];
+        let mut admin = client(RegistrationSource::Admin, None);
+        admin.registrar_service_id = Some(r);
+        assert!(!client_may_use_resource(&admin, &listed));
+        let mut dynamic = client(RegistrationSource::Dynamic, None);
+        dynamic.registrar_service_id = Some(r);
+        assert!(!client_may_use_resource(&dynamic, &listed));
+        for source in [ResourceSource::UserInfo, ResourceSource::Unknown] {
+            let mut r2 = resource(source, false, vec![]);
+            r2.allowed_client_registrars = vec![r];
+            assert!(!registrar_may_bind_resource(r, &r2));
+        }
     }
 
     #[test]

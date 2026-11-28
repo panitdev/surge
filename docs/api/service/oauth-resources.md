@@ -11,6 +11,8 @@
 | `GET /v1/oauth/resources/{registration_id or uri}` | Any registration, including legacy ones with an unknown registrar | Only its own. Any other returns HTTP 404. |
 | `PATCH` / `DELETE /v1/oauth/resources/{uri}` | Any registration | Only its own. Any other returns HTTP 404. |
 
+The service that owns a service registration may also `PATCH` that registration's `allowed_client_registrars`, and nothing else, without either grant. See [Admit a registrar's clients](#admit-a-registrars-clients).
+
 The registrar is always the authenticated service. It cannot be supplied in the request. Registrations with an unknown registrar, such as those that predate registrar tracking or were created with the CLI, are visible and manageable only with `oauth_admin`.
 
 ```json
@@ -35,13 +37,14 @@ The registrar is always the authenticated service. It cannot be supplied in the 
 | `allowed_cimd_client_ids` | Exact CIMD client IDs admitted in restricted mode. Empty by default. |
 | `cimd_open` | Whether any valid public CIMD client may use this resource. Defaults to `false` for new and existing registrations. |
 | `dcr_enabled` | Whether dynamically registered clients can use the resource without an audience binding. `false` by default. |
+| `allowed_client_registrars` | Service IDs of registrars whose clients may be bound to this registration. Empty by default. |
 | `created_at` | Creation time. |
 
 If the same URI is registered again, the new registration gets a new `registration_id` and inherits none of the old consents, tokens or client approvals.
 
 ## Change or delete a registration
 
-Both calls address the registration by its **canonical URI, percent-encoded as one path segment**: `/v1/oauth/resources/https%3A%2F%2Fexample.com%2Fmcp`. The URI is canonicalized as at creation, so a trailing slash makes no difference. A URI that carries a query or fragment (encoded into the segment) is refused with HTTP 422, an unencoded URI does not route (HTTP 404), and a registration ID in the path is refused with HTTP 422. The caller must hold `oauth_admin`, or `oauth_resource_register` for a registration it created; any other registration looks missing (HTTP 404).
+Both calls address the registration by its **canonical URI, percent-encoded as one path segment**: `/v1/oauth/resources/https%3A%2F%2Fexample.com%2Fmcp`. The URI is canonicalized as at creation, so a trailing slash makes no difference. A URI that carries a query or fragment (encoded into the segment) is refused with HTTP 422, an unencoded URI does not route (HTTP 404), and a registration ID in the path is refused with HTTP 422. The caller must hold `oauth_admin`, or `oauth_resource_register` for a registration it created; any other registration looks missing (HTTP 404). The one exception is the owner's `allowed_client_registrars`, described below.
 
 **Precondition.** Name the registration you mean with `?registration_id=<uuid>` or `If-Match: "<uuid>"` (if both are given they must agree). If the URI now holds a different registration the call fails with HTTP 412 (`precondition_failed`) and changes nothing. It is optional for `oauth_admin` and for `PATCH`, and **required for a registrar's `DELETE`** (HTTP 422 without it), so a retried deletion can never remove a successor registered at the same URI, even after the reuse window below.
 
@@ -53,11 +56,18 @@ Both calls address the registration by its **canonical URI, percent-encoded as o
   "scope_descriptions": {"mcp:read": "Read your data"},
   "allowed_cimd_client_ids": ["https://app.example/client.json"],
   "cimd_open": true,
-  "dcr_enabled": true
+  "dcr_enabled": true,
+  "allowed_client_registrars": ["5b0c8a52-3c1e-4c7e-9d0a-6f1f2b8c4e11"]
 }
 ```
 
-All fields are optional but at least one is required. Each field replaces the stored value. Scopes are non-empty printable tokens without spaces (not `openid`, `profile` or `offline_access`); CIMD entries are exact `https` URLs with a path and no userinfo or fragment, stored as given; `dcr_enabled` applies to delegated registrations only. Omitting `cimd_open` preserves its value. Setting it to `true` preserves the stored list, which takes effect again when it is set to `false`. The response is the updated registration. A change that alters nothing writes and audits nothing. `scope_descriptions` keys must name scopes the registration will have after the change. `dcr_enabled: false` is accepted on a service registration as a no-op.
+All fields are optional but at least one is required. Each field replaces the stored value. Scopes are non-empty printable tokens without spaces (not `openid`, `profile` or `offline_access`); CIMD entries are exact `https` URLs with a path and no userinfo or fragment, stored as given; `dcr_enabled` applies to delegated registrations only. Omitting `cimd_open` preserves its value. Setting it to `true` preserves the stored list, which takes effect again when it is set to `false`. The response is the updated registration. A change that alters nothing writes and audits nothing. `scope_descriptions` keys must name scopes the registration will have after the change. `dcr_enabled: false` is accepted on a service registration as a no-op. `allowed_client_registrars` holds at most 100 IDs, and each must name a live service (HTTP 422 otherwise). Duplicates are dropped and the IDs are stored in sorted order.
+
+#### Admit a registrar's clients
+
+A registrar service holding `oauth_client_register` can always bind clients to the delegated registrations it created. Listing a registrar in `allowed_client_registrars` lets it bind clients to this registration as well, including confidential ones. This is the owner's decision, as with `cimd_open` and `dcr_enabled`. Naming a resource gives a client no tokens by itself: such clients stay third-party and untrusted, users must still approve them at consent, and the resource's audience and scope checks still apply. There is no setting that admits every registrar, so a registrar granted `oauth_client_register` later is not admitted without being listed.
+
+The list can be set by `oauth_admin`, by the registrar that created a delegated registration, and by the service that owns a service registration (`service_id`). The owner needs no grant to do this. A request from a service without either resource grant may carry only `allowed_client_registrars`. Any other field returns HTTP 403, and a registration the service does not own looks missing (HTTP 404). Being listed gives a registrar no authority over the registration: it still cannot read, change or delete it. Operators can use `surge-server oauth resource set-client-registrars <uri> --registrar <service name>` (repeatable, or `--none`).
 
 A change waits for issuance transactions already in flight to finish (they are short and do no network I/O), so under sustained heavy issuance it can take longer to apply.
 
@@ -67,9 +77,10 @@ What a change does to existing grants (all in one transaction, serialized agains
 | --- | --- |
 | Description only, adding scopes or CIMD entries, enabling open CIMD or DCR, or editing the CIMD list while open | Nothing. Grants are preserved. |
 | Removing a scope | Saved consents lose the scope and are deleted if left empty. Every refresh family that carries it is revoked. Unredeemed codes and pending consent flows that carry it are deleted. |
-| Narrowing CIMD admission or disabling DCR | For each affected client (a client excluded by the resulting policy, including when one patch closes CIMD and edits the list): its refresh families at this registration are revoked and its consents, pending flows, codes and pending account choices are deleted. |
+| Adding a client registrar | Nothing. |
+| Narrowing CIMD admission, disabling DCR or removing a client registrar | For each affected client (a client excluded by the resulting policy, including when one patch closes CIMD and edits the list): its refresh families at this registration are revoked and its consents, pending flows, codes and pending account choices are deleted. A removed registrar's clients keep their binding to the registration but are ineligible while the registrar is not listed. |
 
-Revoking refresh families is what makes introspection report earlier access tokens as inactive. Access tokens already issued remain valid at resource servers that verify offline until they expire. Restoring scope, CIMD or DCR eligibility restores nothing: the client must authorize again.
+Revoking refresh families is what makes introspection report earlier access tokens as inactive. Access tokens already issued remain valid at resource servers that verify offline until they expire. Restoring scope, CIMD, DCR or registrar eligibility restores nothing: the client must authorize again.
 
 ### `DELETE`
 
@@ -96,7 +107,7 @@ A caller holding neither grant, or a registrar credential asking for a service r
 
 `oauth_admin` may pass any registered `resources`. The client is recorded with `registration_source` `admin` and no registrar.
 
-`oauth_client_register` is a separate grant from `oauth_resource_register`. A holder can only create third-party clients, and `resources` is required and non-empty. Every resource must be a delegated registration that same service created. The check and the binding happen in one transaction, so a URI that is deleted and registered again by someone else cannot be bound. `first_party: true`, a missing grant, and any resource that is unknown, operator-registered, or registered by another service (including an administrator) return HTTP 403. A missing or empty `resources` returns HTTP 422. The grant does not allow listing or revoking clients.
+`oauth_client_register` is a separate grant from `oauth_resource_register`. A holder can only create third-party clients, and `resources` is required and non-empty. Every resource must be a delegated registration that same service created, or one that lists the service in `allowed_client_registrars`. The check and the binding happen in one transaction, so a URI that is deleted and registered again by someone else, or one whose owner removes the registrar meanwhile, cannot be bound. `first_party: true`, a missing grant, and any resource that is unknown or does not admit the service (including one an administrator or another registrar registered) return HTTP 403. A missing or empty `resources` returns HTTP 422. The grant does not allow listing or revoking clients.
 
 The client is recorded with `registration_source` `registrar` and `registrar_service_id` set to the authenticated service, and the response carries both, along with `audiences` (the canonical URIs bound). Consent and the connections list mark it `dynamically_registered: true`, meaning its name and logo are supplied by a developer and are untrusted, as for a dynamically registered client. Unlike dynamic clients, registrar clients are not removed by the unused-client sweep (`SURGE_OAUTH_DCR_TTL_DAYS`); an administrator revokes them. (Registrar-scoped listing and revocation of its own clients are not implemented yet.)
 
@@ -104,4 +115,4 @@ The audit entry `create_oauth_client` records the client, `registration_source`,
 
 `resources` is enforced at every issuance point: authorization, consent completion, code redemption and refresh. See [Audience and scope policy](../../features/oauth-authorization-server.md#audience-and-scope-policy).
 
-**Rollout.** Do not grant `oauth_client_register` until every node runs this release. An older binary may read a `registrar` client as `admin` and not enforce eligibility, and one that predates migration 20 cannot create registrar clients.
+**Rollout.** Do not set `allowed_client_registrars` until every node runs a release that has migration 21. An older node does not check the list at issuance, so it keeps admitting a removed registrar's bound clients. Do not grant `oauth_client_register` until every node runs this release. An older binary may read a `registrar` client as `admin` and not enforce eligibility, and one that predates migration 20 cannot create registrar clients.

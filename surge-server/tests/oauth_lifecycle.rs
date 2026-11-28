@@ -1013,6 +1013,222 @@ async fn disabling_dcr_ends_dynamic_client_grants_flows_and_codes() {
     assert!(query_param(&location(&resp), "consent_flow").is_some());
 }
 
+// -- client registrars -------------------------------------------------------
+
+fn registrar_client_body(resource: &str) -> Value {
+    json!({
+        "client_name": "Developer app",
+        "redirect_uris": [CLIENT_REDIRECT],
+        "scopes": ["mcp:read"],
+        "resources": [resource],
+    })
+}
+
+/// The owner of a service registration admits a registrar's clients by
+/// listing the registrar; delisting it ends their grants there, and listing
+/// it again restores nothing.
+#[tokio::test]
+#[ignore = "requires a live Postgres via DATABASE_URL"]
+async fn an_owner_admits_and_then_drops_a_registrars_clients() {
+    let h = harness().await;
+    let session = h.sign_in().await;
+    // The owner holds no resource grant; `introspect` is only for the checks.
+    let (owner_id, owner) = service(&h, "owner", &["introspect"]).await;
+    let (_, stranger) = service(&h, "stranger", &[]).await;
+    let (r_id, r) = service(&h, "registrar", &["oauth_client_register"]).await;
+    let (r2_id, r2) = service(&h, "registrar2", &["oauth_client_register"]).await;
+    let rs = uri(&h, "registrars");
+    let resp = call(
+        &h,
+        "POST",
+        "/v1/oauth/resources",
+        &h.service_token,
+        Some(json!({ "resource_uri": rs, "scopes": ["mcp:read"], "owner_service_id": owner_id })),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let created = body_json(resp).await;
+    assert_eq!(created["allowed_client_registrars"], json!([]));
+    let reg: Uuid = created["registration_id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    // Not admitted yet.
+    let mint = |token: String| {
+        let h = &h;
+        let rs = rs.clone();
+        async move {
+            call(
+                h,
+                "POST",
+                "/v1/oauth/clients",
+                &token,
+                Some(registrar_client_body(&rs)),
+            )
+            .await
+        }
+    };
+    assert_eq!(mint(r.clone()).await.status(), StatusCode::FORBIDDEN);
+
+    // The owner may set this field only; others cannot set it at all.
+    let list = |ids: Vec<Uuid>| json!({ "allowed_client_registrars": ids });
+    for body in [
+        json!({ "scopes": ["mcp:read", "mcp:write"] }),
+        json!({ "allowed_client_registrars": [r_id], "dcr_enabled": false }),
+    ] {
+        assert_eq!(
+            patch(&h, &owner, &rs, body).await.status(),
+            StatusCode::FORBIDDEN
+        );
+    }
+    for other in [&stranger, &r] {
+        assert_eq!(
+            patch(&h, other, &rs, list(vec![r_id])).await.status(),
+            StatusCode::NOT_FOUND
+        );
+    }
+    assert_eq!(
+        patch(&h, &owner, &rs, list(vec![Uuid::now_v7()]))
+            .await
+            .status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let resp = patch(&h, &owner, &rs, list(vec![r_id, r_id])).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(resp).await["allowed_client_registrars"],
+        json!([r_id])
+    );
+    // Being listed gives the registrar no authority over the registration.
+    assert_eq!(
+        patch(&h, &r, &rs, json!({ "scopes": ["mcp:read"] }))
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+
+    // Now the listed registrar, and only it, may bind clients.
+    assert_eq!(mint(r2.clone()).await.status(), StatusCode::FORBIDDEN);
+    let resp = mint(r.clone()).await;
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let body = body_json(resp).await;
+    assert_eq!(body["registration_source"], "registrar");
+    assert_eq!(body["registrar_service_id"], json!(r_id));
+    assert_eq!(body["first_party"], false);
+    assert_eq!(body["audiences"], json!([rs]));
+    let app = body["client_id"].as_str().unwrap().to_string();
+    let bystander = client(&h, RegistrationSource::Admin, Some(vec![rs.clone()])).await;
+
+    // Consent still decides: the app is untrusted and must ask.
+    let pkce = Pkce::generate();
+    let resp = h
+        .get(
+            &h.authorize_uri(&app, &pkce, Some(&rs), Some("mcp:read")),
+            Some(&session),
+        )
+        .await;
+    let flow = query_param(&location(&resp), "consent_flow").expect("consent flow");
+    let view = body_json(
+        h.get(&format!("/v1/oauth/consent/{flow}"), Some(&session))
+            .await,
+    )
+    .await;
+    assert_eq!(view["client"]["dynamically_registered"], true);
+    assert_eq!(view["client"]["first_party"], false);
+
+    let (access, app_refresh) = grant(&h, &app, &session, &rs, "mcp:read").await;
+    let (_, bystander_refresh) = grant(&h, &bystander, &session, &rs, "mcp:read").await;
+    assert_eq!(
+        body_json(h.introspect(&access, &owner).await).await["active"],
+        true
+    );
+
+    // Dropping the registrar ends its client's grant at this resource.
+    let resp = patch(&h, &owner, &rs, list(vec![r2_id])).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(h.introspect(&access, &owner).await).await["active"],
+        false
+    );
+    assert_eq!(consent_scopes(&h, &app, reg).await, None);
+    assert_eq!(
+        refresh(&h, &app, &app_refresh).await.0,
+        StatusCode::BAD_REQUEST
+    );
+    let pkce = Pkce::generate();
+    let resp = h
+        .get(
+            &h.authorize_uri(&app, &pkce, Some(&rs), Some("mcp:read")),
+            Some(&session),
+        )
+        .await;
+    assert_eq!(
+        query_param(&location(&resp), "error").as_deref(),
+        Some("invalid_target")
+    );
+    // Other clients keep their grants.
+    assert_eq!(
+        refresh(&h, &bystander, &bystander_refresh).await.0,
+        StatusCode::OK
+    );
+    // And the registrar can no longer bind the registration, even past the
+    // API's own check.
+    let spec = NewOauthClient {
+        client_name: "Developer app".into(),
+        client_uri: None,
+        logo_uri: None,
+        redirect_uris: vec![CLIENT_REDIRECT.into()],
+        grant_types: vec!["authorization_code".into()],
+        scopes: vec!["mcp:read".into()],
+        confidential: false,
+        first_party: false,
+        registration_source: RegistrationSource::Registrar,
+        audiences: None,
+    };
+    assert!(matches!(
+        h.engine
+            .create_registrar_oauth_client(r_id, spec, vec![reg])
+            .await,
+        Err(surge_engine::types::AuthError::Forbidden)
+    ));
+
+    let (removed, added): (Value, Value) = {
+        let detail = audit_log::table
+            .filter(audit_log::action.eq("update_oauth_resource"))
+            .filter(audit_log::subject.contains(json!({ "registration_id": reg })))
+            .order(audit_log::id.desc())
+            .select(audit_log::detail)
+            .first::<Option<Value>>(&mut db().await)
+            .await
+            .unwrap()
+            .unwrap();
+        (
+            detail["client_registrars_removed"].clone(),
+            detail["client_registrars_added"].clone(),
+        )
+    };
+    assert_eq!(removed, json!([r_id]));
+    assert_eq!(added, json!([r2_id]));
+
+    // Listing it again restores nothing: the user must authorize afresh.
+    let resp = patch(&h, &owner, &rs, list(vec![r_id, r2_id])).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        refresh(&h, &app, &app_refresh).await.0,
+        StatusCode::BAD_REQUEST
+    );
+    let pkce = Pkce::generate();
+    let resp = h
+        .get(
+            &h.authorize_uri(&app, &pkce, Some(&rs), Some("mcp:read")),
+            Some(&session),
+        )
+        .await;
+    assert!(query_param(&location(&resp), "consent_flow").is_some());
+}
+
 // -- DELETE ----------------------------------------------------------------
 
 #[tokio::test]

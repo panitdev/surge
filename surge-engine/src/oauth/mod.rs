@@ -32,7 +32,7 @@ pub use code::{AuthorizationSession, verify_pkce, AUTHORIZATION_CODE_TTL_SECS};
 pub use consent::ConsentFlowRequest;
 pub use eligibility::{
     EligibilityPolicy, cimd_client_may_use_resource, client_may_use_resource, offers_scopes_to_dcr,
-    permitted_scopes,
+    permitted_scopes, registrar_may_bind_resource,
 };
 pub use key::ES256;
 pub use lifecycle::{
@@ -238,6 +238,11 @@ pub struct OauthResource {
     /// Whether dynamically registered clients may use this resource without
     /// an explicit audience binding.
     pub dcr_enabled: bool,
+    /// Registrar services whose clients may be bound to this registration,
+    /// beyond the delegated registrations a registrar created itself. Set by
+    /// the owner; empty admits none.
+    #[serde(default)]
+    pub allowed_client_registrars: Vec<Uuid>,
     pub created_at: DateTime<Utc>,
 }
 

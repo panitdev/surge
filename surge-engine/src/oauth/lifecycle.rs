@@ -2,7 +2,8 @@
 //!
 //! # Serialization
 //!
-//! Policy (scopes, the CIMD allowlist, DCR opt-in, existence) and the grants
+//! Policy (scopes, the CIMD allowlist, DCR opt-in, admitted client
+//! registrars, existence) and the grants
 //! issued under it must never interleave in a way that leaves a live grant
 //! the new policy forbids. One lock decides it, on the `oauth_resource` row:
 //!
@@ -71,7 +72,7 @@ use crate::audit::{audit_conn, AuditActor};
 use crate::models::{OauthClientRow, OauthResourceRow};
 use crate::schema::{
     oauth_authorization_code, oauth_client, oauth_consent, oauth_consent_flow, oauth_refresh_token,
-    oauth_resource, oauth_resource_reservation,
+    oauth_resource, oauth_resource_reservation, service,
 };
 use crate::types::*;
 use crate::Engine;
@@ -97,10 +98,16 @@ pub(crate) const PSEUDO_SCOPES: [&str; 3] = ["openid", "profile", "offline_acces
 /// Who is managing a registration. Mirrors the service API's authority:
 /// administration reaches every registration, a registrar only the delegated
 /// ones it created.
+///
+/// Separately, the service that owns a service registration may set that
+/// registration's `allowed_client_registrars` and nothing else
+/// ([`ResourceManager::owns`]). `Service` is an authenticated service with
+/// neither resource grant, which has only that authority.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResourceManager {
     Admin,
     Registrar(Uuid),
+    Service(Uuid),
 }
 
 impl ResourceManager {
@@ -112,6 +119,19 @@ impl ResourceManager {
         match self {
             Self::Admin => true,
             Self::Registrar(id) => source == ResourceSource::Delegated && registrar == Some(id),
+            Self::Service(_) => false,
+        }
+    }
+
+    /// Whether this is the service owning `resource`, a service registration.
+    /// An owner may set `allowed_client_registrars` on it.
+    pub fn owns(self, resource: &OauthResource) -> bool {
+        match self {
+            Self::Admin => false,
+            Self::Registrar(id) | Self::Service(id) => {
+                resource.registration_source == ResourceSource::Service
+                    && resource.service_id == Some(id)
+            }
         }
     }
 }
@@ -124,6 +144,20 @@ pub struct ResourcePatch {
     pub allowed_cimd_client_ids: Option<Vec<String>>,
     pub cimd_open: Option<bool>,
     pub dcr_enabled: Option<bool>,
+    /// Registrar services whose clients may be bound to the registration.
+    pub allowed_client_registrars: Option<Vec<Uuid>>,
+}
+
+impl ResourcePatch {
+    /// True when the patch changes nothing but `allowed_client_registrars`,
+    /// the one field an owning service may set.
+    fn only_client_registrars(&self) -> bool {
+        self.scopes.is_none()
+            && self.scope_descriptions.is_none()
+            && self.allowed_cimd_client_ids.is_none()
+            && self.cimd_open.is_none()
+            && self.dcr_enabled.is_none()
+    }
 }
 
 /// What a delete did.
@@ -308,6 +342,31 @@ fn validate_cimd_ids(ids: Vec<String>) -> Result<Vec<String>, AuthError> {
     Ok(out)
 }
 
+/// De-duplicates and orders the registrar list, which must name live services.
+async fn validate_client_registrars(
+    conn: &mut AsyncPgConnection,
+    ids: Vec<Uuid>,
+) -> Result<Vec<Uuid>, AuthError> {
+    const FIELD: &str = "allowed_client_registrars";
+    if ids.len() > MAX_LIST_LEN {
+        return Err(field(FIELD, format!("at most {MAX_LIST_LEN} entries are allowed")));
+    }
+    let ids: Vec<Uuid> = ids.into_iter().collect::<BTreeSet<_>>().into_iter().collect();
+    let live: BTreeSet<Uuid> = service::table
+        .filter(service::id.eq_any(&ids))
+        .filter(service::revoked_at.is_null())
+        .select(service::id)
+        .load::<Uuid>(conn)
+        .await
+        .map_err(internal)?
+        .into_iter()
+        .collect();
+    if let Some(unknown) = ids.iter().find(|id| !live.contains(id)) {
+        return Err(field(FIELD, format!("{unknown} is not a live service")));
+    }
+    Ok(ids)
+}
+
 fn resource_subject(resource: &OauthResource) -> serde_json::Value {
     serde_json::json!({
         "registration_id": resource.registration_id,
@@ -335,13 +394,14 @@ async fn lock_registration_exclusive(
 }
 
 impl Engine {
-    /// Changes a registration's scopes, descriptions, CIMD allowlist or DCR
-    /// opt-in, ending the grants the new policy no longer permits (see the
-    /// module docs). `if_registration`, when given, must name the
-    /// registration currently holding the URI.
+    /// Changes a registration's scopes, descriptions, CIMD allowlist, DCR
+    /// opt-in or admitted client registrars, ending the grants the new policy
+    /// no longer permits (see the module docs). `if_registration`, when
+    /// given, must name the registration currently holding the URI.
     ///
-    /// Not-yours and missing look alike (`NotFound`). A patch that changes
-    /// nothing writes nothing and is not audited.
+    /// Not-yours and missing look alike (`NotFound`). An owner that may only
+    /// set `allowed_client_registrars` and asks for more is `Forbidden`. A
+    /// patch that changes nothing writes nothing and is not audited.
     pub async fn update_oauth_resource(
         &self,
         actor: AuditActor,
@@ -356,12 +416,16 @@ impl Engine {
             && patch.allowed_cimd_client_ids.is_none()
             && patch.cimd_open.is_none()
             && patch.dcr_enabled.is_none()
+            && patch.allowed_client_registrars.is_none()
         {
             return Err(field(
                 "body",
-                "provide at least one of scopes, scope_descriptions, allowed_cimd_client_ids, cimd_open, dcr_enabled",
+                "provide at least one of scopes, scope_descriptions, allowed_cimd_client_ids, \
+                 cimd_open, dcr_enabled, allowed_client_registrars",
             ));
         }
+        let only_client_registrars = patch.only_client_registrars();
+        let registrars = patch.allowed_client_registrars;
         let scopes = patch.scopes.map(validate_scopes).transpose()?;
         if let Some(d) = &patch.scope_descriptions {
             validate_descriptions(d)?;
@@ -379,10 +443,28 @@ impl Engine {
             async move {
                 let old = lock_registration_exclusive(conn, &canonical)
                     .await?
-                    .filter(|r| manager.can_manage(r))
+                    .filter(|r| manager.can_manage(r) || manager.owns(r))
                     .ok_or(AuthError::NotFound)?;
                 if if_registration.is_some_and(|id| id != old.registration_id) {
                     return Err(AuthError::PreconditionFailed);
+                }
+                if !manager.can_manage(&old) && !only_client_registrars {
+                    return Err(AuthError::Forbidden);
+                }
+                let new_registrars = match registrars {
+                    Some(ids) => validate_client_registrars(conn, ids).await?,
+                    None => old.allowed_client_registrars.clone(),
+                };
+                if new_registrars != old.allowed_client_registrars
+                    && !matches!(
+                        old.registration_source,
+                        ResourceSource::Service | ResourceSource::Delegated
+                    )
+                {
+                    return Err(field(
+                        "allowed_client_registrars",
+                        "applies to service and delegated registrations only",
+                    ));
                 }
                 if dcr.is_some_and(|d| d != old.dcr_enabled)
                     && old.registration_source != ResourceSource::Delegated
@@ -436,6 +518,7 @@ impl Engine {
                     && new_cimd_open == old.cimd_open
                     && new_dcr == old.dcr_enabled
                     && new_descriptions == old.scope_descriptions
+                    && new_registrars == old.allowed_client_registrars
                 {
                     return Ok(old);
                 }
@@ -447,6 +530,7 @@ impl Engine {
                         oauth_resource::allowed_cimd_client_ids.eq(&new_cimd),
                         oauth_resource::cimd_open.eq(new_cimd_open),
                         oauth_resource::dcr_enabled.eq(new_dcr),
+                        oauth_resource::allowed_client_registrars.eq(&new_registrars),
                     ))
                     .returning(OauthResourceRow::as_returning())
                     .get_result(conn)
@@ -460,9 +544,16 @@ impl Engine {
                 }
                 let cimd_narrowed = !new_cimd_open && (old.cimd_open || !removed_cimd.is_empty());
                 let dcr_disabled = old.dcr_enabled && !new_dcr;
-                if cimd_narrowed || dcr_disabled {
+                let registrars_removed: Vec<Uuid> = old
+                    .allowed_client_registrars
+                    .iter()
+                    .filter(|id| !new_registrars.contains(id))
+                    .copied()
+                    .collect();
+                let reevaluate = dcr_disabled || !registrars_removed.is_empty();
+                if cimd_narrowed || reevaluate {
                     ended.add(
-                        end_ineligible_grants(conn, &old, &updated, dcr_disabled, policy).await?,
+                        end_ineligible_grants(conn, &old, &updated, reevaluate, policy).await?,
                     );
                 }
 
@@ -479,6 +570,11 @@ impl Engine {
                         "cimd_client_ids_added": added_cimd,
                         "cimd_open": { "from": old.cimd_open, "to": new_cimd_open },
                         "dcr_enabled": { "from": old.dcr_enabled, "to": new_dcr },
+                        "client_registrars_removed": registrars_removed,
+                        "client_registrars_added": new_registrars
+                            .iter()
+                            .filter(|id| !old.allowed_client_registrars.contains(id))
+                            .collect::<Vec<_>>(),
                         "invalidated": ended,
                     })),
                 )
@@ -766,16 +862,18 @@ async fn trim_removed_scopes(
     Ok(ended)
 }
 
-/// Ends affected grants and pending requests after CIMD admission narrows or
-/// DCR is disabled. CIMD requests can be parked before a client row exists,
-/// so compare the old and new resource policies directly against their IDs.
+/// Ends affected grants and pending requests after CIMD admission narrows,
+/// DCR is disabled or a client registrar is no longer admitted. CIMD
+/// requests can be parked before a client row exists, so compare the old and
+/// new resource policies directly against their IDs. With `reevaluate`, every
+/// other client is judged by the shared rule against the new policy.
 // `redundant_field_names` is a false positive from `QueryableByName`.
 #[allow(clippy::field_reassign_with_default, clippy::redundant_field_names)]
 async fn end_ineligible_grants(
     conn: &mut AsyncPgConnection,
     old: &OauthResource,
     resource: &OauthResource,
-    dcr_disabled: bool,
+    reevaluate: bool,
     policy: super::EligibilityPolicy,
 ) -> Result<Invalidated, AuthError> {
     let id = resource.registration_id;
@@ -845,7 +943,7 @@ async fn end_ineligible_grants(
         })
         .cloned()
         .collect();
-    if dcr_disabled {
+    if reevaluate {
         let rest: Vec<&String> = candidates
             .iter()
             .filter(|c| !is_cimd_client_id(c))

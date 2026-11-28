@@ -450,6 +450,7 @@ async fn exercise(url: String) {
     drop(engine);
 
     // And the migration reverses cleanly.
+    conn.revert_last_migration(MIGRATIONS).unwrap(); // 21, client registrars
     conn.revert_last_migration(MIGRATIONS).unwrap(); // 20, registrar source
     conn.revert_last_migration(MIGRATIONS).unwrap(); // 19, UserInfo audience
     conn.revert_last_migration(MIGRATIONS).unwrap(); // 18, open CIMD

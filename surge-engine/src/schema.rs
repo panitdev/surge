@@ -154,6 +154,7 @@ diesel::table! {
         allowed_cimd_client_ids -> Array<Text>,
         cimd_open -> Bool,
         dcr_enabled -> Bool,
+        allowed_client_registrars -> Array<Uuid>,
     }
 }
 

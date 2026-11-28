@@ -477,8 +477,9 @@ pub(crate) struct CreateOauthClientBody {
 /// How a caller may register a client. `oauth_admin` is trusted
 /// administration. `oauth_client_register` a registrar's separately
 /// bounded authority: it can only mint third-party clients, and only ones
-/// approved for resources that same service registered as a delegated
-/// registrar. The Registrar variant carries the registration IDs that passed
+/// approved for resources that admit it: delegated registrations that same
+/// service created, or registrations whose owner lists it in
+/// `allowed_client_registrars`. The Registrar variant carries the registration IDs that passed
 /// this check; the engine re-checks them under lock when it binds them.
 enum ClientAuthority {
     Admin,
@@ -501,7 +502,7 @@ async fn authorize_client_registration(
     if resources.is_empty() {
         return Err(AuthError::Validation(ValidationError::Field {
             field: "resources",
-            message: "a delegated registrar must name the resources the client is for".into(),
+            message: "a registrar must name the resources the client is for".into(),
         }));
     }
     if resources.len() > surge_engine::oauth::MAX_REGISTRAR_RESOURCES {
@@ -520,11 +521,12 @@ async fn authorize_client_registration(
             .get_oauth_resource(uri)
             .await
             .map_err(|e| match e {
-                // An unknown resource and another registrar's look the same.
+                // An unknown resource and one that does not admit this
+                // registrar look the same.
                 AuthError::NotFound => AuthError::Forbidden,
                 other => other,
             })?;
-        if !ResourceAuthority::Registrar(auth.service_id).can_manage(&resource) {
+        if !surge_engine::oauth::registrar_may_bind_resource(auth.service_id, &resource) {
             return Err(AuthError::Forbidden);
         }
         ids.push(resource.registration_id);
@@ -861,6 +863,19 @@ pub(crate) struct UpdateOauthResourceBody {
     cimd_open: Option<bool>,
     #[serde(default)]
     dcr_enabled: Option<bool>,
+    #[serde(default)]
+    allowed_client_registrars: Option<Vec<Uuid>>,
+}
+
+/// The authority a `PATCH` runs with. Beyond the resource grants, the
+/// service owning a service registration may set its
+/// `allowed_client_registrars` with no grant at all; the engine confines it
+/// to that field.
+fn patch_manager(auth: &ServiceAuth) -> ResourceManager {
+    match ResourceAuthority::of(auth) {
+        Ok(authority) => authority.manager(),
+        Err(_) => ResourceManager::Service(auth.service_id),
+    }
 }
 
 pub(crate) async fn update_oauth_resource(
@@ -871,13 +886,24 @@ pub(crate) async fn update_oauth_resource(
     headers: HeaderMap,
     Json(body): Json<UpdateOauthResourceBody>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let authority = ResourceAuthority::of(&auth)?;
+    let manager = patch_manager(&auth);
+    // A caller without a resource grant may only ever set this one field, so
+    // asking for more is refused before any lookup, as it was before owners
+    // could set it.
+    let only_client_registrars = body.scopes.is_none()
+        && body.scope_descriptions.is_none()
+        && body.allowed_cimd_client_ids.is_none()
+        && body.cimd_open.is_none()
+        && body.dcr_enabled.is_none();
+    if matches!(manager, ResourceManager::Service(_)) && !only_client_registrars {
+        return Err(AuthError::Forbidden.into());
+    }
     let uri = lifecycle_uri(resource)?;
     let updated = state
         .engine
         .update_oauth_resource(
             audit_actor(&auth),
-            authority.manager(),
+            manager,
             &uri,
             precondition(&query, &headers)?,
             ResourcePatch {
@@ -886,6 +912,7 @@ pub(crate) async fn update_oauth_resource(
                 allowed_cimd_client_ids: body.allowed_cimd_client_ids,
                 cimd_open: body.cimd_open,
                 dcr_enabled: body.dcr_enabled,
+                allowed_client_registrars: body.allowed_client_registrars,
             },
         )
         .await?;

@@ -303,6 +303,7 @@ async fn insert_resource(
             allowed_cimd_client_ids: Vec::new(),
             cimd_open,
             dcr_enabled: false,
+            allowed_client_registrars: Vec::new(),
             created_at: now(),
         })
         .returning(OauthResourceRow::as_returning())
@@ -335,6 +336,7 @@ pub(super) fn row_to_resource(row: OauthResourceRow) -> OauthResource {
         allowed_cimd_client_ids: row.allowed_cimd_client_ids,
         cimd_open: row.cimd_open,
         dcr_enabled: row.dcr_enabled,
+        allowed_client_registrars: row.allowed_client_registrars,
         created_at: row.created_at,
     }
 }
