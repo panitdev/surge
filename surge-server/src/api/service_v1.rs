@@ -475,14 +475,14 @@ pub(crate) struct CreateOauthClientBody {
 }
 
 /// How a caller may register a client. `oauth_admin` is trusted
-/// administration. `oauth_client_register` is the Platform's separately
+/// administration. `oauth_client_register` a registrar's separately
 /// bounded authority: it can only mint third-party clients, and only ones
 /// approved for resources that same service registered as a delegated
-/// registrar. The Platform variant carries the registration IDs that passed
+/// registrar. The Registrar variant carries the registration IDs that passed
 /// this check; the engine re-checks them under lock when it binds them.
 enum ClientAuthority {
     Admin,
-    Platform(Vec<Uuid>),
+    Registrar(Vec<Uuid>),
 }
 
 async fn authorize_client_registration(
@@ -504,12 +504,12 @@ async fn authorize_client_registration(
             message: "a delegated registrar must name the resources the client is for".into(),
         }));
     }
-    if resources.len() > surge_engine::oauth::MAX_PLATFORM_RESOURCES {
+    if resources.len() > surge_engine::oauth::MAX_REGISTRAR_RESOURCES {
         return Err(AuthError::Validation(ValidationError::Field {
             field: "resources",
             message: format!(
                 "at most {} resources are allowed",
-                surge_engine::oauth::MAX_PLATFORM_RESOURCES
+                surge_engine::oauth::MAX_REGISTRAR_RESOURCES
             ),
         }));
     }
@@ -529,7 +529,7 @@ async fn authorize_client_registration(
         }
         ids.push(resource.registration_id);
     }
-    Ok(ClientAuthority::Platform(ids))
+    Ok(ClientAuthority::Registrar(ids))
 }
 
 pub(crate) async fn create_oauth_client(
@@ -556,10 +556,10 @@ pub(crate) async fn create_oauth_client(
     };
     let (client, secret) = match authority {
         ClientAuthority::Admin => state.engine.create_oauth_client(spec).await?,
-        ClientAuthority::Platform(ids) => {
+        ClientAuthority::Registrar(ids) => {
             state
                 .engine
-                .create_platform_oauth_client(auth.service_id, spec, ids)
+                .create_registrar_oauth_client(auth.service_id, spec, ids)
                 .await?
         }
     };
@@ -632,7 +632,7 @@ pub(crate) async fn revoke_oauth_client(
 /// `oauth_admin` is trusted administration: any registration, including
 /// legacy ones whose registrar is unknown, and the only way to create a
 /// service registration or name an owner. `oauth_resource_register` is the
-/// Platform grant: it creates delegated resources and sees or manages only
+/// registrar grant: it creates delegated resources and sees or manages only
 /// those it registered itself. The registrar is always the authenticated
 /// service, never a request field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -902,8 +902,8 @@ pub(crate) async fn delete_oauth_resource(
     let authority = ResourceAuthority::of(&auth)?;
     let uri = lifecycle_uri(resource)?;
     let expected = precondition(&query, &headers)?;
-    // A registrar's delete must name the registration it means: the Platform
-    // retries deletions, possibly after the reservation has lapsed and
+    // A registrar's delete must name the registration it means: it may
+    // retry deletions, possibly after the reservation has lapsed and
     // someone has registered the URI again, and a delete by URI alone would
     // take that successor down.
     if expected.is_none() && matches!(authority, ResourceAuthority::Registrar(_)) {

@@ -2,7 +2,7 @@
 
 `POST /v1/oauth/resources` requires a bearer service token with either the `oauth_admin` or the `oauth_resource_register` grant. The two have different authority.
 
-| | `oauth_admin` | `oauth_resource_register` (Platform) |
+| | `oauth_admin` | `oauth_resource_register` (registrar) |
 | --- | --- | --- |
 | Default `registration_source` | `service` | `delegated` |
 | Service registrations and `owner_service_id` | Yes, for any existing service | No (HTTP 403) |
@@ -22,7 +22,7 @@ The registrar is always the authenticated service. It cannot be supplied in the 
 }
 ```
 
-`scope_descriptions`, `owner_service_id`, `cimd_open` and `registration_source` (`service` or `delegated`) are optional. For an `oauth_admin` caller the source defaults to `service` and the owner to the authenticated service. A `delegated` registration has no owner, so supplying `owner_service_id` with it is rejected: HTTP 422 for an administrator, HTTP 403 for a Platform credential. Unknown fields are rejected with HTTP 422. A successful request returns HTTP 201 with the registration:
+`scope_descriptions`, `owner_service_id`, `cimd_open` and `registration_source` (`service` or `delegated`) are optional. For an `oauth_admin` caller the source defaults to `service` and the owner to the authenticated service. A `delegated` registration has no owner, so supplying `owner_service_id` with it is rejected: HTTP 422 for an administrator, HTTP 403 for a registrar credential. Unknown fields are rejected with HTTP 422. A successful request returns HTTP 201 with the registration:
 
 | Field | Meaning |
 | --- | --- |
@@ -81,7 +81,7 @@ Returns HTTP 204. In one transaction it deletes the registration and with it eve
 
 `create_oauth_resource`, `update_oauth_resource` and `delete_oauth_resource` are recorded in the same transaction as the change. The entry carries the actor (the authenticated service, or the operator for the CLI), the `registration_id`, `resource_uri`, `registration_source`, owner and registrar, and, in the detail, what changed and how many grants were ended (an update) or the `reserved_until` time (a delete).
 
-A caller holding neither grant, or a Platform credential asking for a service registration or an owner, receives HTTP 403. An unknown owner receives HTTP 404. An already registered URI receives HTTP 409 (`resource_already_registered`) and keeps its original registration, owner, registrar and scopes, whoever asks and whichever form of the URI they use.
+A caller holding neither grant, or a registrar credential asking for a service registration or an owner, receives HTTP 403. An unknown owner receives HTTP 404. An already registered URI receives HTTP 409 (`resource_already_registered`) and keeps its original registration, owner, registrar and scopes, whoever asks and whichever form of the URI they use.
 
 ## Register a client
 
@@ -98,10 +98,10 @@ A caller holding neither grant, or a Platform credential asking for a service re
 
 `oauth_client_register` is a separate grant from `oauth_resource_register`. A holder can only create third-party clients, and `resources` is required and non-empty. Every resource must be a delegated registration that same service created. The check and the binding happen in one transaction, so a URI that is deleted and registered again by someone else cannot be bound. `first_party: true`, a missing grant, and any resource that is unknown, operator-registered, or registered by another service (including an administrator) return HTTP 403. A missing or empty `resources` returns HTTP 422. The grant does not allow listing or revoking clients.
 
-The client is recorded with `registration_source` `platform` and `registrar_service_id` set to the authenticated service, and the response carries both, along with `audiences` (the canonical URIs bound). Consent and the connections list mark it `dynamically_registered: true`, meaning its name and logo are supplied by a developer and are untrusted, as for a dynamically registered client. Unlike dynamic clients, platform clients are not removed by the unused-client sweep (`SURGE_OAUTH_DCR_TTL_DAYS`); an administrator revokes them. (Registrar-scoped listing and revocation of its own clients are not implemented yet.)
+The client is recorded with `registration_source` `registrar` and `registrar_service_id` set to the authenticated service, and the response carries both, along with `audiences` (the canonical URIs bound). Consent and the connections list mark it `dynamically_registered: true`, meaning its name and logo are supplied by a developer and are untrusted, as for a dynamically registered client. Unlike dynamic clients, registrar clients are not removed by the unused-client sweep (`SURGE_OAUTH_DCR_TTL_DAYS`); an administrator revokes them. (Registrar-scoped listing and revocation of its own clients are not implemented yet.)
 
 The audit entry `create_oauth_client` records the client, `registration_source`, `registrar_service_id` and the canonical URIs of the resources the client was bound to, for both grants.
 
 `resources` is enforced at every issuance point: authorization, consent completion, code redemption and refresh. See [Audience and scope policy](../../features/oauth-authorization-server.md#audience-and-scope-policy).
 
-**Rollout.** Do not grant `oauth_client_register` until every node runs this release. An older binary reads a `platform` client as `admin` and does not enforce eligibility.
+**Rollout.** Do not grant `oauth_client_register` until every node runs this release. An older binary may read a `registrar` client as `admin` and not enforce eligibility, and one that predates migration 20 cannot create registrar clients.

@@ -1,5 +1,5 @@
-//! Who may register and see audiences: administrators, and Platform
-//! registrars confined to the delegated resources they created.
+//! Who may register and see audiences: administrators, and registrar
+//! services confined to the delegated resources they created.
 
 mod oauth_support;
 
@@ -118,45 +118,45 @@ async fn admin_post_defaults_to_a_service_registration() {
 
 #[tokio::test]
 #[ignore = "requires a live Postgres via DATABASE_URL"]
-async fn a_platform_registrar_is_confined_to_its_own_delegated_resources() {
+async fn a_registrar_is_confined_to_its_own_delegated_resources() {
     let h = harness().await;
-    let (platform_id, platform) = service(&h, "platform", &["oauth_resource_register"]).await;
-    let (_, other_platform) = service(&h, "platform-b", &["oauth_resource_register"]).await;
+    let (registrar_id, registrar) = service(&h, "registrar", &["oauth_resource_register"]).await;
+    let (_, other_registrar) = service(&h, "registrar-b", &["oauth_resource_register"]).await;
     let (owner_id, _) = service(&h, "owner", &["introspect"]).await;
     let uri = format!("{}-dev", h.resource_uri);
     let post = "/v1/oauth/resources";
 
     // The registrar is the authenticated service and the resource is delegated.
-    let resp = call(&h, "POST", post, &platform, Some(resource(&uri))).await;
+    let resp = call(&h, "POST", post, &registrar, Some(resource(&uri))).await;
     assert_eq!(resp.status(), StatusCode::CREATED);
     let mine = body_json(resp).await;
     assert_eq!(mine["registration_source"], "delegated");
-    assert_eq!(mine["registrar_service_id"], json!(platform_id));
+    assert_eq!(mine["registrar_service_id"], json!(registrar_id));
     assert!(mine["service_id"].is_null());
 
     // No owner assignment, no service registration.
     let mut assigned = resource(&format!("{uri}-owned"));
     assigned["owner_service_id"] = json!(owner_id);
     assert_eq!(
-        status(&h, "POST", post, &platform, Some(assigned.clone())).await,
+        status(&h, "POST", post, &registrar, Some(assigned.clone())).await,
         StatusCode::FORBIDDEN
     );
     assigned["registration_source"] = json!("delegated");
     assert_eq!(
-        status(&h, "POST", post, &platform, Some(assigned)).await,
+        status(&h, "POST", post, &registrar, Some(assigned)).await,
         StatusCode::FORBIDDEN
     );
     let mut service_reg = resource(&format!("{uri}-svc"));
     service_reg["registration_source"] = json!("service");
     assert_eq!(
-        status(&h, "POST", post, &platform, Some(service_reg)).await,
+        status(&h, "POST", post, &registrar, Some(service_reg)).await,
         StatusCode::FORBIDDEN
     );
     // A registrar cannot claim to be someone else.
     let mut spoof = resource(&format!("{uri}-spoof"));
     spoof["registrar_service_id"] = json!(owner_id);
     assert_eq!(
-        status(&h, "POST", post, &platform, Some(spoof)).await,
+        status(&h, "POST", post, &registrar, Some(spoof)).await,
         StatusCode::UNPROCESSABLE_ENTITY
     );
 
@@ -165,7 +165,7 @@ async fn a_platform_registrar_is_confined_to_its_own_delegated_resources() {
         &h,
         "POST",
         post,
-        &other_platform,
+        &other_registrar,
         Some(resource(&format!("{uri}/"))),
     )
     .await;
@@ -173,10 +173,10 @@ async fn a_platform_registrar_is_confined_to_its_own_delegated_resources() {
     let kept = h.engine.get_oauth_resource(&uri).await.unwrap();
     let id = mine["registration_id"].as_str().unwrap();
     assert_eq!(kept.registration_id.to_string(), id);
-    assert_eq!(kept.registrar_service_id, Some(platform_id));
+    assert_eq!(kept.registrar_service_id, Some(registrar_id));
 
     // Listing and reading show only its own; another's is indistinguishable from missing.
-    let listed = body_json(call(&h, "GET", post, &platform, None).await).await;
+    let listed = body_json(call(&h, "GET", post, &registrar, None).await).await;
     let uris: Vec<_> = listed["resources"]
         .as_array()
         .unwrap()
@@ -186,14 +186,14 @@ async fn a_platform_registrar_is_confined_to_its_own_delegated_resources() {
     assert_eq!(uris, vec![json!(uri)]);
     let one = format!("{post}/{id}");
     assert_eq!(
-        status(&h, "GET", &one, &platform, None).await,
+        status(&h, "GET", &one, &registrar, None).await,
         StatusCode::OK
     );
     assert_eq!(
-        status(&h, "GET", &one, &other_platform, None).await,
+        status(&h, "GET", &one, &other_registrar, None).await,
         StatusCode::NOT_FOUND
     );
-    let none = body_json(call(&h, "GET", post, &other_platform, None).await).await;
+    let none = body_json(call(&h, "GET", post, &other_registrar, None).await).await;
     assert!(none["resources"].as_array().unwrap().is_empty());
 }
 
@@ -201,7 +201,7 @@ async fn a_platform_registrar_is_confined_to_its_own_delegated_resources() {
 #[ignore = "requires a live Postgres via DATABASE_URL"]
 async fn administrators_manage_legacy_registrations_and_others_need_a_grant() {
     let h = harness().await;
-    let (_, platform) = service(&h, "platform", &["oauth_resource_register"]).await;
+    let (_, registrar) = service(&h, "registrar", &["oauth_resource_register"]).await;
     let (_, nobody) = service(&h, "nobody", &["introspect"]).await;
 
     // The harness resource was created through the operator path: unknown registrar.
@@ -213,7 +213,7 @@ async fn administrators_manage_legacy_registrations_and_others_need_a_grant() {
         StatusCode::OK
     );
     assert_eq!(
-        status(&h, "GET", &path, &platform, None).await,
+        status(&h, "GET", &path, &registrar, None).await,
         StatusCode::NOT_FOUND
     );
     let listed =
@@ -249,11 +249,11 @@ fn client_body(first_party: bool, resources: Value) -> Value {
 
 #[tokio::test]
 #[ignore = "requires a live Postgres via DATABASE_URL"]
-async fn platform_client_registration_is_bounded_to_its_own_resources() {
+async fn registrar_client_registration_is_bounded_to_its_own_resources() {
     let h = harness().await;
-    let (platform_id, platform) = service(
+    let (registrar_id, registrar) = service(
         &h,
-        "platform",
+        "registrar",
         &["oauth_resource_register", "oauth_client_register"],
     )
     .await;
@@ -264,7 +264,7 @@ async fn platform_client_registration_is_bounded_to_its_own_resources() {
         &h,
         "POST",
         "/v1/oauth/resources",
-        &platform,
+        &registrar,
         Some(resource(&uri)),
     )
     .await;
@@ -286,30 +286,30 @@ async fn platform_client_registration_is_bounded_to_its_own_resources() {
 
     let forbidden = StatusCode::FORBIDDEN;
     assert_eq!(
-        mint(&h, &platform, client_body(true, json!([uri]))).await,
+        mint(&h, &registrar, client_body(true, json!([uri]))).await,
         forbidden
     );
     assert_eq!(
-        mint(&h, &platform, client_body(false, json!([]))).await,
+        mint(&h, &registrar, client_body(false, json!([]))).await,
         StatusCode::UNPROCESSABLE_ENTITY
     );
     let mut absent = client_body(false, json!(null));
     absent.as_object_mut().unwrap().remove("resources");
     assert_eq!(
-        mint(&h, &platform, absent).await,
+        mint(&h, &registrar, absent).await,
         StatusCode::UNPROCESSABLE_ENTITY
     );
     // Operator-registered, administrator-made and unregistered resources are refused.
     for other in [&h.resource_uri, &admin_made, "https://nowhere.oauth.test/x"] {
         assert_eq!(
-            mint(&h, &platform, client_body(false, json!([other]))).await,
+            mint(&h, &registrar, client_body(false, json!([other]))).await,
             forbidden
         );
     }
     // One foreign resource among its own spoils the request.
     let mixed = json!([uri, h.resource_uri]);
     assert_eq!(
-        mint(&h, &platform, client_body(false, mixed)).await,
+        mint(&h, &registrar, client_body(false, mixed)).await,
         forbidden
     );
     // Each grant is needed on its own.
@@ -326,7 +326,7 @@ async fn platform_client_registration_is_bounded_to_its_own_resources() {
     legacy["audiences"] = json!([uri]);
     legacy.as_object_mut().unwrap().remove("resources");
     assert_eq!(
-        mint(&h, &platform, legacy).await,
+        mint(&h, &registrar, legacy).await,
         StatusCode::UNPROCESSABLE_ENTITY
     );
 
@@ -337,7 +337,7 @@ async fn platform_client_registration_is_bounded_to_its_own_resources() {
         &h,
         "POST",
         "/v1/oauth/clients",
-        &platform,
+        &registrar,
         Some(confidential),
     )
     .await;
@@ -345,8 +345,8 @@ async fn platform_client_registration_is_bounded_to_its_own_resources() {
     let body = body_json(resp).await;
     assert!(body["client_secret"].is_string());
     assert_eq!(body["confidential"], true);
-    assert_eq!(body["registration_source"], "platform");
-    assert_eq!(body["registrar_service_id"], json!(platform_id));
+    assert_eq!(body["registration_source"], "registrar");
+    assert_eq!(body["registrar_service_id"], json!(registrar_id));
     assert_eq!(body["first_party"], false);
     assert_eq!(body["trust_state"], "untrusted");
     assert_eq!(body["audiences"], json!([uri]));
@@ -355,7 +355,7 @@ async fn platform_client_registration_is_bounded_to_its_own_resources() {
         &h,
         "POST",
         "/v1/oauth/clients",
-        &platform,
+        &registrar,
         Some(client_body(false, json!([uri]))),
     )
     .await;
@@ -380,15 +380,15 @@ async fn platform_client_registration_is_bounded_to_its_own_resources() {
             .first::<(Value, Value)>(&mut conn)
             .await
             .unwrap();
-        assert_eq!(actor["id"], json!(platform_id));
-        assert_eq!(subject["registrar_service_id"], json!(platform_id));
+        assert_eq!(actor["id"], json!(registrar_id));
+        assert_eq!(subject["registrar_service_id"], json!(registrar_id));
         assert_eq!(subject["resources"], json!([uri]));
-        assert_eq!(subject["registration_source"], "platform");
+        assert_eq!(subject["registration_source"], "registrar");
     }
 
     // The grant gives no access to the registry's other client operations.
     assert_eq!(
-        status(&h, "GET", "/v1/oauth/clients", &platform, None).await,
+        status(&h, "GET", "/v1/oauth/clients", &registrar, None).await,
         forbidden
     );
 
@@ -414,7 +414,7 @@ async fn platform_client_registration_is_bounded_to_its_own_resources() {
 
 #[tokio::test]
 #[ignore = "requires a live Postgres via DATABASE_URL"]
-async fn an_admin_may_name_resources_and_platform_clients_are_never_swept() {
+async fn an_admin_may_name_resources_and_registrar_clients_are_never_swept() {
     let h = harness().await;
     let body = client_body(false, json!([h.resource_uri]));
     let resp = call(
@@ -431,11 +431,11 @@ async fn an_admin_may_name_resources_and_platform_clients_are_never_swept() {
     assert!(body["registrar_service_id"].is_null());
     assert_eq!(body["audiences"], json!([h.resource_uri]));
 
-    // Platform clients are created unused and old enough to be swept if they
+    // Registrar clients are created unused and old enough to be swept if they
     // were dynamic; the sweep must leave them alone.
-    let (_, platform) = service(
+    let (_, registrar) = service(
         &h,
-        "platform",
+        "registrar",
         &["oauth_resource_register", "oauth_client_register"],
     )
     .await;
@@ -444,7 +444,7 @@ async fn an_admin_may_name_resources_and_platform_clients_are_never_swept() {
         &h,
         "POST",
         "/v1/oauth/resources",
-        &platform,
+        &registrar,
         Some(resource(&uri)),
     )
     .await;
@@ -452,7 +452,7 @@ async fn an_admin_may_name_resources_and_platform_clients_are_never_swept() {
         &h,
         "POST",
         "/v1/oauth/clients",
-        &platform,
+        &registrar,
         Some(client_body(false, json!([uri]))),
     )
     .await;
@@ -470,9 +470,9 @@ async fn an_admin_may_name_resources_and_platform_clients_are_never_swept() {
 
 #[tokio::test]
 #[ignore = "requires a live Postgres via DATABASE_URL"]
-async fn a_platform_client_cannot_bind_a_registration_it_no_longer_holds() {
+async fn a_registrar_client_cannot_bind_a_registration_it_no_longer_holds() {
     let h = harness().await;
-    let (platform_id, _) = service(&h, "platform", &["oauth_client_register"]).await;
+    let (registrar_id, _) = service(&h, "registrar", &["oauth_client_register"]).await;
     let uri = format!("{}-race", h.resource_uri);
     let mine = h
         .engine
@@ -480,7 +480,7 @@ async fn a_platform_client_cannot_bind_a_registration_it_no_longer_holds() {
             surge_engine::audit::AuditActor::Operator {
                 name: "test".into(),
             },
-            platform_id,
+            registrar_id,
             &uri,
             None,
             vec!["mcp:read".into()],
@@ -537,12 +537,12 @@ async fn a_platform_client_cannot_bind_a_registration_it_no_longer_holds() {
         scopes: vec!["mcp:read".into()],
         confidential: false,
         first_party: false,
-        registration_source: surge_engine::oauth::RegistrationSource::Platform,
+        registration_source: surge_engine::oauth::RegistrationSource::Registrar,
         audiences: None,
     };
     let err = h
         .engine
-        .create_platform_oauth_client(platform_id, spec(), vec![mine.registration_id])
+        .create_registrar_oauth_client(registrar_id, spec(), vec![mine.registration_id])
         .await;
     assert!(matches!(
         err,
@@ -552,21 +552,21 @@ async fn a_platform_client_cannot_bind_a_registration_it_no_longer_holds() {
     assert!(
         clients
             .iter()
-            .all(|c| c.registrar_service_id != Some(platform_id))
+            .all(|c| c.registrar_service_id != Some(registrar_id))
     );
 }
 
 /// The registrar's binding is not merely recorded: the shared eligibility
-/// rule confines a Platform client to exactly the registrations it was bound
+/// rule confines a registrar client to exactly the registrations it was bound
 /// to, at authorization and at redemption.
 #[tokio::test]
 #[ignore = "requires a live Postgres via DATABASE_URL"]
-async fn a_platform_client_is_issued_tokens_only_for_its_bound_resource() {
+async fn a_registrar_client_is_issued_tokens_only_for_its_bound_resource() {
     let h = harness().await;
     let session = h.sign_in().await;
-    let (_, platform) = service(
+    let (_, registrar) = service(
         &h,
-        "platform",
+        "registrar",
         &["oauth_resource_register", "oauth_client_register"],
     )
     .await;
@@ -575,7 +575,7 @@ async fn a_platform_client_is_issued_tokens_only_for_its_bound_resource() {
         &h,
         "POST",
         "/v1/oauth/resources",
-        &platform,
+        &registrar,
         Some(resource(&uri)),
     )
     .await;
@@ -584,7 +584,7 @@ async fn a_platform_client_is_issued_tokens_only_for_its_bound_resource() {
         &h,
         "POST",
         "/v1/oauth/clients",
-        &platform,
+        &registrar,
         Some(client_body(false, json!([uri]))),
     )
     .await;

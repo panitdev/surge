@@ -66,7 +66,7 @@ pub fn client_may_use_resource(
         return false;
     }
     let delegated = resource.registration_source == ResourceSource::Delegated;
-    // Only `Dynamic` gets DCR opt-in admission. A `Platform` client is bound
+    // Only `Dynamic` gets DCR opt-in admission. A `Registrar` client is bound
     // by its registrar to specific registrations and relies on that explicit
     // list alone: it is never admitted through the no-list branch.
     let dynamic = client.registration_source == RegistrationSource::Dynamic;

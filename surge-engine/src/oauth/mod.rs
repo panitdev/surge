@@ -27,7 +27,7 @@ pub use chooser::ChooserCredential;
 pub use cimd::{
     parse_cimd_document, validate_cimd_client_id, CimdMetadata, MAX_CIMD_DOCUMENT_BYTES,
 };
-pub use client::{validate_redirect_uri, MAX_PLATFORM_RESOURCES};
+pub use client::{validate_redirect_uri, MAX_REGISTRAR_RESOURCES};
 pub use code::{AuthorizationSession, verify_pkce, AUTHORIZATION_CODE_TTL_SECS};
 pub use consent::ConsentFlowRequest;
 pub use eligibility::{
@@ -57,10 +57,10 @@ use crate::types::IdentityId;
 pub enum RegistrationSource {
     Admin,
     Dynamic,
-    /// Registered by a Platform service holding `oauth_client_register`.
+    /// Registered by a registrar service holding `oauth_client_register`.
     /// Third-party and untrusted, and never swept: an administrator revokes it
     /// (registrar revoke is future work).
-    Platform,
+    Registrar,
     /// Published by the client itself as a client-ID metadata document at its
     /// client ID URL (surge-bcc). Its name, logo and redirect URIs are
     /// self-declared, so it is untrusted and never first-party; the row is a
@@ -86,7 +86,7 @@ impl RegistrationSource {
         match self {
             Self::Admin => "admin",
             Self::Dynamic => "dynamic",
-            Self::Platform => "platform",
+            Self::Registrar => "registrar",
             Self::Cimd => "cimd",
             Self::Unknown => "unknown",
         }
@@ -95,7 +95,7 @@ impl RegistrationSource {
     fn from_db(s: &str) -> Self {
         match s {
             "dynamic" => Self::Dynamic,
-            "platform" => Self::Platform,
+            "registrar" => Self::Registrar,
             "cimd" => Self::Cimd,
             "admin" => Self::Admin,
             // Must not fail open: `Unknown` is untrusted and has no access.
@@ -129,7 +129,7 @@ pub struct OauthClient {
     /// `None` is the legacy default: no explicit list. `Some(vec![])` is an
     /// explicit list that approves nothing.
     pub audiences: Option<Vec<String>>,
-    /// The service that registered a [`RegistrationSource::Platform`]
+    /// The service that registered a [`RegistrationSource::Registrar`]
     /// client. `None` for every other source.
     pub registrar_service_id: Option<Uuid>,
     /// True when `scopes` is a ceiling the registration asked for, or one of

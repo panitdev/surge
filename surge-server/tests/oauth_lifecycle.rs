@@ -75,7 +75,7 @@ async fn service(h: &Harness, label: &str, grants: &[&str]) -> (Uuid, String) {
     (svc.id, token.expose_secret().to_string())
 }
 
-/// A registrar (Platform) service.
+/// A registrar service: one holding `oauth_resource_register`.
 async fn registrar(h: &Harness, label: &str) -> (Uuid, String) {
     service(h, label, &["oauth_resource_register"]).await
 }

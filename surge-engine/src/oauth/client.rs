@@ -25,9 +25,9 @@ const MAX_REDIRECT_URIS: usize = 10;
 /// The grant types the token endpoint can issue, and so the only ones a
 /// client may be registered with.
 pub const SUPPORTED_GRANT_TYPES: &[&str] = &["authorization_code", "refresh_token"];
-/// Most resources one Platform-registered client may be bound to. Bounds the
+/// Most resources one registrar client may be bound to. Bounds the
 /// per-request lookups and locks.
-pub const MAX_PLATFORM_RESOURCES: usize = 10;
+pub const MAX_REGISTRAR_RESOURCES: usize = 10;
 
 impl Engine {
     pub async fn create_oauth_client(
@@ -56,10 +56,10 @@ impl Engine {
                 "only a dynamically registered client can omit its scope ceiling",
             ));
         }
-        if spec.registration_source == RegistrationSource::Platform {
+        if spec.registration_source == RegistrationSource::Registrar {
             return Err(field(
                 "registration_source",
-                "a platform client is created with create_platform_oauth_client",
+                "a registrar client is created with create_registrar_oauth_client",
             ));
         }
         if spec.registration_source == RegistrationSource::Cimd {
@@ -71,14 +71,14 @@ impl Engine {
         self.insert_client(spec, None, scope_ceiling_explicit).await
     }
 
-    /// Registers a third-party client on behalf of a Platform service,
+    /// Registers a third-party client on behalf of a registrar service,
     /// approved for exactly `registration_ids`. In one transaction every
     /// registration is locked and must still be a delegated registration
     /// that `registrar_service_id` created; otherwise nothing is created and
     /// the result is `Forbidden`. The caller's earlier authorization check is
     /// advisory, so a registration deleted and re-registered by someone else
     /// in between cannot be bound.
-    pub async fn create_platform_oauth_client(
+    pub async fn create_registrar_oauth_client(
         &self,
         registrar_service_id: Uuid,
         mut spec: NewOauthClient,
@@ -87,17 +87,17 @@ impl Engine {
         if registration_ids.is_empty() {
             return Err(field("resources", "at least one resource is required"));
         }
-        if registration_ids.len() > MAX_PLATFORM_RESOURCES {
+        if registration_ids.len() > MAX_REGISTRAR_RESOURCES {
             return Err(field(
                 "resources",
-                format!("at most {MAX_PLATFORM_RESOURCES} are allowed"),
+                format!("at most {MAX_REGISTRAR_RESOURCES} are allowed"),
             ));
         }
-        spec.registration_source = RegistrationSource::Platform;
+        spec.registration_source = RegistrationSource::Registrar;
         spec.audiences = None;
         self.insert_client(
             spec,
-            Some(PlatformBinding {
+            Some(RegistrarBinding {
                 registrar_service_id,
                 registration_ids,
             }),
@@ -109,7 +109,7 @@ impl Engine {
     async fn insert_client(
         &self,
         spec: NewOauthClient,
-        platform: Option<PlatformBinding>,
+        registrar: Option<RegistrarBinding>,
         scope_ceiling_explicit: bool,
     ) -> Result<(OauthClient, Option<ClientSecret>), AuthError> {
         validate_client(&spec)?;
@@ -141,8 +141,8 @@ impl Engine {
             first_party: spec.first_party,
             trust_state: if spec.first_party { "trusted" } else { "untrusted" },
             created_at,
-            audience_restricted: audiences.is_some() || platform.is_some(),
-            registrar_service_id: platform.as_ref().map(|p| p.registrar_service_id),
+            audience_restricted: audiences.is_some() || registrar.is_some(),
+            registrar_service_id: registrar.as_ref().map(|p| p.registrar_service_id),
             scope_ceiling_explicit,
         };
 
@@ -171,13 +171,13 @@ impl Engine {
         let mut conn = self.conn().await?;
         let row_ref = &row;
         let client_ref = &client;
-        let platform_ref = platform.as_ref();
+        let registrar_ref = registrar.as_ref();
         let bound = conn
             .transaction::<_, AuthError, _>(|conn| {
                 async move {
                     // Lock first, so the registrations cannot change between
                     // the check and the approvals.
-                    let bound = match platform_ref {
+                    let bound = match registrar_ref {
                         Some(binding) => Some(lock_registrar_resources(conn, binding).await?),
                         None => None,
                     };
@@ -198,14 +198,14 @@ impl Engine {
                 .scope_boxed()
             })
             .await?;
-        // A Platform client is always audience-restricted: its stored list is
+        // A registrar client is always audience-restricted: its stored list is
         // exactly the registrations just locked, so the shared eligibility
         // rule confines it to them at issuance.
         let mut client = client;
         if let Some(bound) = bound {
             client.audiences = Some(bound.into_iter().map(|(_, uri)| uri).collect());
         }
-        client.registrar_service_id = platform.map(|p| p.registrar_service_id);
+        client.registrar_service_id = registrar.map(|p| p.registrar_service_id);
 
         Ok((client, secret))
     }
@@ -326,8 +326,8 @@ impl Engine {
     /// Deletes dynamically registered clients that never completed an
     /// authorization within the TTL. Admin-registered clients are never
     /// swept: an operator registering a client ahead of the service that will
-    /// use it is a normal thing to do. Neither are platform clients: the
-    /// Platform that registered one manages its lifecycle, and a developer's
+    /// use it is a normal thing to do. Neither are registrar clients: the
+    /// service that registered one manages its lifecycle, and a developer's
     /// client may legitimately sit unused until they ship.
     pub async fn gc_unused_dynamic_clients(
         &self,
@@ -352,9 +352,9 @@ impl Engine {
     }
 }
 
-/// The registrar a Platform client is created for and the exact
+/// The registrar a registrar client is created for and the exact
 /// registrations it is to be bound to.
-struct PlatformBinding {
+struct RegistrarBinding {
     registrar_service_id: Uuid,
     registration_ids: Vec<Uuid>,
 }
@@ -365,7 +365,7 @@ struct PlatformBinding {
 /// registrar's and an administrator's look the same.
 async fn lock_registrar_resources(
     conn: &mut diesel_async::AsyncPgConnection,
-    binding: &PlatformBinding,
+    binding: &RegistrarBinding,
 ) -> Result<Vec<(Uuid, String)>, AuthError> {
     let mut ids = binding.registration_ids.clone();
     ids.sort();
